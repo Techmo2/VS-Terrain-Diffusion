@@ -1,5 +1,6 @@
 bin/
 obj/
 dist/
+tools/
 docs/*.tmp
 *.user
