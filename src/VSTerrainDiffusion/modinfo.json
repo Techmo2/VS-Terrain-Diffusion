@@ -1,0 +1,57 @@
+{
+  "type": "code",
+  "modid": "vsterraindiffusion",
+  "name": "VS Terrain Diffusion",
+  "authors": [ "Techmo" ],
+  "description": "Replaces Vintage Story's terrain generator with the Terrain Diffusion neural heightmap model, producing real-world-like continents, mountain ranges and climate.",
+  "version": "1.0.0",
+  "side": "server",
+  "requiredOnClient": false,
+  "website": "https://github.com/Techmo2/VS-Terrain-Diffusion",
+  "dependencies": {
+    "game": "",
+    "survival": ""
+  },
+  "worldconfig": {
+    "worldConfigAttributes": [
+      {
+        "code": "diffusionTerrain",
+        "dataType": "bool",
+        "default": "true",
+        "onCustomizeScreen": true,
+        "onlyDuringWorldCreate": true,
+        "category": "worldgen"
+      },
+      {
+        "code": "diffusionScale",
+        "dataType": "dropdown",
+        "values": [ "1", "2", "3", "4", "5", "6" ],
+        "names": [ "30", "15", "10", "7.5", "6", "5" ],
+        "default": "4",
+        "onCustomizeScreen": true,
+        "onlyDuringWorldCreate": true,
+        "category": "worldgen"
+      },
+      {
+        "code": "diffusionVerticalExaggeration",
+        "dataType": "dropdown",
+        "values": [ "0.5", "0.75", "1", "1.25", "1.5", "2" ],
+        "names": [ "0.5", "0.75", "1", "1.25", "1.5", "2" ],
+        "default": "1",
+        "onCustomizeScreen": true,
+        "onlyDuringWorldCreate": true,
+        "category": "worldgen"
+      },
+      {
+        "code": "diffusionClimate",
+        "dataType": "dropdown",
+        "values": [ "regional", "full", "off" ],
+        "names": [ "regional", "full", "off" ],
+        "default": "regional",
+        "onCustomizeScreen": true,
+        "onlyDuringWorldCreate": true,
+        "category": "worldgen"
+      }
+    ]
+  }
+}

@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>VSTerrainDiffusion</AssemblyName>
+    <RootNamespace>VSTerrainDiffusion</RootNamespace>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <EnableDynamicLoading>false</EnableDynamicLoading>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <Version>1.0.0</Version>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <DebugType>portable</DebugType>
+    <NoWarn>$(NoWarn);CS0649</NoWarn>
+  </PropertyGroup>
+
+  <!-- Path to the Vintage Story installation. Override with -p:VintagestoryDir=/path -->
+  <PropertyGroup>
+    <VintagestoryDir Condition="'$(VintagestoryDir)' == '' AND '$(VINTAGE_STORY)' != ''">$(VINTAGE_STORY)</VintagestoryDir>
+    <VintagestoryDir Condition="'$(VintagestoryDir)' == '' AND Exists('/opt/vintagestory/VintagestoryAPI.dll')">/opt/vintagestory</VintagestoryDir>
+    <VintagestoryDir Condition="'$(VintagestoryDir)' == '' AND Exists('$(HOME)/Vintagestory/VintagestoryAPI.dll')">$(HOME)/Vintagestory</VintagestoryDir>
+  </PropertyGroup>
+
+  <Target Name="CheckVintagestoryDir" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(VintagestoryDir)/VintagestoryAPI.dll')"
+           Text="Could not locate the Vintage Story installation. Set the VINTAGE_STORY environment variable or pass -p:VintagestoryDir=/path/to/vintagestory." />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="VintagestoryAPI">
+      <HintPath>$(VintagestoryDir)/VintagestoryAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VintagestoryLib">
+      <HintPath>$(VintagestoryDir)/VintagestoryLib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VSEssentials">
+      <HintPath>$(VintagestoryDir)/Mods/VSEssentials.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VSSurvivalMod">
+      <HintPath>$(VintagestoryDir)/Mods/VSSurvivalMod.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(VintagestoryDir)/Lib/Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="protobuf-net">
+      <HintPath>$(VintagestoryDir)/Lib/protobuf-net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    Only the managed ONNX Runtime binding is shipped with the mod (~1 MB).
+    The matching native runtime is downloaded on first launch by OnnxRuntimeBootstrap,
+    so the mod archive stays small and platform independent.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="modinfo.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="modicon.png" Condition="Exists('modicon.png')" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="assets/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
