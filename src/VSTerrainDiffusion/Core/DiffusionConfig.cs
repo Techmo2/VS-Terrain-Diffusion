@@ -3,17 +3,21 @@ using Vintagestory.API.Common;
 namespace VSTerrainDiffusion.Core;
 
 /// <summary>
-/// Machine-level settings, stored in <c>ModConfig/vsterraindiffusion.json</c>. These are not part of
-/// the save game: they describe the hardware the server is running on, not the world.
+/// Machine-level settings, stored in <c>ModConfig/vsterraindiffusion.json</c>. Everything except
+/// <see cref="WorldGen"/> describes the hardware and services the server has available, not the
+/// world itself.
 /// </summary>
 public class DiffusionConfig
 {
-    /// <summary>"auto", "cpu", "cuda", "directml" or "coreml".</summary>
+    /// <summary>Where terrain comes from; see <see cref="TerrainApiConfig"/>.</summary>
+    public TerrainApiConfig Terrain { get; set; } = new();
+
+    /// <summary>"auto", "cpu", "cuda", "directml" or "coreml". Only used by the embedded pipeline.</summary>
     public string InferenceDevice { get; set; } = "auto";
 
     /// <summary>
     /// Keep only one model resident on the GPU at a time. Costs a little time per stage switch but
-    /// keeps peak VRAM near 1.5 GB instead of ~2.5 GB.
+    /// keeps peak VRAM near 1.5 GB instead of ~2.5 GB. Only used by the embedded pipeline.
     /// </summary>
     public bool OffloadModels { get; set; } = true;
 
@@ -34,10 +38,10 @@ public class DiffusionConfig
     /// touches at once — a spawn area alone can span a hundred tiles — or tiles get evicted while
     /// still in use and are rebuilt from scratch.
     /// </summary>
-    public int TerrainTileCacheMegabytes { get; set; } = 192;
+    public int TerrainTileCacheMegabytes { get; set; } = 256;
 
     /// <summary>
-    /// Number of chunk columns' worth of terrain generated per model invocation, in blocks. Larger
+    /// Number of chunk columns' worth of terrain generated per model query, in blocks. Larger
     /// values amortise model latency over more chunks at the cost of a longer first-visit stall.
     /// Must be a multiple of 32.
     /// </summary>
@@ -47,14 +51,15 @@ public class DiffusionConfig
     public bool VerboseInference { get; set; }
 
     /// <summary>
-    /// Terrain shaping. Unlike the rest of this file these do change what the world looks like, so
-    /// editing them after a world has been explored will make new chunks disagree with old ones.
+    /// World shaping and climate. Unlike the rest of this file these change what the world looks
+    /// like, so editing them after a world has been explored will make new chunks disagree with old
+    /// ones.
     /// </summary>
     public WorldGenConfig WorldGen { get; set; } = new();
 
     private static DiffusionConfig _instance;
 
-    public static DiffusionConfig Instance => _instance ?? (_instance = new DiffusionConfig());
+    public static DiffusionConfig Instance => _instance ??= new DiffusionConfig();
 
     public static DiffusionConfig Load(ICoreAPI api)
     {
@@ -77,6 +82,7 @@ public class DiffusionConfig
 
     private void Sanitize()
     {
+        (Terrain ??= new TerrainApiConfig()).Sanitize();
         (WorldGen ??= new WorldGenConfig()).Sanitize();
 
         if (TileCacheMegabytes < 32) TileCacheMegabytes = 32;
@@ -107,23 +113,76 @@ public class DiffusionConfig
     }
 }
 
+/// <summary>Which Terrain Diffusion backend to talk to, and how.</summary>
+public class TerrainApiConfig
+{
+    /// <summary>
+    /// "api" queries a running Terrain Diffusion HTTP server (<c>python -m terrain_diffusion api</c>),
+    /// which is the reference implementation and the only one that stays current with the upstream
+    /// models. "local" runs the ONNX pipeline bundled with this mod instead, so no Python service
+    /// is needed; it exposes the model's coarse map, which makes the spawn search and the terrain
+    /// height survey much faster.
+    /// </summary>
+    public string Source { get; set; } = "api";
+
+    /// <summary>Base URL of the Terrain Diffusion API.</summary>
+    public string Url { get; set; } = "http://localhost:8000";
+
+    /// <summary>
+    /// Seconds to wait for one terrain request. The API generates uncached regions synchronously
+    /// and queues everything behind them, so this needs to be generous.
+    /// </summary>
+    public int TimeoutSeconds { get; set; } = 600;
+
+    /// <summary>How many times to retry a failed terrain request before giving up on the chunk.</summary>
+    public int Retries { get; set; } = 2;
+
+    /// <summary>
+    /// Metres of ground per native model pixel. The API does not report this, so it has to match
+    /// the model the server was started with: 30 for terrain-diffusion-30m, 90 for the 90m model.
+    /// </summary>
+    public float NativeResolutionMeters { get; set; } = 30f;
+
+    internal void Sanitize()
+    {
+        Source = (Source ?? "api").Trim().ToLowerInvariant();
+        if (Source is not ("api" or "local")) Source = "api";
+
+        Url = string.IsNullOrWhiteSpace(Url) ? "http://localhost:8000" : Url.Trim();
+
+        if (TimeoutSeconds < 5) TimeoutSeconds = 5;
+        if (TimeoutSeconds > 3600) TimeoutSeconds = 3600;
+
+        if (Retries < 0) Retries = 0;
+        if (Retries > 10) Retries = 10;
+
+        if (!(NativeResolutionMeters > 0f) || float.IsInfinity(NativeResolutionMeters))
+            NativeResolutionMeters = 30f;
+    }
+}
+
 /// <summary>
-/// Everything that decides how model metres become blocks.
+/// How the model's metres, degrees and millimetres become a Vintage Story world.
 ///
-/// The defaults aim for terrain that reads as mountainous from ground level rather than terrain
-/// that is geometrically true to scale. Real landscapes are far wider than they are tall — a
-/// 1 000 m peak spread over 10 km is a 6% grade — so a heightmap reproduced at true scale in a
-/// world only a few hundred blocks tall looks like gentle moorland. <see cref="HeightMode"/>
-/// "auto" measures how tall the terrain around spawn actually gets and picks the vertical gain
-/// that makes those peaks reach near the world ceiling.
+/// The defaults reproduce the Terrain Diffusion Minecraft mod's geometry: a block is exactly as
+/// tall as it is wide, so the landscape is at true scale in every direction and a 2 000 m massif
+/// really is 2 000 m of climbing. That only works in a world with the height to hold it, which is
+/// why the mod asks for a tall world rather than stretching the terrain to fit a short one.
 /// </summary>
 public class WorldGenConfig
 {
     /// <summary>
-    /// "auto" measures the region's tall peaks once per world and scales terrain to fill the
-    /// world height. "manual" uses <see cref="MetersPerBlockVertical"/> (or true scale) instead.
+    /// "isotropic" makes vertical scale match horizontal, the way the Minecraft mod does it.
+    /// "manual" uses <see cref="MetersPerBlockVertical"/>. "auto" measures the region's peaks once
+    /// per world and stretches terrain to fill the world height, which suits short worlds at the
+    /// cost of exaggerated relief.
     /// </summary>
-    public string HeightMode { get; set; } = "auto";
+    public string HeightMode { get; set; } = "isotropic";
+
+    /// <summary>
+    /// manual: metres of elevation per block of height. Zero falls back to isotropic.
+    /// </summary>
+    public float MetersPerBlockVertical { get; set; }
 
     /// <summary>
     /// auto: how much of the space between sea level and the world ceiling the region's tall
@@ -146,12 +205,11 @@ public class WorldGenConfig
     public int CalibrationRadiusBlocks { get; set; } = 4096;
 
     /// <summary>
-    /// auto: how many full-detail probes to run on the tallest surveyed cells. The survey itself
-    /// only sees terrain averaged over several kilometres, so peaks need measuring at full
-    /// resolution. Each probe costs about as much as one terrain tile, once per world. Zero skips
-    /// probing and falls back to <see cref="ReliefFactor"/>.
+    /// auto: how many full-detail probes to run. Each costs about as much as one terrain tile, once
+    /// per world. With the HTTP API these are the whole survey, so raising it buys accuracy at the
+    /// price of a slower first start.
     /// </summary>
-    public int CalibrationProbes { get; set; } = 4;
+    public int CalibrationProbes { get; set; } = 8;
 
     /// <summary>
     /// auto: assumed ratio of true peak height to the coarse survey's value, used when probing is
@@ -165,12 +223,6 @@ public class WorldGenConfig
     public float MaxAutoExaggeration { get; set; } = 20f;
 
     /// <summary>
-    /// manual: metres of elevation per block of height. Zero means "same as horizontal", which is
-    /// true real-world scale. Ignored in auto mode.
-    /// </summary>
-    public float MetersPerBlockVertical { get; set; }
-
-    /// <summary>
     /// Fraction of the available height that is mapped perfectly linearly. Above the knee the
     /// curve bends over so that arbitrarily tall model peaks still fit under the ceiling; the
     /// closer this is to 1 the more faithful the summits and the harder they clip.
@@ -181,55 +233,113 @@ public class WorldGenConfig
     public float OceanDepthFraction { get; set; } = 0.9f;
 
     /// <summary>
-    /// Multiplies the Perlin detail added to sloped ground. The model resolves features down to
-    /// about 30 m, so hillsides need roughness of their own; raise for craggier slopes.
+    /// Multiplies the Perlin detail added to sloped ground. The model resolves features down to one
+    /// native pixel, so hillsides need roughness of their own; raise for craggier slopes.
     /// </summary>
     public float SlopeDetailStrength { get; set; } = 1f;
 
+    /// <summary>How many probes the spawn search may run before giving up. HTTP API only.</summary>
+    public int SpawnSearchProbes { get; set; } = 64;
+
+    /// <summary>Roughly how far apart, in blocks, consecutive spawn probes sit. HTTP API only.</summary>
+    public int SpawnSearchStrideBlocks { get; set; } = 8192;
+
     /// <summary>
-    /// How strongly the model's regional climate pulls temperature away from the latitude band it
-    /// sits in, in the "regional" climate mode. 0 is pure vanilla latitude, 1 is pure model.
+    /// What the game's 0-255 rainfall byte is built from. "moisture" uses the model's aridity —
+    /// precipitation measured against how much the climate can evaporate, discounted for a dry
+    /// season — which is what actually decides whether ground is bare, and stops warm-but-rainy
+    /// and cold-but-dry places from being read as the same. "precipitation" uses annual millimetres
+    /// alone.
     /// </summary>
-    public float RegionalClimateStrength { get; set; } = 0.6f;
+    public string RainfallBasis { get; set; } = "moisture";
 
     /// <summary>
-    /// How model precipitation becomes Vintage Story rainfall; see <see cref="PrecipitationScale"/>.
-    /// "distribution" quantile-maps the model's log-normal precipitation onto the uniform 0-255
-    /// spread that every vanilla rainfall threshold was tuned against. "absolute" is the older
-    /// fixed curve, <c>1 - exp(-mm / rainfallAbsoluteScaleMm)</c>, which reads a good deal drier.
+    /// moisture: the tree-moisture value that maps to the middle of the rainfall scale.
     /// </summary>
-    public string RainfallCurve { get; set; } = "distribution";
+    public float MoistureMedian { get; set; } = 0.62f;
+
+    /// <summary>moisture: spread of log tree-moisture across the model's land.</summary>
+    public float MoistureSpread { get; set; } = 1.0f;
 
     /// <summary>
-    /// distribution: annual precipitation, in millimetres, that maps to the middle of the rainfall
-    /// scale. Measured over the model's own output; lower makes the whole world wetter.
+    /// precipitation: annual millimetres that map to the middle of the rainfall scale.
     /// </summary>
-    public float RainfallMedianMm { get; set; } = 490f;
+    public float RainfallMedianMm { get; set; } = 540f;
+
+    /// <summary>precipitation: spread of the model's log precipitation over land.</summary>
+    public float RainfallSpread { get; set; } = 0.8f;
 
     /// <summary>
-    /// distribution: spread of the model's log precipitation. Smaller pulls the world towards the
-    /// middle of the rainfall scale, larger pushes deserts and rainforests further apart.
-    /// </summary>
-    public float RainfallSpread { get; set; } = 0.95f;
-
-    /// <summary>absolute: millimetres at which the old saturating curve reaches 63% of full scale.</summary>
-    public float RainfallAbsoluteScaleMm { get; set; } = 1200f;
-
-    /// <summary>
-    /// Added to the final rainfall as a fraction of full scale. The default nudge exists because
-    /// the climate map pre-compensates away Vintage Story's own "higher ground is wetter" bonus —
-    /// the model already models orography properly — and vanilla's biome thresholds were tuned
-    /// with that bonus present. Raise it for a lusher world, drop it to zero for the model's
-    /// unmodified precipitation.
+    /// Added to the final rainfall as a fraction of full scale. The climate map cancels Vintage
+    /// Story's own "higher ground is wetter" bonus, because the model already models orography
+    /// properly, and vanilla's thresholds were tuned with that bonus present; this puts its average
+    /// back. Raise for a lusher world, drop to zero for the model's unmodified answer.
     /// </summary>
     public float RainfallBias { get; set; } = 0.05f;
 
+    /// <summary>Degrees Celsius added to every model temperature, for a warmer or colder world.</summary>
+    public float TemperatureOffsetC { get; set; }
+
     /// <summary>
-    /// Stretch the altitude bands of vanilla's surface block layers to match the terrain height,
-    /// so that hills which are only tall because of vertical exaggeration are not surfaced as bare
-    /// alpine gravel. See <see cref="WorldGen.BlockLayerAltitude"/>.
+    /// Scales the forest cover the model's moisture implies. Vintage Story's own forest map is
+    /// noise with no climate signal at all, so this replaces it outright; raise for denser woods.
+    /// </summary>
+    public float ForestDensityMultiplier { get; set; } = 1f;
+
+    /// <summary>Scales shrub cover the same way.</summary>
+    public float ShrubDensityMultiplier { get; set; } = 1f;
+
+    /// <summary>
+    /// Swing temperature through the year using the model's temperature seasonality, instead of
+    /// Vintage Story's latitude bands. Continental interiors then get hard winters and hot summers
+    /// while maritime and tropical climates stay even.
+    /// </summary>
+    public bool SeasonalTemperature { get; set; } = true;
+
+    /// <summary>Multiplies the modelled seasonal temperature swing. Zero gives a world with no seasons.</summary>
+    public float SeasonalTemperatureStrength { get; set; } = 1f;
+
+    /// <summary>
+    /// Swing rainfall through the year using the model's precipitation seasonality, so monsoon
+    /// climates get a real wet and dry season rather than drizzling evenly all year.
+    /// </summary>
+    public bool SeasonalPrecipitation { get; set; } = true;
+
+    /// <summary>Multiplies the modelled wet/dry season contrast.</summary>
+    public float SeasonalPrecipitationStrength { get; set; } = 1f;
+
+    /// <summary>
+    /// Give the world two hemispheres with opposite seasons, split at the middle of the map. Off by
+    /// default: without a latitude temperature gradient to go with it, crossing the line just makes
+    /// the calendar disagree with itself.
+    /// </summary>
+    public bool SeasonHemispheres { get; set; }
+
+    /// <summary>
+    /// Stretch the altitude bands of vanilla's surface block layers to match the terrain height, so
+    /// that hills which are only tall because of vertical exaggeration are not surfaced as bare
+    /// alpine gravel. Has no effect at isotropic scale, where the bands already line up.
     /// </summary>
     public bool RescaleBlockLayerAltitudes { get; set; } = true;
+
+    /// <summary>
+    /// Leave slopes too steep to hold soil as bare rock. The threshold comes from the model's own
+    /// moisture, because roots are what keep a hillside from shedding its soil.
+    /// </summary>
+    public bool BareSlopeRock { get; set; } = true;
+
+    /// <summary>
+    /// Cap ground whose warmest month never rises above freezing with glacier ice, so ice fields
+    /// look permanent rather than like a winter that has not melted yet.
+    /// </summary>
+    public bool GlacierIce { get; set; } = true;
+
+    /// <summary>
+    /// Overrides how much of the climate the model drives: "full" for model temperature, rainfall
+    /// and vegetation with no latitude bands, "off" to leave Vintage Story's climate alone. Empty
+    /// uses the world's own setting, which also defaults to full.
+    /// </summary>
+    public string ClimateMode { get; set; } = "";
 
     /// <summary>
     /// Overrides the world's "Diffusion resolution" setting. Zero uses the world setting. Values
@@ -245,13 +355,13 @@ public class WorldGenConfig
 
     internal void Sanitize()
     {
-        HeightMode = (HeightMode ?? "auto").Trim().ToLowerInvariant();
-        if (HeightMode != "manual") HeightMode = "auto";
+        HeightMode = (HeightMode ?? "isotropic").Trim().ToLowerInvariant();
+        if (HeightMode is not ("auto" or "manual")) HeightMode = "isotropic";
 
         TargetPeakFillFraction = Clamp(TargetPeakFillFraction, 0.2f, 1f, 0.92f);
         PeakQuantile = Clamp(PeakQuantile, 0.5f, 1f, 0.995f);
-        CalibrationRadiusBlocks = (int)Clamp(CalibrationRadiusBlocks, 512f, 4_000_000f, 16384f);
-        CalibrationProbes = (int)Clamp(CalibrationProbes, 0f, 64f, 4f);
+        CalibrationRadiusBlocks = (int)Clamp(CalibrationRadiusBlocks, 512f, 4_000_000f, 4096f);
+        CalibrationProbes = (int)Clamp(CalibrationProbes, 0f, 64f, 8f);
         ReliefFactor = Clamp(ReliefFactor, 1f, 5f, 1.6f);
 
         MinAutoExaggeration = Clamp(MinAutoExaggeration, 0.05f, 100f, 1f);
@@ -263,14 +373,27 @@ public class WorldGenConfig
         LinearKneeFraction = Clamp(LinearKneeFraction, 0.1f, 0.99f, 0.85f);
         OceanDepthFraction = Clamp(OceanDepthFraction, 0.05f, 1f, 0.9f);
         SlopeDetailStrength = Clamp(SlopeDetailStrength, 0f, 8f, 1f);
-        RegionalClimateStrength = Clamp(RegionalClimateStrength, 0f, 1f, 0.6f);
 
-        RainfallCurve = (RainfallCurve ?? "distribution").Trim().ToLowerInvariant();
-        if (RainfallCurve != "absolute") RainfallCurve = "distribution";
-        RainfallMedianMm = Clamp(RainfallMedianMm, 10f, 10000f, 490f);
-        RainfallSpread = Clamp(RainfallSpread, 0.1f, 4f, 0.95f);
-        RainfallAbsoluteScaleMm = Clamp(RainfallAbsoluteScaleMm, 50f, 20000f, 1200f);
+        SpawnSearchProbes = (int)Clamp(SpawnSearchProbes, 1f, 512f, 64f);
+        SpawnSearchStrideBlocks = (int)Clamp(SpawnSearchStrideBlocks, 256f, 1_000_000f, 8192f);
+
+        RainfallBasis = (RainfallBasis ?? "moisture").Trim().ToLowerInvariant();
+        if (RainfallBasis != "precipitation") RainfallBasis = "moisture";
+        MoistureMedian = Clamp(MoistureMedian, 0.01f, 100f, 0.62f);
+        MoistureSpread = Clamp(MoistureSpread, 0.1f, 4f, 1f);
+        RainfallMedianMm = Clamp(RainfallMedianMm, 10f, 10000f, 540f);
+        RainfallSpread = Clamp(RainfallSpread, 0.1f, 4f, 0.8f);
         RainfallBias = Clamp(RainfallBias, -1f, 1f, 0.05f);
+        TemperatureOffsetC = Clamp(TemperatureOffsetC, -40f, 40f, 0f);
+
+        ForestDensityMultiplier = Clamp(ForestDensityMultiplier, 0f, 4f, 1f);
+        ShrubDensityMultiplier = Clamp(ShrubDensityMultiplier, 0f, 4f, 1f);
+
+        SeasonalTemperatureStrength = Clamp(SeasonalTemperatureStrength, 0f, 4f, 1f);
+        SeasonalPrecipitationStrength = Clamp(SeasonalPrecipitationStrength, 0f, 4f, 1f);
+
+        ClimateMode = (ClimateMode ?? "").Trim().ToLowerInvariant();
+        if (ClimateMode is not ("full" or "off")) ClimateMode = "";
 
         if (ScaleOverride != 0) ScaleOverride = (int)Clamp(ScaleOverride, 1f, 16f, 0f);
         if (VerticalExaggerationOverride != 0f)

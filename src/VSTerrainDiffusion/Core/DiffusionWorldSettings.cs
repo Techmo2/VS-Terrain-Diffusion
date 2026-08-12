@@ -10,12 +10,14 @@ namespace VSTerrainDiffusion.Core;
 /// Per-world settings plus the metre-to-block mapping that follows from them.
 ///
 /// The model works in real-world units: one native pixel is 30 m across and elevations run from
-/// roughly -10 000 m to +9 000 m. Reproducing that at true scale in a world a few hundred blocks
-/// tall gives terrain that is technically correct and looks like moorland, because real landscapes
-/// are vastly wider than they are tall. So by default the vertical gain is calibrated per world
-/// (see <see cref="ApplyCalibration"/>) so that the tall peaks of the region around spawn reach
-/// most of the way to the world ceiling, and only the rare extremes beyond that are compressed by
-/// a soft knee.
+/// roughly -10 000 m to +9 000 m.
+///
+/// By default a block is exactly as tall as it is wide, matching the Terrain Diffusion Minecraft
+/// mod: the landscape is at true scale in every direction, so a 2 000 m massif really is 2 000 m
+/// of climbing and slopes have the grade they would have in the real world. That needs a world with
+/// the height to hold it, which is why the mod asks for a tall world rather than squashing terrain
+/// into a short one. Where that is not an option, <c>heightMode: "auto"</c> measures the region's
+/// peaks and stretches the terrain to fill whatever height there is instead.
 /// </summary>
 public sealed class DiffusionWorldSettings
 {
@@ -100,7 +102,7 @@ public sealed class DiffusionWorldSettings
 
         int scale = shaping.ScaleOverride != 0
             ? shaping.ScaleOverride
-            : GameMathClamp(ReadWorldConfig(worldConfig, "diffusionScale", "4").ToInt(4), 1, 16);
+            : GameMathClamp(ReadWorldConfig(worldConfig, "diffusionScale", "2").ToInt(2), 1, 16);
 
         float exaggeration = shaping.VerticalExaggerationOverride != 0f
             ? shaping.VerticalExaggerationOverride
@@ -111,7 +113,9 @@ public sealed class DiffusionWorldSettings
             _shaping = shaping,
             NativeResolution = nativeResolution,
             Enabled = ReadWorldConfig(worldConfig, "diffusionTerrain", "true").ToBool(true),
-            ClimateMode = ParseClimateMode(ReadWorldConfig(worldConfig, "diffusionClimate", "regional")),
+            ClimateMode = ParseClimateMode(shaping.ClimateMode.Length > 0
+                ? shaping.ClimateMode
+                : ReadWorldConfig(worldConfig, "diffusionClimate", "full")),
             Scale = scale,
             VerticalExaggeration = exaggeration,
             SlopeDetailStrength = shaping.SlopeDetailStrength,
@@ -136,7 +140,7 @@ public sealed class DiffusionWorldSettings
             _shaping = DiffusionConfig.Instance.WorldGen,
             NativeResolution = nativeResolution,
             Enabled = true,
-            ClimateMode = WorldGen.DiffusionClimateMode.Regional,
+            ClimateMode = WorldGen.DiffusionClimateMode.Full,
             Scale = scale,
             VerticalExaggeration = 1f,
             SlopeDetailStrength = DiffusionConfig.Instance.WorldGen.SlopeDetailStrength,
@@ -173,13 +177,18 @@ public sealed class DiffusionWorldSettings
 
     private static WorldGen.DiffusionClimateMode ParseClimateMode(string value) => value switch
     {
-        "off" or "false" => WorldGen.DiffusionClimateMode.Off,
-        "full" => WorldGen.DiffusionClimateMode.Full,
-        _ => WorldGen.DiffusionClimateMode.Regional
+        "off" or "false" or "vanilla" => WorldGen.DiffusionClimateMode.Off,
+        _ => WorldGen.DiffusionClimateMode.Full
     };
 
     /// <summary>True when the world wants its terrain height measured before generating anything.</summary>
     public bool WantsCalibration => _shaping.HeightMode == "auto" && !IsCalibrated;
+
+    /// <summary>
+    /// True when a block is exactly as tall as it is wide — the Minecraft mod's geometry, and the
+    /// case in which vanilla's altitude-keyed surface rules already line up with the terrain.
+    /// </summary>
+    public bool IsIsotropic => Math.Abs(EffectiveExaggeration - 1f) < 0.001f;
 
     /// <summary>Half-width in blocks of the area calibration should survey.</summary>
     public int CalibrationRadiusBlocks => _shaping.CalibrationRadiusBlocks;
@@ -219,7 +228,7 @@ public sealed class DiffusionWorldSettings
             CalibrationClamped = allowed < wanted;
             _baseBlocksPerMeter = allowed * trueScaleBlocksPerMeter;
         }
-        else if (_shaping.HeightMode == "manual" && _shaping.MetersPerBlockVertical > 0f)
+        else if (_shaping.MetersPerBlockVertical > 0f && _shaping.HeightMode == "manual")
         {
             _baseBlocksPerMeter = 1f / _shaping.MetersPerBlockVertical;
             CalibrationClamped = false;
@@ -286,13 +295,32 @@ public sealed class DiffusionWorldSettings
     /// <summary>Highest block Y the mapping can ever return, used for sanity logging.</summary>
     public int MaxBlockY => ElevationToBlockY(ModelMaxElevationMeters);
 
+    /// <summary>
+    /// Highest ground at <paramref name="temperatureC"/> whose temperature the climate map can still
+    /// represent, in metres.
+    ///
+    /// Vintage Story stores temperature as one byte and re-applies its own lapse rate — a flat
+    /// 1/1.5 units per block — whenever it reads the map, so the value written has to carry that
+    /// correction on top of the real temperature. The two together can overflow the byte: at a fine
+    /// vertical scale there are a great many blocks between sea level and a summit, and warm high
+    /// ground runs out of scale and reads colder than the model said. Above this elevation the
+    /// error grows by 0.235 C per block.
+    /// </summary>
+    public float TemperatureCeilingMeters(float temperatureC)
+    {
+        float blocks = 1.5f * (255f - (temperatureC + 20f) * 4.25f);
+        return blocks <= 0f ? 0f : blocks * MetersPerBlockVertical;
+    }
+
     /// <summary>Human-readable summary for the log and the /terraindiffusion command.</summary>
     public string Describe()
     {
         string height = IsCalibrated
             ? $"height calibrated to a {CalibratedPeakMeters:0} m peak ({EffectiveExaggeration:0.##}x, " +
               $"{MetersPerBlockVertical:0.##} m/block vertical)"
-            : $"height {EffectiveExaggeration:0.##}x ({MetersPerBlockVertical:0.##} m/block vertical)";
+            : IsIsotropic
+                ? "height true to scale (1 block = 1 block in every direction)"
+                : $"height {EffectiveExaggeration:0.##}x ({MetersPerBlockVertical:0.##} m/block vertical)";
 
         return $"scale {Scale} ({MetersPerBlock:0.##} m/block), {height}, " +
                $"sea level {SeaLevel}, world height {MapSizeY}, headroom {HeadroomBlocks} blocks " +
@@ -304,7 +332,7 @@ public sealed class DiffusionWorldSettings
     /// without calibration: a calibrated world fits its own terrain by construction, and when it
     /// cannot, <see cref="CalibrationClamped"/> says so instead.
     /// </summary>
-    public bool IsWorldTooShort => !IsCalibrated && LinearRangeMeters < 2500f;
+    public bool IsWorldTooShort => !IsCalibrated && LinearRangeMeters < 3200f;
 
     /// <summary>World height that would keep terrain up to 5000 m perfectly to scale.</summary>
     public int RecommendedMapSizeY

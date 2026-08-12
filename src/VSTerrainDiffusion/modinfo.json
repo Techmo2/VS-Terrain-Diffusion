@@ -3,9 +3,9 @@
   "modid": "vsterraindiffusion",
   "name": "VS Terrain Diffusion",
   "authors": [ "Techmo" ],
-  "description": "Replaces Vintage Story's terrain generator with the Terrain Diffusion neural heightmap model, producing real-world-like continents, mountain ranges and climate.",
-  "version": "0.1.0",
-  "side": "server",
+  "description": "Replaces Vintage Story's terrain and climate generation with the Terrain Diffusion neural model, producing real-world-like continents, mountain ranges, biomes and seasons. Install on clients too to keep their weather in step with the server; not required.",
+  "version": "0.2.0",
+  "side": "universal",
   "requiredOnClient": false,
   "website": "https://github.com/Techmo2/VS-Terrain-Diffusion",
   "dependencies": {
