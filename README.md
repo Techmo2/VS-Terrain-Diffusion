@@ -9,53 +9,76 @@ the heightmap, a real climatology to go with it.
 The mod uses all of it. Terrain, temperature, rainfall, forests, the surface you walk on and the
 seasons all come from the same model, so the landscape and the life on it agree with each other.
 
-## Requirements
+**Contents** — [Installing](#installing) · [Creating a world](#creating-a-world) ·
+[What the mod changes](#what-the-mod-changes) · [How it works](#how-it-works) ·
+[Commands](#commands) · [Configuration](#configuration) · [Building](#building)
+
+## Installing
+
+Drop the release zip in your `Mods` folder. The models download themselves on first launch.
 
 - Vintage Story 1.22 (targets .NET 10, same as the game)
-- A running Terrain Diffusion API — see below
-- A GPU is strongly recommended for the model. CPU inference works but is roughly 10-20x slower.
+- **~2.2 GB of disk** for the model files, fetched once
+- **~3 GB of RAM** while the models are resident
+- A GPU is strongly recommended. CPU inference works but is roughly 10-20x slower.
 
-### Terrain source
+| Platform          | Device used automatically | Notes                                            |
+| ----------------- | ------------------------- | ------------------------------------------------ |
+| Linux + NVIDIA    | CUDA                      | Needs a system CUDA 12 or 13 runtime and cuDNN 9  |
+| Windows           | DirectML                  | Any modern GPU; no extra install                  |
+| macOS (Apple)     | CoreML                    | No extra install                                  |
+| Anything else     | CPU                       | Works, but slow                                   |
 
-The mod can get terrain from either of two places, set by `terrain.source` in the mod config.
+The matching ONNX Runtime native library is downloaded on first use too (a few MB for
+CPU/DirectML, ~300 MB for CUDA). Nothing has to be installed by hand.
 
-**`"api"` (default)** talks to the reference implementation's HTTP server:
+The mod is server-side. Clients may install it as well, which keeps their weather display in step
+with what the server is simulating, but it is not required and vanilla clients can join normally.
 
-```bash
-git clone https://github.com/xandergos/terrain-diffusion
-cd terrain-diffusion
-pip install -r requirements.txt
-python -m terrain_diffusion api xandergos/terrain-diffusion-30m --port 8000
-```
+## Creating a world
 
-It must be run from the repository root (some of its data paths are relative), and the first launch
-downloads the model from Hugging Face. Point `terrain.url` at it; the default is
-`http://localhost:8000`. If the model you serve is not the 30 m one, set
-`terrain.nativeResolutionMeters` to match — the API does not report it.
+| Setting                  | Default | What it does                                                         |
+| ------------------------ | ------- | -------------------------------------------------------------------- |
+| Terrain diffusion        | on      | Turn off to fall back to vanilla terrain, keeping the mod installed.  |
+| Diffusion resolution     | 15 m    | Real-world metres per block, horizontally *and* vertically.           |
+| Vertical exaggeration    | 1x      | Multiplies terrain height. 1x is true scale.                          |
+| Diffusion climate        | on      | Whether the model drives climate as well as terrain.                  |
+| **World height**         | —       | **Set this to 1024.** Vanilla's default is far too short for real mountains. |
 
-**`"local"`** runs an ONNX port of the same pipeline inside the server process, so no Python service
-is needed. It downloads ~2.3 GB of model files once, needs ~3 GB of RAM while resident, and picks
-CUDA, DirectML, CoreML or CPU automatically. It also exposes the model's coarse map, which makes the
-spawn search and the terrain height survey far quicker than the API's full-detail probing.
+A dedicated server has no world-creation screen, so the first four are also reachable from the mod
+config as `worldGen.climateMode`, `worldGen.scaleOverride` and
+`worldGen.verticalExaggerationOverride`.
 
-## World settings
+## What the mod changes
 
-| Setting                  | Default | What it does                                                     |
-| ------------------------ | ------- | ---------------------------------------------------------------- |
-| Terrain diffusion        | on      | Turn off to fall back to vanilla terrain, keeping the mod installed. |
-| Diffusion resolution     | 15 m    | Real-world metres per block, horizontally *and* vertically.       |
-| Vertical exaggeration    | 1x      | Multiplies terrain height. 1x is true scale.                      |
-| Diffusion climate        | on      | Whether the model drives climate as well as terrain.              |
+- **Terrain pass** — vanilla `GenTerra`'s chunk handler is swapped for one that fills columns from
+  the diffusion heightmap.
+- **Climate map** — temperature and rainfall from the model, pre-compensated for the altitude
+  corrections the game applies on read. The geologic activity byte is still vanilla's.
+- **Forest and shrub maps** — replaced with cover derived from the model's moisture and growing
+  season.
+- **Ocean map** — fed from the model's elevation, so systems that avoid the sea agree with the
+  coastline that actually got generated.
+- **Surface pass** — after vanilla's block layers, two things it cannot know about are fixed up:
+  slopes too steep to hold soil are scoured back to bare rock (vanilla upholsters cliff faces in
+  eight blocks of dirt), and ground whose warmest month never rises above freezing is capped with
+  glacier ice.
+- **Seasons** — temperature and rainfall swing through the year on the model's seasonality instead
+  of latitude.
+- **Spawn** — the model decides where continents are, so the world centre is as likely to be open
+  ocean as land. The spawn is searched for and moved to solid ground.
+- **Surface block layer altitudes** — only when terrain is vertically exaggerated. Vanilla's bands
+  are fractions of world height (bare mountain gravel above 0.66 of it) and assume a block is about
+  a metre; at true scale that already lines up, so nothing is touched.
 
-These are also settable from the mod config (`worldGen.scaleOverride`,
-`worldGen.verticalExaggerationOverride`, `worldGen.climateMode`), which is the only way to reach
-them on a dedicated server.
+Everything else — rock strata, ores, caves, rivers, ponds, ruins, traders, temporal stability — is
+vanilla, running unchanged on top.
 
-**Set the world height to 1024 when creating the world.** See below for why.
+## How it works
 
-## Scale, and why the world needs to be tall
+### Scale, and why the world needs to be tall
 
-By default a block is exactly as tall as it is wide — the same geometry the Terrain Diffusion
+By default a block is exactly as tall as it is wide, the same geometry the Terrain Diffusion
 Minecraft mod uses. At the default resolution one block is 15 m in every direction, so a 2 000 m
 massif is 133 blocks of climbing spread over however many kilometres the model gave it, and every
 slope has the grade it would have in the real world.
@@ -70,22 +93,22 @@ level*:
 | 512          | 289              | up to ~3 700 m             |
 | 1024         | 578              | up to ~7 400 m             |
 
-Above that the mapping bends over towards the ceiling instead of clipping — the curve is
-`u / (1 + u)`, which has slope 1 where it joins the linear part so there is no crease, and never
-quite flattens, so summits round off rather than shearing into mesas. It still costs you the
-faithfulness of the highest ground, so a taller world is better.
+Past that the mapping bends towards the ceiling rather than clipping. The curve is `u / (1 + u)`,
+which has slope 1 where it meets the linear part so there is no crease, and never quite flattens,
+so summits round off instead of shearing into mesas. It still costs you the faithfulness of the
+highest ground, which is why a taller world is better.
 
 If a tall world is not an option, set `worldGen.heightMode` to `"auto"`. That surveys the region
 around spawn once, measures how tall its peaks actually get, and stretches the metre-to-block
 mapping so they reach near the ceiling of whatever world you have. The landscape then uses the full
-height available at the cost of being vertically exaggerated — a gentle region might come out at
-4x real relief. The measurement depends only on the seed and is stored in the save.
+height available at the cost of exaggerated relief — a gentle region might come out at 4x. The
+measurement depends only on the seed and is stored in the save.
 
-Lower resolutions are also *cheaper*, because one model pixel covers more blocks. 30 m per block
-crosses a continent in an afternoon; 5 m per block makes the same mountain four kilometres of
-walking, and needs a very tall world to stay true to scale.
+Resolution is also the main performance dial, because a coarser one covers more blocks per model
+pixel. At 30 m per block you cross a continent in an afternoon; at 5 m per block the same mountain
+is four kilometres of walking, and only a very tall world keeps it true to scale.
 
-## Climate
+### Climate
 
 The model predicts four WorldClim bioclimatic variables everywhere it predicts elevation:
 
@@ -144,35 +167,11 @@ real wet and dry season instead of drizzling evenly all year.
 
 The two seasonality channels have nowhere to live in Vintage Story's packed climate integer, whose
 interpolator only touches the low three bytes, so they are stored as map region mod data. That is
-saved with the region and — unlike the region's other maps — sent to clients, so **a client with
-this mod installed swings its weather in step with the server**. The mod is not required on
-clients; a vanilla client just keeps vanilla's seasons for display purposes.
+saved with the region and, unlike the region's other maps, sent to clients — which is why a client
+running the mod swings its weather in step with the server, and a vanilla client falls back to
+vanilla's seasons for display.
 
 `/tdiff season <x> <z>` walks a year at a position and prints what it does.
-
-## What the mod changes
-
-- **Terrain pass** — vanilla `GenTerra`'s chunk handler is swapped for one that fills columns from
-  the diffusion heightmap. Rock strata, caves, block layers, ponds, vegetation, structures and
-  everything else in later passes run unchanged on top of it.
-- **Climate map** — temperature and rainfall from the model, pre-compensated for the altitude
-  corrections the game applies on read. The geologic activity byte is still vanilla's.
-- **Forest and shrub maps** — replaced with model-driven cover.
-- **Ocean map** — fed from the model's elevation, so systems that avoid the sea agree with the
-  coastline that actually got generated.
-- **Surface pass** — after vanilla's block layers, two things it cannot know about are fixed up:
-  slopes too steep to hold soil are scoured back to bare rock (vanilla upholsters cliff faces in
-  eight blocks of dirt), and ground whose warmest month never rises above freezing is capped with
-  glacier ice.
-- **Seasons** — temperature and rainfall swing through the year on the model's seasonality instead
-  of latitude.
-- **Spawn** — the model decides where continents are, so the world centre is as likely to be open
-  ocean as land. The spawn is searched for and moved to solid ground.
-- **Surface block layer altitudes** — only when terrain is vertically exaggerated. Vanilla's bands
-  are fractions of world height (bare mountain gravel above 0.66 of it) and assume a block is about
-  a metre; at true scale that already lines up, so nothing is touched.
-
-Everything else — rock strata, ores, caves, rivers, ruins, traders, temporal stability — is vanilla.
 
 ## Commands
 
@@ -180,7 +179,7 @@ Everything else — rock strata, ores, caves, rivers, ruins, traders, temporal s
 
 | Subcommand           | What it shows                                                          |
 | -------------------- | ---------------------------------------------------------------------- |
-| `status`             | Terrain source, world scaling, tiles generated and average tile time.   |
+| `status`             | Device, world scaling, tiles generated and average tile time.           |
 | `here`               | The model's elevation, slope, full bioclimate and derived cover at you. |
 | `season <x> <z>`     | The seasonal temperature and rainfall cycle at a position.              |
 | `column <x> <z>`     | What actually got generated in a column, next to what the model said.   |
@@ -189,63 +188,74 @@ Everything else — rock strata, ores, caves, rivers, ruins, traders, temporal s
 
 `ModConfig/vsterraindiffusion.json`, written on first start.
 
-### Terrain source
+### Inference
 
-| Key                            | Default                  | Meaning                                        |
-| ------------------------------ | ------------------------ | ---------------------------------------------- |
-| `terrain.source`               | `"api"`                  | `"api"` or `"local"`.                           |
-| `terrain.url`                  | `http://localhost:8000`  | Base URL of the Terrain Diffusion API.          |
-| `terrain.timeoutSeconds`       | 600                      | Per-request timeout. Uncached regions are slow. |
-| `terrain.retries`              | 2                        | Retries before a chunk gives up.                |
-| `terrain.nativeResolutionMeters` | 30                     | Metres per model pixel; must match the model.   |
-
-### Machine
+Machine settings. Safe to change at any time.
 
 | Key                          | Default | Meaning                                                |
 | ---------------------------- | ------- | ------------------------------------------------------ |
-| `inferenceDevice`            | `auto`  | `auto`, `cpu`, `cuda`, `directml`, `coreml`. Local only. |
-| `offloadModels`              | true    | One model on the GPU at a time. Local only.             |
-| `tileCacheMegabytes`         | 256     | Decoded tensor windows per pipeline stage. Local only.  |
+| `inferenceDevice`            | `auto`  | `auto`, `cpu`, `cuda`, `directml`, `coreml`.            |
+| `offloadModels`              | true    | One model on the GPU at a time. Costs a little time per stage switch, saves ~1 GB of VRAM. |
+| `validateModelHashes`        | true    | Verify SHA-256 of existing model files on startup.      |
+| `downloadRuntime`            | true    | Fetch the ONNX Runtime native library automatically.    |
+| `tileCacheMegabytes`         | 256     | Decoded tensor windows per pipeline stage.              |
 | `terrainTileCacheMegabytes`  | 256     | Finished terrain tiles. Raise if you see thrash warnings. |
-| `terrainTileSizeBlocks`      | 256     | Blocks per model query. Multiple of 32.                 |
+| `terrainTileSizeBlocks`      | 256     | Blocks generated per model invocation. Multiple of 32.  |
 | `verboseInference`           | false   | Log every model window.                                 |
 
 ### World generation
 
-Changing anything here after a world has been explored will make new chunks disagree with old ones.
+These decide what the world looks like. Changing one after a world has been explored will make new
+chunks disagree with old ones.
+
+**Height and scale**
 
 | Key                              | Default       | Meaning                                                     |
 | -------------------------------- | ------------- | ----------------------------------------------------------- |
 | `heightMode`                     | `"isotropic"` | `"isotropic"`, `"manual"` or `"auto"`.                        |
 | `metersPerBlockVertical`         | 0             | manual: metres of elevation per block.                        |
-| `targetPeakFillFraction`         | 0.92          | auto: how much of the height the region's peaks should fill.  |
-| `peakQuantile`                   | 0.995         | auto: which elevation quantile counts as a peak.              |
-| `calibrationRadiusBlocks`        | 4096          | auto: half-width of the surveyed area.                        |
-| `calibrationProbes`              | 8             | auto: full-detail probes. Over the API these are the survey.  |
-| `minAutoExaggeration` / `max`    | 1 / 20        | auto: bounds on the chosen vertical gain.                     |
 | `linearKneeFraction`             | 0.85          | Fraction of the height mapped perfectly linearly.             |
 | `oceanDepthFraction`             | 0.9           | How much of the space below sea level the abyss reaches.      |
 | `slopeDetailStrength`            | 1             | Perlin roughness added to sloped ground.                      |
-| `spawnSearchProbes`              | 64            | Probes the spawn search may run. API only.                    |
-| `spawnSearchStrideBlocks`        | 8192          | Roughly how far apart those probes sit. API only.             |
+| `scaleOverride`                  | 0             | Overrides the resolution. Values above 6 are only settable here. |
+| `verticalExaggerationOverride`   | 0             | Overrides the height multiplier.                              |
+
+**Height calibration** (`heightMode: "auto"` only)
+
+| Key                              | Default       | Meaning                                                     |
+| -------------------------------- | ------------- | ----------------------------------------------------------- |
+| `targetPeakFillFraction`         | 0.92          | How much of the available height the region's peaks fill.     |
+| `peakQuantile`                   | 0.995         | Which elevation quantile counts as a peak.                    |
+| `calibrationRadiusBlocks`        | 4096          | Half-width of the surveyed area.                              |
+| `calibrationProbes`              | 8             | Full-detail probes on the tallest surveyed cells.             |
+| `reliefFactor`                   | 1.6           | Assumed peak-to-survey ratio when probing is off or fails.    |
+| `minAutoExaggeration` / `maxAutoExaggeration` | 1 / 20 | Bounds on the vertical gain calibration may choose.  |
+
+**Climate and vegetation**
+
+| Key                              | Default       | Meaning                                                     |
+| -------------------------------- | ------------- | ----------------------------------------------------------- |
+| `climateMode`                    | `""`          | `"full"` or `"off"` to override the world setting.            |
 | `rainfallBasis`                  | `"moisture"`  | `"moisture"` (aridity) or `"precipitation"` (raw mm).         |
 | `moistureMedian` / `moistureSpread` | 0.62 / 1.0 | Log-normal fit to the model's tree moisture over land.        |
 | `rainfallMedianMm` / `rainfallSpread` | 540 / 0.8 | The same for raw precipitation.                              |
-| `rainfallBias`                   | 0.05          | Added to rainfall; see below. Raise for a lusher world.       |
+| `rainfallBias`                   | 0.05          | Added to rainfall. Raise for a lusher world; see below.       |
 | `temperatureOffsetC`             | 0             | Degrees added to every model temperature.                     |
 | `forestDensityMultiplier`        | 1             | Scales forest cover.                                          |
 | `shrubDensityMultiplier`         | 1             | Scales shrub cover.                                           |
+
+**Seasons and surface**
+
+| Key                              | Default       | Meaning                                                     |
+| -------------------------------- | ------------- | ----------------------------------------------------------- |
 | `seasonalTemperature`            | true          | Swing temperature on the model's seasonality.                 |
 | `seasonalTemperatureStrength`    | 1             | Multiplies that swing. 0 gives a world with no seasons.       |
 | `seasonalPrecipitation`          | true          | Swing rainfall on the model's precipitation seasonality.      |
 | `seasonalPrecipitationStrength`  | 1             | Multiplies the wet/dry contrast.                              |
 | `seasonHemispheres`              | false         | Opposite seasons north and south of the map's middle.         |
-| `rescaleBlockLayerAltitudes`     | true          | Stretch vanilla's altitude bands. No effect at true scale.    |
 | `bareSlopeRock`                  | true          | Leave slopes too steep for soil as bare rock.                 |
 | `glacierIce`                     | true          | Cap permanently frozen ground with glacier ice.               |
-| `climateMode`                    | `""`          | `"full"` or `"off"` to override the world setting.            |
-| `scaleOverride`                  | 0             | Overrides the resolution. Values above 6 are only settable here. |
-| `verticalExaggerationOverride`   | 0             | Overrides the height multiplier.                              |
+| `rescaleBlockLayerAltitudes`     | true          | Stretch vanilla's altitude bands. No effect at true scale.    |
 
 `rainfallBias` exists because the climate map cancels Vintage Story's own "higher ground is wetter"
 bonus — the model already does orography properly — while vanilla's biome thresholds were tuned with

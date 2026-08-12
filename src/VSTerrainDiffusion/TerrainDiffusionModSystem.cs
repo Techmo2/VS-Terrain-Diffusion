@@ -51,17 +51,18 @@ public class TerrainDiffusionModSystem : ModSystem
         RegisterCommands(api);
 
         // Model download and session creation are slow, so start them the moment the server boots
-        // rather than when the first chunk is requested. The HTTP API needs none of this.
-        if (DiffusionConfig.Instance.Terrain.Source == "local") PipelineModels.BeginLoad(api.Logger);
+        // rather than when the first chunk is requested.
+        PipelineModels.BeginLoad(api.Logger);
     }
 
     private void OnInitWorldGenerator()
     {
-        DiffusionConfig config = DiffusionConfig.Instance;
-
         try
         {
-            _settings = DiffusionWorldSettings.FromWorld(_api, config.Terrain.NativeResolutionMeters);
+            // The model config lives with the model files, which may not have been downloaded yet.
+            // This first read only decides whether the world wants the mod at all, so the shipped
+            // model's pixel size will do; the real one is read back once the models are loaded.
+            _settings = DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.DefaultNativeResolution);
         }
         catch (Exception e)
         {
@@ -76,15 +77,15 @@ public class TerrainDiffusionModSystem : ModSystem
             return;
         }
 
-        ITerrainSource source = CreateSource(config);
-        if (source == null) return;
+        PipelineModels models = LoadModels();
+        if (models == null) return;
 
-        // The native resolution is only known for certain once the source exists, and the whole
+        // Re-read the native resolution now that the model config is on disk: the whole
         // metre-to-block mapping hangs off it.
-        _settings = DiffusionWorldSettings.FromWorld(_api, source.NativeResolutionMeters);
+        _settings = DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.Instance.NativeResolution);
 
         _provider?.Dispose();
-        _provider = new TerrainDiffusionProvider(source, _settings, _api.Logger);
+        _provider = new TerrainDiffusionProvider(WorldSeed(), models, _settings, _api.Logger);
 
         // The spawn search can run before the height mapping is settled - and it should, because
         // the survey wants to be centred on where people will actually play.
@@ -100,7 +101,7 @@ public class TerrainDiffusionModSystem : ModSystem
         InstallTerrainHandler();
         InstallMapLayers();
 
-        if (config.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic)
+        if (DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic)
         {
             try
             {
@@ -116,45 +117,29 @@ public class TerrainDiffusionModSystem : ModSystem
         RecordSpawn(spawn);
 
         _api.Logger.Notification("[{0}] Active: {1}", DiffusionPaths.ModId, _settings.Describe());
-        _api.Logger.Notification("[{0}] Terrain source: {1}", DiffusionPaths.ModId, source.Describe());
         WarnAboutWorldHeight();
     }
 
-    /// <summary>Builds the configured terrain source, or null if it is not usable.</summary>
-    private ITerrainSource CreateSource(DiffusionConfig config)
+    /// <summary>Loads the ONNX models, or null if they could not be had.</summary>
+    private PipelineModels LoadModels()
     {
-        if (config.Terrain.Source == "local")
+        try
         {
-            try
+            if (!PipelineModels.IsReady && !ModelAssetManager.AllPresent())
             {
-                if (!PipelineModels.IsReady && !ModelAssetManager.AllPresent())
-                {
-                    _api.Logger.Notification(
-                        "[{0}] Downloading the Terrain Diffusion models ({1}). This happens once; the server will finish starting when it completes.",
-                        DiffusionPaths.ModId, ModelAssetManager.HumanBytes(ModelAssetManager.TotalBytes));
-                }
-                return new LocalTerrainSource(WorldSeed(), PipelineModels.Await());
+                _api.Logger.Notification(
+                    "[{0}] Downloading the Terrain Diffusion models ({1}). This happens once; the server will finish starting when it completes.",
+                    DiffusionPaths.ModId, ModelAssetManager.HumanBytes(ModelAssetManager.TotalBytes));
             }
-            catch (Exception e)
-            {
-                _api.Logger.Error(
-                    "[{0}] Terrain Diffusion is enabled for this world but the models could not be loaded, so vanilla terrain will be generated instead. {1}",
-                    DiffusionPaths.ModId, e.InnerException?.Message ?? e.Message);
-                return null;
-            }
+            return PipelineModels.Await();
         }
-
-        var api = new TerrainApiSource(config.Terrain, _api.Logger);
-        string problem = api.CheckHealth();
-        if (problem == null) return api;
-
-        api.Dispose();
-        _api.Logger.Error(
-            "[{0}] No Terrain Diffusion API at {1} ({2}), so vanilla terrain will be generated instead. " +
-            "Start one with 'python -m terrain_diffusion api', or set terrain.source to \"local\" in the mod " +
-            "config to use the models bundled with this mod.",
-            DiffusionPaths.ModId, config.Terrain.Url, problem);
-        return null;
+        catch (Exception e)
+        {
+            _api.Logger.Error(
+                "[{0}] Terrain Diffusion is enabled for this world but the models could not be loaded, so vanilla terrain will be generated instead. {1}",
+                DiffusionPaths.ModId, e.InnerException?.Message ?? e.Message);
+            return null;
+        }
     }
 
     private void WarnAboutWorldHeight()
@@ -507,17 +492,14 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         if (_provider == null)
         {
-            string reason = PipelineModels.LoadFailure?.Message ?? "the terrain source could not be reached";
+            string reason = PipelineModels.LoadFailure?.Message ?? "still loading";
             return Vintagestory.API.Common.TextCommandResult.Success("Terrain Diffusion is not running: " + reason);
         }
 
-        string device = DiffusionConfig.Instance.Terrain.Source == "local"
-            ? $"\nDevice: {OnnxRuntimeBootstrap.Provider} (ONNX Runtime {OnnxRuntimeBootstrap.OnnxRuntimeVersion})"
-            : "";
-
         return Vintagestory.API.Common.TextCommandResult.Success(
             $"Terrain Diffusion active.\n" +
-            $"Source: {_provider.Source.Describe()}{device}\n" +
+            $"Device: {OnnxRuntimeBootstrap.Provider} (ONNX Runtime {OnnxRuntimeBootstrap.OnnxRuntimeVersion}), " +
+            $"{WorldPipelineModelConfig.Instance.NativeResolution:0.##} m per model pixel\n" +
             $"World: {_settings.Describe()}\n" +
             $"Tiles generated: {_provider.TilesGenerated} ({_provider.TileSize}x{_provider.TileSize} blocks, " +
             $"{_provider.AverageTileMillis} ms average)");

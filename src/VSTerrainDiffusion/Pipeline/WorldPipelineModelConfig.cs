@@ -12,6 +12,12 @@ public sealed class WorldPipelineModelConfig
 {
     private const string ConfigFileName = "world_pipeline_config.json";
 
+    /// <summary>
+    /// Pixel size of the model this mod ships against, for the one caller that needs a number
+    /// before the model files have been downloaded.
+    /// </summary>
+    public const float DefaultNativeResolution = 30f;
+
     private static WorldPipelineModelConfig _instance;
     private static readonly object Gate = new();
 
@@ -22,7 +28,7 @@ public sealed class WorldPipelineModelConfig
     [JsonProperty("frequency_mult")] public float[] FrequencyMult;
     [JsonProperty("histogram_raw")] public float[] HistogramRaw;
     [JsonProperty("latent_compression")] public int LatentCompression = 8;
-    [JsonProperty("native_resolution")] public float NativeResolution = 30f;
+    [JsonProperty("native_resolution")] public float NativeResolution = DefaultNativeResolution;
     [JsonProperty("residual_mean")] public float ResidualMean;
     [JsonProperty("residual_std")] public float ResidualStd = 0.7f;
     [JsonProperty("drop_water_pct")] public float DropWaterPct;

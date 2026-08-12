@@ -4,20 +4,16 @@ namespace VSTerrainDiffusion.Core;
 
 /// <summary>
 /// Machine-level settings, stored in <c>ModConfig/vsterraindiffusion.json</c>. Everything except
-/// <see cref="WorldGen"/> describes the hardware and services the server has available, not the
-/// world itself.
+/// <see cref="WorldGen"/> describes the hardware the server is running on, not the world itself.
 /// </summary>
 public class DiffusionConfig
 {
-    /// <summary>Where terrain comes from; see <see cref="TerrainApiConfig"/>.</summary>
-    public TerrainApiConfig Terrain { get; set; } = new();
-
-    /// <summary>"auto", "cpu", "cuda", "directml" or "coreml". Only used by the embedded pipeline.</summary>
+    /// <summary>"auto", "cpu", "cuda", "directml" or "coreml".</summary>
     public string InferenceDevice { get; set; } = "auto";
 
     /// <summary>
     /// Keep only one model resident on the GPU at a time. Costs a little time per stage switch but
-    /// keeps peak VRAM near 1.5 GB instead of ~2.5 GB. Only used by the embedded pipeline.
+    /// keeps peak VRAM near 1.5 GB instead of ~2.5 GB.
     /// </summary>
     public bool OffloadModels { get; set; } = true;
 
@@ -82,7 +78,6 @@ public class DiffusionConfig
 
     private void Sanitize()
     {
-        (Terrain ??= new TerrainApiConfig()).Sanitize();
         (WorldGen ??= new WorldGenConfig()).Sanitize();
 
         if (TileCacheMegabytes < 32) TileCacheMegabytes = 32;
@@ -110,54 +105,6 @@ public class DiffusionConfig
                 InferenceDevice = "auto";
                 break;
         }
-    }
-}
-
-/// <summary>Which Terrain Diffusion backend to talk to, and how.</summary>
-public class TerrainApiConfig
-{
-    /// <summary>
-    /// "api" queries a running Terrain Diffusion HTTP server (<c>python -m terrain_diffusion api</c>),
-    /// which is the reference implementation and the only one that stays current with the upstream
-    /// models. "local" runs the ONNX pipeline bundled with this mod instead, so no Python service
-    /// is needed; it exposes the model's coarse map, which makes the spawn search and the terrain
-    /// height survey much faster.
-    /// </summary>
-    public string Source { get; set; } = "api";
-
-    /// <summary>Base URL of the Terrain Diffusion API.</summary>
-    public string Url { get; set; } = "http://localhost:8000";
-
-    /// <summary>
-    /// Seconds to wait for one terrain request. The API generates uncached regions synchronously
-    /// and queues everything behind them, so this needs to be generous.
-    /// </summary>
-    public int TimeoutSeconds { get; set; } = 600;
-
-    /// <summary>How many times to retry a failed terrain request before giving up on the chunk.</summary>
-    public int Retries { get; set; } = 2;
-
-    /// <summary>
-    /// Metres of ground per native model pixel. The API does not report this, so it has to match
-    /// the model the server was started with: 30 for terrain-diffusion-30m, 90 for the 90m model.
-    /// </summary>
-    public float NativeResolutionMeters { get; set; } = 30f;
-
-    internal void Sanitize()
-    {
-        Source = (Source ?? "api").Trim().ToLowerInvariant();
-        if (Source is not ("api" or "local")) Source = "api";
-
-        Url = string.IsNullOrWhiteSpace(Url) ? "http://localhost:8000" : Url.Trim();
-
-        if (TimeoutSeconds < 5) TimeoutSeconds = 5;
-        if (TimeoutSeconds > 3600) TimeoutSeconds = 3600;
-
-        if (Retries < 0) Retries = 0;
-        if (Retries > 10) Retries = 10;
-
-        if (!(NativeResolutionMeters > 0f) || float.IsInfinity(NativeResolutionMeters))
-            NativeResolutionMeters = 30f;
     }
 }
 
@@ -205,9 +152,10 @@ public class WorldGenConfig
     public int CalibrationRadiusBlocks { get; set; } = 4096;
 
     /// <summary>
-    /// auto: how many full-detail probes to run. Each costs about as much as one terrain tile, once
-    /// per world. With the HTTP API these are the whole survey, so raising it buys accuracy at the
-    /// price of a slower first start.
+    /// auto: how many full-detail probes to run on the tallest surveyed cells. The survey itself
+    /// only sees terrain averaged over several kilometres, so peaks need measuring at full
+    /// resolution. Each probe costs about as much as one terrain tile, once per world. Zero skips
+    /// probing and falls back to <see cref="ReliefFactor"/>.
     /// </summary>
     public int CalibrationProbes { get; set; } = 8;
 
@@ -237,12 +185,6 @@ public class WorldGenConfig
     /// native pixel, so hillsides need roughness of their own; raise for craggier slopes.
     /// </summary>
     public float SlopeDetailStrength { get; set; } = 1f;
-
-    /// <summary>How many probes the spawn search may run before giving up. HTTP API only.</summary>
-    public int SpawnSearchProbes { get; set; } = 64;
-
-    /// <summary>Roughly how far apart, in blocks, consecutive spawn probes sit. HTTP API only.</summary>
-    public int SpawnSearchStrideBlocks { get; set; } = 8192;
 
     /// <summary>
     /// What the game's 0-255 rainfall byte is built from. "moisture" uses the model's aridity —
@@ -373,9 +315,6 @@ public class WorldGenConfig
         LinearKneeFraction = Clamp(LinearKneeFraction, 0.1f, 0.99f, 0.85f);
         OceanDepthFraction = Clamp(OceanDepthFraction, 0.05f, 1f, 0.9f);
         SlopeDetailStrength = Clamp(SlopeDetailStrength, 0f, 8f, 1f);
-
-        SpawnSearchProbes = (int)Clamp(SpawnSearchProbes, 1f, 512f, 64f);
-        SpawnSearchStrideBlocks = (int)Clamp(SpawnSearchStrideBlocks, 256f, 1_000_000f, 8192f);
 
         RainfallBasis = (RainfallBasis ?? "moisture").Trim().ToLowerInvariant();
         if (RainfallBasis != "precipitation") RainfallBasis = "moisture";

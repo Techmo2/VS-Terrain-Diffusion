@@ -69,9 +69,8 @@ public sealed class TerrainTile
 }
 
 /// <summary>
-/// Turns a terrain source into block-space terrain tiles, with an LRU cache and a single worker at
-/// a time so that neither the ONNX tile store nor the single-threaded HTTP API is touched
-/// concurrently.
+/// Turns the diffusion pipeline into block-space terrain tiles, with an LRU cache and a single
+/// inference thread so that the pipeline's tile store is never touched concurrently.
 /// </summary>
 public sealed class TerrainDiffusionProvider : IDisposable
 {
@@ -90,8 +89,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         return fnl;
     }
 
-    private readonly ITerrainSource _source;
-    private readonly ICoarseMapSource _coarse;
+    private readonly WorldPipeline _pipeline;
     private readonly DiffusionWorldSettings _settings;
     private readonly ILogger _logger;
     private readonly int _tileSize;
@@ -105,16 +103,15 @@ public sealed class TerrainDiffusionProvider : IDisposable
     private readonly object _evictionLock = new();
     private long _accessClock;
 
-    /// <summary>Serialises all model work; neither terrain source is thread safe.</summary>
+    /// <summary>Serialises all pipeline work; the tile store is not thread safe.</summary>
     private readonly SemaphoreSlim _inferenceGate = new(1, 1);
 
     private long _tilesGenerated;
     private long _totalInferenceMillis;
 
-    public TerrainDiffusionProvider(ITerrainSource source, DiffusionWorldSettings settings, ILogger logger)
+    public TerrainDiffusionProvider(ulong seed, PipelineModels models, DiffusionWorldSettings settings, ILogger logger)
     {
-        _source = source;
-        _coarse = source as ICoarseMapSource;
+        _pipeline = new WorldPipeline(seed, models);
         _settings = settings;
         _logger = logger;
         _tileSize = DiffusionConfig.Instance.TerrainTileSizeBlocks;
@@ -126,8 +123,6 @@ public sealed class TerrainDiffusionProvider : IDisposable
     }
 
     public DiffusionWorldSettings Settings => _settings;
-
-    public ITerrainSource Source => _source;
 
     public long TilesGenerated => Interlocked.Read(ref _tilesGenerated);
 
@@ -299,8 +294,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
         if (scale <= 1)
         {
-            TerrainSample padded = _source.Fetch(blockZ - 1, blockX - 1, blockZ + size + 1, blockX + size + 1, false);
-            TerrainSample sample = _source.Fetch(blockZ, blockX, blockZ + size, blockX + size, true);
+            WorldPipeline.Sample padded = _pipeline.Get(blockZ - 1, blockX - 1, blockZ + size + 1, blockX + size + 1, false);
+            WorldPipeline.Sample sample = _pipeline.Get(blockZ, blockX, blockZ + size, blockX + size, true);
             elevation = sample.Elevation;
             elevationPadded = padded.Elevation;
             climate = sample.Climate;
@@ -318,7 +313,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
             int i2p = i2n + 2, j2p = j2n + 2;
             int nh = i2p - i1p, nw = j2p - j1p;
 
-            TerrainSample sample = _source.Fetch(i1p, j1p, i2p, j2p, true);
+            WorldPipeline.Sample sample = _pipeline.Get(i1p, j1p, i2p, j2p, true);
 
             float[][] elevationNative = To2D(sample.Elevation, nh, nw);
             float[][] elevationUp = LaplacianUtils.BilinearResize(elevationNative, nh * scale, nw * scale);
@@ -334,7 +329,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
         float[] slope = SobelSlope(elevationPadded, size, size, pixelSizeMeters);
         AddSlopeNoise(elevation, slope, blockX, blockZ, size, pixelSizeMeters,
-            _source.NativeResolutionMeters, _settings.SlopeDetailStrength);
+            WorldPipelineModelConfig.Instance.NativeResolution, _settings.SlopeDetailStrength);
 
         int plane = size * size;
         for (int index = 0; index < plane; index++)
@@ -425,10 +420,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
     {
         if (climateNative == null) return null;
 
-        const int channels = TerrainSample.ClimateChannels;
-        var result = new float[channels * h * w];
+        var result = new float[ClimateChannels * h * w];
         int nativePlane = nh * nw;
-        for (int ch = 0; ch < channels; ch++)
+        for (int ch = 0; ch < ClimateChannels; ch++)
         {
             var native = new float[nh][];
             for (int r = 0; r < nh; r++)
@@ -459,6 +453,17 @@ public sealed class TerrainDiffusionProvider : IDisposable
         return output;
     }
 
+    /// <summary>
+    /// Climate planes the tile keeps: mean temperature, temperature seasonality, precipitation and
+    /// precipitation seasonality. The pipeline emits a fifth, the local lapse rate, which is only
+    /// meaningful when blending the model's temperature against a latitude baseline — something the
+    /// mod no longer does.
+    /// </summary>
+    private const int ClimateChannels = 4;
+
+    /// <summary>Native pixels along one edge of a coarse cell.</summary>
+    private static int CoarseCellNativePixels => 32 * WorldPipelineModelConfig.Instance.LatentCompression;
+
     /// <summary>Below this many land cells the coarse survey is too small to say anything useful.</summary>
     private const int MinimumSurveyedLandCells = 16;
 
@@ -467,23 +472,16 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
     /// <summary>
     /// Measures how tall the terrain around spawn actually gets, so the metre-to-block mapping can
-    /// be fitted to it. With the embedded pipeline this is a cheap coarse survey followed by a few
-    /// full-detail probes; over the HTTP API, where the coarse map is not exposed, it is probes
-    /// only, which is slower and sees less ground.
+    /// be fitted to it: a cheap survey of the coarse stage over the play area, then a handful of
+    /// full-detail probes on its tallest cells to recover the summits that kilometre-scale
+    /// averaging hides.
     /// </summary>
     /// <param name="centerBlockX">World block X the survey is centred on, usually the spawn.</param>
     /// <param name="centerBlockZ">World block Z the survey is centred on.</param>
     /// <returns>Peak elevation in metres, or null if the survey failed or found no land.</returns>
     public float? MeasurePeakElevation(int centerBlockX, int centerBlockZ)
     {
-        return _coarse != null
-            ? MeasurePeakFromCoarseMap(centerBlockX, centerBlockZ)
-            : MeasurePeakFromProbes(centerBlockX, centerBlockZ);
-    }
-
-    private float? MeasurePeakFromCoarseMap(int centerBlockX, int centerBlockZ)
-    {
-        int coarseToNative = _coarse.CoarseCellNativePixels;
+        int coarseToNative = CoarseCellNativePixels;
         int scale = Math.Max(1, _settings.Scale);
         int nativeRadius = Math.Max(coarseToNative, _settings.CalibrationRadiusBlocks / scale);
 
@@ -573,53 +571,6 @@ public sealed class TerrainDiffusionProvider : IDisposable
     }
 
     /// <summary>
-    /// Peak elevation from a scatter of full-detail probes, for sources with no coarse map. The
-    /// probes are laid out on a ring around the centre so they sample different massifs, and the
-    /// quantile is taken over their pooled land pixels.
-    /// </summary>
-    private float? MeasurePeakFromProbes(int centerBlockX, int centerBlockZ)
-    {
-        int scale = Math.Max(1, _settings.Scale);
-        int centerI = (centerBlockZ - _settings.OriginBlockZ) / scale;
-        int centerJ = (centerBlockX - _settings.OriginBlockX) / scale;
-        int radius = Math.Max(ProbeNativePixels, _settings.CalibrationRadiusBlocks / scale);
-        int probeCount = Math.Max(1, _settings.CalibrationProbes);
-
-        var pool = new List<float>(probeCount * ProbeNativePixels * ProbeNativePixels);
-        int probesRun = 0;
-
-        for (int i = 0; i < probeCount; i++)
-        {
-            // A golden-angle spiral spreads the probes evenly over the disc rather than leaving
-            // the middle or the rim oversampled.
-            double angle = i * 2.39996;
-            double distance = radius * Math.Sqrt((i + 0.5) / probeCount);
-            float[] probe = Probe(
-                centerI + (int)(distance * Math.Sin(angle)),
-                centerJ + (int)(distance * Math.Cos(angle)),
-                ProbeNativePixels);
-            if (probe == null) continue;
-
-            probesRun++;
-            foreach (float meters in probe) if (meters > 0f) pool.Add(meters);
-        }
-
-        if (pool.Count == 0)
-        {
-            _logger.Warning("[{0}] Terrain height probes found no land near ({1}, {2}); leaving terrain at true scale.",
-                DiffusionPaths.ModId, centerBlockX, centerBlockZ);
-            return null;
-        }
-
-        pool.Sort((a, b) => b.CompareTo(a));
-        float peak = pool[TailIndex(pool.Count, 1f - _settings.PeakQuantile)];
-        _logger.Notification(
-            "[{0}] Terrain height survey: {1} full-detail probes over {2} blocks put the {3:0.###} quantile peak at {4:0} m.",
-            DiffusionPaths.ModId, probesRun, 2 * radius * scale, _settings.PeakQuantile, peak);
-        return peak;
-    }
-
-    /// <summary>
     /// Reads the coarse map over a box of cells and returns the land ones with their mean
     /// elevation in metres, or null if the coarse stage could not be sampled at all.
     /// </summary>
@@ -629,7 +580,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         _inferenceGate.Wait();
         try
         {
-            coarse = _coarse.GetCoarseSlice(centerI - half, centerJ - half, centerI + half, centerJ + half);
+            coarse = _pipeline.GetCoarseSlice(centerI - half, centerJ - half, centerI + half, centerJ + half);
         }
         catch (Exception e)
         {
@@ -662,7 +613,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         return cells;
     }
 
-    /// <summary>Runs the source over a small window, or null if it could not be sampled.</summary>
+    /// <summary>Runs the full pipeline over a small window, or null if it could not be sampled.</summary>
     private float[] Probe(int centerI, int centerJ, int windowPixels)
     {
         int half = windowPixels / 2;
@@ -670,7 +621,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         _inferenceGate.Wait();
         try
         {
-            return _source.Fetch(centerI - half, centerJ - half, centerI + half, centerJ + half, false).Elevation;
+            return _pipeline.Get(centerI - half, centerJ - half, centerI + half, centerJ + half, false).Elevation;
         }
         catch (Exception e)
         {
@@ -697,12 +648,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
     /// open ocean.
     /// </summary>
     /// <returns>World block coordinates of a land column, or null if the search found only sea.</returns>
-    public (int X, int Z)? FindLandNearOrigin()
-        => _coarse != null ? FindLandFromCoarseMap() : FindLandFromProbes();
-
-    private (int X, int Z)? FindLandFromCoarseMap(int initialSizeCoarsePixels = 16, int maxSizeCoarsePixels = 128)
+    public (int X, int Z)? FindLandNearOrigin(int initialSizeCoarsePixels = 16, int maxSizeCoarsePixels = 128)
     {
-        int coarseToNative = _coarse.CoarseCellNativePixels;
+        int coarseToNative = CoarseCellNativePixels;
 
         for (int boxSize = initialSizeCoarsePixels; boxSize <= maxSizeCoarsePixels; boxSize += 8)
         {
@@ -712,7 +660,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
             _inferenceGate.Wait();
             try
             {
-                coarse = _coarse.GetCoarseSlice(-half, -half, half, half);
+                coarse = _pipeline.GetCoarseSlice(-half, -half, half, half);
             }
             catch (Exception e)
             {
@@ -763,48 +711,6 @@ public sealed class TerrainDiffusionProvider : IDisposable
         return null;
     }
 
-    /// <summary>Native pixels along one edge of a spawn probe: a few hundred metres of ground.</summary>
-    private const int SpawnProbePixels = 16;
-
-    /// <summary>
-    /// Spawn search for sources with no coarse map. Probes a golden-angle spiral outwards from the
-    /// origin and takes the first window that is land all the way across, which keeps the spawn off
-    /// beaches and islets without needing a continental view.
-    /// </summary>
-    private (int X, int Z)? FindLandFromProbes()
-    {
-        int budget = Math.Max(1, DiffusionConfig.Instance.WorldGen.SpawnSearchProbes);
-        int strideNative = Math.Max(SpawnProbePixels, DiffusionConfig.Instance.WorldGen.SpawnSearchStrideBlocks
-                                                      / Math.Max(1, _settings.Scale));
-
-        for (int i = 0; i < budget; i++)
-        {
-            double angle = i * 2.39996;
-            double distance = strideNative * Math.Sqrt(i);
-            int centerI = (int)(distance * Math.Sin(angle));
-            int centerJ = (int)(distance * Math.Cos(angle));
-
-            float[] probe = Probe(centerI, centerJ, SpawnProbePixels);
-            if (probe == null) continue;
-
-            float lowest = float.MaxValue;
-            double total = 0;
-            foreach (float meters in probe)
-            {
-                if (meters < lowest) lowest = meters;
-                total += meters;
-            }
-
-            // Land everywhere in the window, and not just a sandbar poking above the waves.
-            if (lowest <= 0f || total / probe.Length < 20.0) continue;
-
-            _logger.Notification("[{0}] Spawn search found land after {1} probes.", DiffusionPaths.ModId, i + 1);
-            return ToWorldBlocks(centerI, centerJ);
-        }
-
-        return null;
-    }
-
     /// <summary>Converts a native model pixel to the world block column it covers.</summary>
     private (int X, int Z) ToWorldBlocks(int nativeI, int nativeJ) =>
         (nativeJ * _settings.Scale + _settings.OriginBlockX,
@@ -837,7 +743,6 @@ public sealed class TerrainDiffusionProvider : IDisposable
     public void Dispose()
     {
         _tiles.Clear();
-        _source.Dispose();
         _inferenceGate.Dispose();
     }
 }
