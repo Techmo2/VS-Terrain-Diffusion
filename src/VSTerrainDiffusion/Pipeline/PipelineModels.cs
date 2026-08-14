@@ -56,6 +56,13 @@ public sealed class PipelineModels : IDisposable
             ModelAssetManager.EnsureAssetsReady(logger);
             OnnxRuntimeBootstrap.Initialize(logger);
 
+            // Closes off whichever of the two downloads announced itself. Nothing is said at all on
+            // a server that already had its files.
+            if (ModelAssetManager.Downloaded || OnnxRuntimeBootstrap.Downloaded)
+            {
+                LoadingNotice.Post(logger, "Downloads complete.");
+            }
+
             var models = new PipelineModels
             {
                 Coarse = new OnnxModel(ModelAssetManager.ResolveAssetPath("coarse_model.onnx"), "coarse", logger),

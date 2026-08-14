@@ -277,6 +277,30 @@ public class WorldGenConfig
     public bool GlacierIce { get; set; } = true;
 
     /// <summary>
+    /// Honour the world's "Starting climate" setting by placing the spawn on land whose modelled
+    /// temperature falls in the chosen band. Vanilla implements that setting by shifting its own
+    /// climate map, which cannot be done to a model that predicts a specific world, so the player
+    /// moves instead. Turn off to spawn on the nearest land whatever its climate.
+    /// </summary>
+    public bool StartingClimateSearch { get; set; } = true;
+
+    /// <summary>
+    /// How far from the middle of the map the starting climate search may look, in blocks. The
+    /// search stops as soon as it finds matching land, so this is only the point at which it gives
+    /// up and takes the closest temperature it saw. Surveying the full radius costs a few seconds
+    /// once per world.
+    /// </summary>
+    public int StartingClimateSearchRadiusBlocks { get; set; } = 65536;
+
+    /// <summary>
+    /// How much more reluctant the search is to move the spawn north or south than east or west.
+    /// Distance along Z decides day length in Vintage Story, and past the world's polar distance it
+    /// buys midnight sun and polar night; distance along X costs nothing at all. At 2 the search
+    /// will go twice as far east for the same climate before it heads for a pole.
+    /// </summary>
+    public float StartingClimateNorthSouthCost { get; set; } = 2f;
+
+    /// <summary>
     /// Overrides how much of the climate the model drives: "full" for model temperature, rainfall
     /// and vegetation with no latitude bands, "off" to leave Vintage Story's climate alone. Empty
     /// uses the world's own setting, which also defaults to full.
@@ -330,6 +354,9 @@ public class WorldGenConfig
 
         SeasonalTemperatureStrength = Clamp(SeasonalTemperatureStrength, 0f, 4f, 1f);
         SeasonalPrecipitationStrength = Clamp(SeasonalPrecipitationStrength, 0f, 4f, 1f);
+
+        StartingClimateSearchRadiusBlocks = (int)Clamp(StartingClimateSearchRadiusBlocks, 512f, 4_000_000f, 65536f);
+        StartingClimateNorthSouthCost = Clamp(StartingClimateNorthSouthCost, 1f, 100f, 2f);
 
         ClimateMode = (ClimateMode ?? "").Trim().ToLowerInvariant();
         if (ClimateMode is not ("full" or "off")) ClimateMode = "";

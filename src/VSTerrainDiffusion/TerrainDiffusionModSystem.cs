@@ -89,7 +89,7 @@ public class TerrainDiffusionModSystem : ModSystem
 
         // The spawn search can run before the height mapping is settled - and it should, because
         // the survey wants to be centred on where people will actually play.
-        (int X, int Z)? spawn = FindSpawn();
+        TerrainDiffusionProvider.SpawnCandidate? spawn = FindSpawn();
 
         // Must happen before anything asks for a tile: it decides the metre-to-block mapping every
         // surface height is computed from.
@@ -125,11 +125,12 @@ public class TerrainDiffusionModSystem : ModSystem
     {
         try
         {
-            if (!PipelineModels.IsReady && !ModelAssetManager.AllPresent())
+            // The download itself announces its own progress from the loading thread; this is only
+            // the point at which world generation actually has to stop and wait for it.
+            if (!PipelineModels.IsReady)
             {
-                _api.Logger.Notification(
-                    "[{0}] Downloading the Terrain Diffusion models ({1}). This happens once; the server will finish starting when it completes.",
-                    DiffusionPaths.ModId, ModelAssetManager.HumanBytes(ModelAssetManager.TotalBytes));
+                _api.Logger.Notification("[{0}] Waiting for the models before generating terrain.",
+                    DiffusionPaths.ModId);
             }
             return PipelineModels.Await();
         }
@@ -223,7 +224,7 @@ public class TerrainDiffusionModSystem : ModSystem
     /// only depends on the seed, but paying for it on every server start would be wasteful, and a
     /// stored value also keeps old chunks and new chunks agreeing if the survey settings change.
     /// </summary>
-    private void CalibrateTerrainHeight((int X, int Z)? center)
+    private void CalibrateTerrainHeight(TerrainDiffusionProvider.SpawnCandidate? center)
     {
         if (!_settings.WantsCalibration) return;
 
@@ -256,7 +257,7 @@ public class TerrainDiffusionModSystem : ModSystem
         try
         {
             peak = _provider.MeasurePeakElevation(
-                center?.X ?? _settings.OriginBlockX, center?.Z ?? _settings.OriginBlockZ);
+                center?.BlockX ?? _settings.OriginBlockX, center?.BlockZ ?? _settings.OriginBlockZ);
         }
         catch (Exception e)
         {
@@ -363,12 +364,11 @@ public class TerrainDiffusionModSystem : ModSystem
         }
 
         ITreeAttribute worldConfig = _api.WorldManager.SaveGame.WorldConfiguration;
-        float temperatureMultiplier = worldConfig.GetString("globalTemperature", "1").ToFloat(1f);
         float rainfallMultiplier = worldConfig.GetString("globalPrecipitation", "1").ToFloat(1f);
 
         genMaps.climateGen = new DiffusionClimateMapLayer(
             _api.WorldManager.Seed + 1, vanillaClimate, _provider,
-            _api.World.SeaLevel, temperatureMultiplier, rainfallMultiplier);
+            _api.World.SeaLevel, _settings.TemperatureMultiplier, rainfallMultiplier);
 
         WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
         genMaps.forestGen = new DiffusionForestMapLayer(
@@ -386,17 +386,20 @@ public class TerrainDiffusionModSystem : ModSystem
     /// It runs on every start, not just new saves, so that an existing world's height survey stays
     /// centred where it always was.
     /// </summary>
-    private (int X, int Z)? FindSpawn()
+    private TerrainDiffusionProvider.SpawnCandidate? FindSpawn()
     {
         try
         {
-            (int X, int Z)? land = _provider.FindLandNearOrigin();
+            TerrainDiffusionProvider.SpawnCandidate? land = _provider.FindSpawn();
             if (land == null)
             {
                 _api.Logger.Warning(
                     "[{0}] No land found near the world centre; the spawn point was left where it was. " +
                     "Try a different seed if you start in the ocean.", DiffusionPaths.ModId);
+                return null;
             }
+
+            ReportStartingClimate(land.Value);
             return land;
         }
         catch (Exception e)
@@ -408,22 +411,51 @@ public class TerrainDiffusionModSystem : ModSystem
     }
 
     /// <summary>
+    /// Says whether the world's starting climate was honoured. A miss is worth a warning rather
+    /// than silence: the player picked a climate and is not getting it, and the reason - no land
+    /// that cold or that hot anywhere within reach of this seed's map centre - is not something
+    /// they could work out from where they wake up.
+    /// </summary>
+    private void ReportStartingClimate(TerrainDiffusionProvider.SpawnCandidate spawn)
+    {
+        StartingClimate? band = _settings.StartingClimate;
+        if (band == null) return;
+
+        int distance = (int)Math.Sqrt(
+            Math.Pow(spawn.BlockX - _settings.OriginBlockX, 2) + Math.Pow(spawn.BlockZ - _settings.OriginBlockZ, 2));
+
+        if (spawn.MatchedClimate)
+        {
+            _api.Logger.Notification(
+                "[{0}] Starting climate {1}: spawning at about {2:0.#} C, {3} blocks from the map centre.",
+                DiffusionPaths.ModId, band.Value, spawn.TemperatureC, distance);
+            return;
+        }
+
+        _api.Logger.Warning(
+            "[{0}] No {1} land within range of the map centre on this seed; spawning at about {2:0.#} C instead, " +
+            "{3} blocks out. Raise worldGen.startingClimateSearchRadiusBlocks to look further, or try another seed.",
+            DiffusionPaths.ModId, band.Value, spawn.TemperatureC, distance);
+    }
+
+    /// <summary>
     /// Turns the spawn column found earlier into a position to apply once the save game's spawn
     /// record exists. Only for brand new saves, so an existing world never has its spawn moved.
     /// </summary>
-    private void RecordSpawn((int X, int Z)? land)
+    private void RecordSpawn(TerrainDiffusionProvider.SpawnCandidate? land)
     {
         if (land == null || !_api.WorldManager.SaveGame.IsNew) return;
 
         try
         {
-            TerrainTile tile = _provider.GetTileAt(land.Value.X, land.Value.Z);
-            int index = tile.Index(land.Value.X - tile.BlockX, land.Value.Z - tile.BlockZ);
+            int blockX = land.Value.BlockX, blockZ = land.Value.BlockZ;
+            TerrainTile tile = _provider.GetTileAt(blockX, blockZ);
+            int index = tile.Index(blockX - tile.BlockX, blockZ - tile.BlockZ);
             int y = Math.Min(_settings.MapSizeY - 2, tile.SurfaceY[index] + 1);
 
-            _pendingSpawn = (land.Value.X, y, land.Value.Z);
+            _pendingSpawn = (blockX, y, blockZ);
             _api.Logger.Notification("[{0}] Found a land spawn at ({1}, {2}, {3}), {4} m above sea level.",
-                DiffusionPaths.ModId, land.Value.X, y, land.Value.Z, (int)tile.ElevationMeters[index]);
+                DiffusionPaths.ModId, blockX, y, blockZ, (int)tile.ElevationMeters[index]);
         }
         catch (Exception e)
         {

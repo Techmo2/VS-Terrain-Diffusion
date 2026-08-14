@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
@@ -75,25 +74,25 @@ public static class ModelAssetManager
 
     public static string OfflineHelpUrl => $"https://huggingface.co/{RepositorySlug}/tree/{Revision}";
 
-    /// <summary>Total download size when nothing is cached yet.</summary>
-    public static long TotalBytes
-    {
-        get
-        {
-            long total = 0;
-            foreach (Asset asset in Assets) total += asset.SizeBytes;
-            return total;
-        }
-    }
+    /// <summary>Whether this run actually fetched anything, rather than finding it all on disk.</summary>
+    public static bool Downloaded { get; private set; }
 
-    /// <summary>Whether every asset is already present locally (no hash check).</summary>
-    public static bool AllPresent()
+    /// <summary>
+    /// How many bytes still have to come down the wire, judged on file presence and size alone -
+    /// the same test <see cref="EnsureSingleAsset"/> applies before it resorts to hashing, so the
+    /// figure quoted to the player matches what actually gets fetched. Only a file that passes the
+    /// size check and then fails its hash escapes the count.
+    /// </summary>
+    private static long PendingBytes(bool validate)
     {
+        long pending = 0;
         foreach (Asset asset in Assets)
         {
-            if (!File.Exists(DiffusionPaths.ResolveAsset(asset.FileName))) return false;
+            string path = DiffusionPaths.ResolveAsset(asset.FileName);
+            if (!File.Exists(path)) pending += asset.SizeBytes;
+            else if (validate && new FileInfo(path).Length != asset.SizeBytes) pending += asset.SizeBytes;
         }
-        return true;
+        return pending;
     }
 
     /// <summary>
@@ -111,11 +110,24 @@ public static class ModelAssetManager
             bool validate = DiffusionConfig.Instance.ValidateModelHashes;
 
             logger.Notification("[{0}] Preparing model assets in {1}", DiffusionPaths.ModId, DiffusionPaths.ModelDirectory);
+
+            // The player is staring at a loading screen while this runs, so say what the wait is
+            // for and how big it is. Once only, at the start: the log file has the detail.
+            long pending = PendingBytes(validate);
+            if (pending > 0)
+            {
+                Downloaded = true;
+                LoadingNotice.Post(logger,
+                    "Downloading the world generation models ({0}). This happens once, and the world will " +
+                    "finish loading when it completes.", HumanBytes(pending));
+            }
+
             foreach (Asset asset in Assets)
             {
                 cancellation.ThrowIfCancellationRequested();
                 EnsureSingleAsset(asset, logger, validate, cancellation);
             }
+
             logger.Notification("[{0}] Model assets ready", DiffusionPaths.ModId);
             _ready = true;
         }
@@ -123,7 +135,8 @@ public static class ModelAssetManager
 
     public static string ResolveAssetPath(string fileName) => DiffusionPaths.ResolveAsset(fileName);
 
-    private static void EnsureSingleAsset(Asset asset, ILogger logger, bool validate, CancellationToken cancellation)
+    private static void EnsureSingleAsset(Asset asset, ILogger logger, bool validate,
+                                          CancellationToken cancellation)
     {
         string path = DiffusionPaths.ResolveAsset(asset.FileName);
         if (File.Exists(path))
@@ -139,14 +152,23 @@ public static class ModelAssetManager
                 logger.Notification("[{0}] Verified '{1}'", DiffusionPaths.ModId, asset.FileName);
                 return;
             }
+
+            // A file that looked complete but failed its hash was not in the pending total, so the
+            // player was told nothing was being fetched. Rare, and worth its own line.
             logger.Warning("[{0}] '{1}' failed verification, re-downloading", DiffusionPaths.ModId, asset.FileName);
+            if (info.Length == asset.SizeBytes && !Downloaded)
+            {
+                Downloaded = true;
+                LoadingNotice.Post(logger, "Re-downloading a world generation model that did not verify.");
+            }
             File.Delete(path);
         }
 
         DownloadAndVerify(asset, path, logger, cancellation);
     }
 
-    private static void DownloadAndVerify(Asset asset, string path, ILogger logger, CancellationToken cancellation)
+    private static void DownloadAndVerify(Asset asset, string path, ILogger logger,
+                                          CancellationToken cancellation)
     {
         string tempPath = path + ".tmp";
         try
@@ -169,7 +191,7 @@ public static class ModelAssetManager
             using (Stream netStream = response.Content.ReadAsStreamAsync(cancellation).GetAwaiter().GetResult())
             using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
             {
-                CopyWithProgress(netStream, fileStream, asset, logger, cancellation);
+                Copy(netStream, fileStream, cancellation);
             }
 
             var info = new FileInfo(tempPath);
@@ -206,28 +228,15 @@ public static class ModelAssetManager
         }
     }
 
-    private static void CopyWithProgress(Stream source, Stream destination, Asset asset,
-                                         ILogger logger, CancellationToken cancellation)
+    private static void Copy(Stream source, Stream destination, CancellationToken cancellation)
     {
         var buffer = new byte[1 << 20];
-        long copied = 0;
-        long nextReport = asset.SizeBytes / 10;
-        var stopwatch = Stopwatch.StartNew();
-        bool report = asset.SizeBytes >= 100L * 1024 * 1024;
 
         int read;
         while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
         {
             cancellation.ThrowIfCancellationRequested();
             destination.Write(buffer, 0, read);
-            copied += read;
-            if (report && copied >= nextReport)
-            {
-                double mbPerSecond = copied / 1024.0 / 1024.0 / Math.Max(0.001, stopwatch.Elapsed.TotalSeconds);
-                logger.Notification("[{0}] {1}: {2} / {3} ({4:0.0} MB/s)",
-                    DiffusionPaths.ModId, asset.FileName, HumanBytes(copied), HumanBytes(asset.SizeBytes), mbPerSecond);
-                nextReport += asset.SizeBytes / 10;
-            }
         }
     }
 

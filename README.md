@@ -35,6 +35,10 @@ CPU/DirectML, ~300 MB for CUDA). Nothing has to be installed by hand.
 The mod is server-side. Clients may install it as well, which keeps their weather display in step
 with what the server is simulating, but it is not required and vanilla clients can join normally.
 
+The first world you create sits on the loading screen until all of that has been fetched, which on
+a slow connection is a long time. The loading screen says when each download starts and when they
+are finished, so you can tell the wait apart from a hang. `Logs/server-main.log` has the detail.
+
 ## Creating a world
 
 | Setting                  | Default | What it does                                                         |
@@ -44,10 +48,35 @@ with what the server is simulating, but it is not required and vanilla clients c
 | Vertical exaggeration    | 1x      | Multiplies terrain height. 1x is true scale.                          |
 | Diffusion climate        | on      | Whether the model drives climate as well as terrain.                  |
 | **World height**         | —       | **Set this to 1024.** Vanilla's default is far too short for real mountains. |
+| Starting climate         | temperate | Honoured by moving the spawn, not the climate. See below.           |
 
 A dedicated server has no world-creation screen, so the first four are also reachable from the mod
 config as `worldGen.climateMode`, `worldGen.scaleOverride` and
 `worldGen.verticalExaggerationOverride`.
+
+### Starting climate
+
+Vanilla honours this setting by sliding its climate map until the band you picked covers the map
+centre. That is not available here — the model predicts one particular world rather than a climate
+field that can be shifted about — so the mod moves you instead: it surveys outward from the map
+centre for land whose temperature is in the band, then checks the likeliest spots at full
+resolution and puts the spawn on a column that really is in range.
+
+The five bands mean what they do in an unmodded world: hot 28–32 °C, warm 19–23 °C, temperate
+6–14 °C, cool −5 to 1 °C, icy −15 to −10 °C, measured as annual mean temperature.
+
+- Cold bands are usually found on high ground rather than far north, so "icy" is often a nearby
+  mountain rather than a long trek.
+- The search prefers to travel east or west. Distance along Z is what sets latitude in Vintage
+  Story, and past the world's polar distance that buys midnight sun and polar night; distance along
+  X costs nothing.
+- It stops at the first matching land it finds, so most worlds spawn within a few thousand blocks
+  and the search takes under a second. A band that is genuinely far away — usually "hot" — can take
+  a few seconds on a GPU and rather longer on CPU inference.
+- If the seed has no such land within range, the server log says so and you spawn at the closest
+  temperature it found.
+
+Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whatever its climate.
 
 ## What the mod changes
 
@@ -66,7 +95,8 @@ config as `worldGen.climateMode`, `worldGen.scaleOverride` and
 - **Seasons** — temperature and rainfall swing through the year on the model's seasonality instead
   of latitude.
 - **Spawn** — the model decides where continents are, so the world centre is as likely to be open
-  ocean as land. The spawn is searched for and moved to solid ground.
+  ocean as land. The spawn is searched for and moved to solid ground, in the world's chosen
+  starting climate.
 - **Surface block layer altitudes** — only when terrain is vertically exaggerated. Vanilla's bands
   are fractions of world height (bare mountain gravel above 0.66 of it) and assume a block is about
   a metre; at true scale that already lines up, so nothing is touched.
@@ -186,7 +216,9 @@ vanilla's seasons for display.
 
 ## Configuration
 
-`ModConfig/vsterraindiffusion.json`, written on first start.
+`ModConfig/vsterraindiffusion.json`, written on first start. [CONFIG.md](CONFIG.md) is the whole
+default file with a comment on every field and the range each one is clamped to; the tables below
+are the short version.
 
 ### Inference
 
@@ -256,6 +288,14 @@ chunks disagree with old ones.
 | `bareSlopeRock`                  | true          | Leave slopes too steep for soil as bare rock.                 |
 | `glacierIce`                     | true          | Cap permanently frozen ground with glacier ice.               |
 | `rescaleBlockLayerAltitudes`     | true          | Stretch vanilla's altitude bands. No effect at true scale.    |
+
+**Spawn**
+
+| Key                                  | Default | Meaning                                                    |
+| ------------------------------------ | ------- | ----------------------------------------------------------- |
+| `startingClimateSearch`              | true    | Put the spawn in the world's chosen starting climate.         |
+| `startingClimateSearchRadiusBlocks`  | 65536   | How far to look before settling for the closest temperature.  |
+| `startingClimateNorthSouthCost`      | 2       | How much more reluctantly the search moves along Z than X.    |
 
 `rainfallBias` exists because the climate map cancels Vintage Story's own "higher ground is wetter"
 bonus — the model already does orography properly — while vanilla's biome thresholds were tuned with

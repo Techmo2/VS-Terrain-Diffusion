@@ -49,6 +49,30 @@ public sealed class DiffusionWorldSettings
 
     public int SeaLevel { get; private set; }
     public int MapSizeY { get; private set; }
+    public int MapSizeX { get; private set; }
+    public int MapSizeZ { get; private set; }
+
+    /// <summary>
+    /// The world's "Starting climate" choice, or null when the search for it is switched off or the
+    /// setting holds something unrecognised. The spawn search uses it to pick where to put the
+    /// player; nothing else reads it.
+    /// </summary>
+    public StartingClimate? StartingClimate { get; private set; }
+
+    /// <summary>The world's <c>globalTemperature</c> multiplier, applied to every model temperature.</summary>
+    public float TemperatureMultiplier { get; private set; } = 1f;
+
+    /// <summary>
+    /// A model temperature as the world will actually read it, once the world's global multiplier
+    /// and the config's offset are in. The spawn search compares against this so that a world
+    /// turned cold by either setting still starts the player in the band they asked for.
+    /// </summary>
+    public float WorldTemperature(float modelTemperatureC)
+        => modelTemperatureC * TemperatureMultiplier + _shaping.TemperatureOffsetC;
+
+    /// <summary>Whether a world block column exists at these coordinates.</summary>
+    public bool IsInsideWorld(int blockX, int blockZ)
+        => blockX >= 0 && blockZ >= 0 && blockX < MapSizeX && blockZ < MapSizeZ;
 
     /// <summary>
     /// World block coordinates that the model's own origin maps to. Vintage Story worlds are
@@ -120,9 +144,15 @@ public sealed class DiffusionWorldSettings
             VerticalExaggeration = exaggeration,
             SlopeDetailStrength = shaping.SlopeDetailStrength,
             MapSizeY = api.WorldManager.MapSizeY,
+            MapSizeX = api.WorldManager.MapSizeX,
+            MapSizeZ = api.WorldManager.MapSizeZ,
             SeaLevel = api.World.SeaLevel,
             OriginBlockX = RoundToChunk(api.WorldManager.MapSizeX / 2),
-            OriginBlockZ = RoundToChunk(api.WorldManager.MapSizeZ / 2)
+            OriginBlockZ = RoundToChunk(api.WorldManager.MapSizeZ / 2),
+            TemperatureMultiplier = ReadWorldConfig(worldConfig, "globalTemperature", "1").ToFloat(1f),
+            StartingClimate = shaping.StartingClimateSearch
+                ? Core.StartingClimate.Parse(ReadWorldConfig(worldConfig, "startingClimate", "temperate"))
+                : null
         };
 
         settings.RecomputeMapping();

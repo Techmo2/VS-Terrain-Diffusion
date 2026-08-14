@@ -42,6 +42,9 @@ public static class OnnxRuntimeBootstrap
     /// <summary>The provider that was actually resolved, available after <see cref="Initialize"/>.</summary>
     public static InferenceProvider Provider { get; private set; } = InferenceProvider.Cpu;
 
+    /// <summary>Whether this run fetched a runtime, rather than finding one already on disk.</summary>
+    public static bool Downloaded { get; private set; }
+
     /// <summary>Directory containing the resolved native libraries.</summary>
     public static string NativeDirectory => _nativeDirectory;
 
@@ -170,6 +173,11 @@ public static class OnnxRuntimeBootstrap
 
         List<NativeSource> sources = SourcesFor(provider, rid);
         Directory.CreateDirectory(directory);
+
+        // Another first-run download the player is waiting on, so it goes on the loading screen too.
+        Downloaded = true;
+        LoadingNotice.Post(logger, "Downloading the {0} inference runtime. This happens once.",
+            provider.ToString().ToUpperInvariant());
 
         using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
         foreach (NativeSource source in sources)
