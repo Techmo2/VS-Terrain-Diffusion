@@ -2,5 +2,6 @@ bin/
 obj/
 dist/
 tools/
-docs/*.tmp
 *.user
+API_README.md
+docs/*

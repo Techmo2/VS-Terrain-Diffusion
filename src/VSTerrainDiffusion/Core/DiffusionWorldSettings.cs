@@ -3,6 +3,7 @@ using System.Globalization;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
 using Vintagestory.API.Util;
+using VSTerrainDiffusion.Pipeline;
 
 namespace VSTerrainDiffusion.Core;
 
@@ -59,16 +60,42 @@ public sealed class DiffusionWorldSettings
     /// </summary>
     public StartingClimate? StartingClimate { get; private set; }
 
-    /// <summary>The world's <c>globalTemperature</c> multiplier, applied to every model temperature.</summary>
-    public float TemperatureMultiplier { get; private set; } = 1f;
+    /// <summary>
+    /// The world's "Global temperature" and "Global precipitation" settings, as read. What the
+    /// model makes of them is decided by the plan they were turned into, not here.
+    /// </summary>
+    public ClimateShift Climate { get; private set; }
 
     /// <summary>
-    /// A model temperature as the world will actually read it, once the world's global multiplier
-    /// and the config's offset are in. The spawn search compares against this so that a world
-    /// turned cold by either setting still starts the player in the band they asked for.
+    /// The share of <c>globalTemperature</c> the conditioning did not deliver, applied to the
+    /// model's output. One when the model was asked for all of it, or when neither is in play.
+    /// </summary>
+    public float TemperatureCorrection { get; private set; } = 1f;
+
+    /// <summary>The same for <c>globalPrecipitation</c>.</summary>
+    public float RainfallCorrection { get; private set; } = 1f;
+
+    /// <summary>
+    /// A model temperature as the world will actually read it, once whatever is left of the
+    /// world's global setting and the config's offset are in. Every column's temperature passes
+    /// through here on its way into a tile, so the climate map, the freeze line, the surface rules
+    /// and the spawn search all read one number.
     /// </summary>
     public float WorldTemperature(float modelTemperatureC)
-        => modelTemperatureC * TemperatureMultiplier + _shaping.TemperatureOffsetC;
+    {
+        float celsius = ClimateShift.ApplyTemperature(modelTemperatureC, TemperatureCorrection)
+                        + _shaping.TemperatureOffsetC;
+
+        // The far ends of the temperature setting ask for climates that are not on any scale the
+        // game has: four times a 15 C world is 120 C. Vanilla arrives at the same place from the
+        // other direction, its climate byte having saturated, so the honest reading of the setting
+        // there is the top of the scale rather than a number nothing downstream can hold.
+        return Math.Clamp(celsius, ClimateShift.ScaleFloorC, ClimateShift.ScaleCeilingC);
+    }
+
+    /// <summary>Annual rainfall as the world will read it, in millimetres.</summary>
+    public float WorldPrecipitation(float modelPrecipitationMm)
+        => modelPrecipitationMm * RainfallCorrection;
 
     /// <summary>Whether a world block column exists at these coordinates.</summary>
     public bool IsInsideWorld(int blockX, int blockZ)
@@ -132,6 +159,14 @@ public sealed class DiffusionWorldSettings
             ? shaping.VerticalExaggerationOverride
             : Math.Clamp(ReadWorldConfig(worldConfig, "diffusionVerticalExaggeration", "1").ToFloat(1f), 0.05f, 20f);
 
+        // The two global climate settings are split between the climate the model is conditioned
+        // on and a correction to what it produces; see ClimateShift. The model is asked for the
+        // split rather than told, so that the warp and the correction agree by construction.
+        var climate = new ClimateShift(
+            ReadWorldConfig(worldConfig, "globalTemperature", "1").ToFloat(1f),
+            ReadWorldConfig(worldConfig, "globalPrecipitation", "1").ToFloat(1f));
+        ClimatePlan plan = SyntheticMapFactory.PlanClimate(climate);
+
         var settings = new DiffusionWorldSettings
         {
             _shaping = shaping,
@@ -149,7 +184,9 @@ public sealed class DiffusionWorldSettings
             SeaLevel = api.World.SeaLevel,
             OriginBlockX = RoundToChunk(api.WorldManager.MapSizeX / 2),
             OriginBlockZ = RoundToChunk(api.WorldManager.MapSizeZ / 2),
-            TemperatureMultiplier = ReadWorldConfig(worldConfig, "globalTemperature", "1").ToFloat(1f),
+            Climate = climate,
+            TemperatureCorrection = plan.TemperatureCorrection,
+            RainfallCorrection = plan.RainfallCorrection,
             StartingClimate = shaping.StartingClimateSearch
                 ? Core.StartingClimate.Parse(ReadWorldConfig(worldConfig, "startingClimate", "temperate"))
                 : null
@@ -354,7 +391,8 @@ public sealed class DiffusionWorldSettings
 
         return $"scale {Scale} ({MetersPerBlock:0.##} m/block), {height}, " +
                $"sea level {SeaLevel}, world height {MapSizeY}, headroom {HeadroomBlocks} blocks " +
-               $"(linear up to {LinearRangeMeters:0} m), climate {ClimateMode.ToString().ToLowerInvariant()}";
+               $"(linear up to {LinearRangeMeters:0} m), climate {ClimateMode.ToString().ToLowerInvariant()}" +
+               (Climate.IsNeutral ? "" : $" ({Climate})");
     }
 
     /// <summary>

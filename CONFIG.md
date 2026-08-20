@@ -182,6 +182,49 @@ explored makes new chunks disagree with the ones already on disk.
     // look permanent rather than like a winter that has not melted yet.
     "GlacierIce": true,
 
+    // ---- Coastlines ----------------------------------------------------------------------------
+
+    // Which way the world's ocean map and the model's terrain are made to agree.
+    //
+    // "input" conditions the model on the ocean map, so the world's "Land cover" and "Ocean scale"
+    // settings decide where the sea is and the model decides what the coast, the shelf and the
+    // mountains behind them look like. Because it reads whatever ocean map is installed rather than
+    // vanilla's in particular, a mod that supplies its own — Continental World, say — is honoured
+    // on the same terms, and the map itself is left alone for everything else that reads it.
+    //
+    // "output" is the reverse: the model invents its own continents from real-world terrain and the
+    // ocean map is rewritten to match, ignoring the world settings and overwriting any other mod's.
+    "OceanMap": "input",
+
+    // input: how completely the ocean map overrides the model's own sense of where land belongs,
+    // from 0 (ignored) to 1. Below 1 the map biases the coastline rather than setting it.
+    "LandmaskStrength": 1.0,
+
+    // input: how much noise the model is told the landmask carries. LOWER BINDS IT MORE TIGHTLY —
+    // it is mixed as cos(atan(n)) conditioning against sin(atan(n)) noise, so it runs the opposite
+    // way to the name cond_snr it has in the model's own config. The model ships 0.5, which
+    // reproduces the ocean map over about 88% of the world; 0.1 gets that to 95%. Below 0.1 the
+    // gain is under 2% and the conditioning starts flattening the land it does keep. Zero uses the
+    // model's own value.
+    "LandmaskNoiseLevel": 0.1,
+
+    // ---- Global climate --------------------------------------------------------------------------
+
+    // How much of the world's "Global temperature" and "Global precipitation" settings is built into
+    // the climate the model is conditioned on, from 0 to 1. The rest is applied to the model's output
+    // afterwards, so the world reads the same either way; what changes is whether the model knew. At
+    // 1 an arid world is drawn as an arid world, with the drainage, vegetation and soils to match; at
+    // 0 it is a temperate world with its rainfall scaled down on the way out, which is what this mod
+    // used to do and what vanilla does.
+    "GlobalClimateStrength": 1.0,
+
+    // How much noise the model is told the shifted climate carries. LOWER BINDS IT MORE TIGHTLY, on
+    // the same inverted scale as LandmaskNoiseLevel. Only consulted when one of the two settings is
+    // off its default, so an ordinary world keeps the model's own climate character. Zero uses the
+    // model's own value for every world, and is the default: unlike the landmask, the climate
+    // conditioning already tracks what it is asked for closely at the model's own setting.
+    "ClimateNoiseLevel": 0.0,
+
     // ---- Spawn ---------------------------------------------------------------------------------
 
     // Honour the world's "Starting climate" setting by placing the spawn on land whose modelled
@@ -250,10 +293,14 @@ the default.
 | `TemperatureOffsetC` | -40 – 40 |
 | `ForestDensityMultiplier`, `ShrubDensityMultiplier` | 0 – 4 |
 | `SeasonalTemperatureStrength`, `SeasonalPrecipitationStrength` | 0 – 4 |
+| `LandmaskStrength` | 0 – 1 |
+| `LandmaskNoiseLevel` | 0, or 0.01 – 8 |
+| `GlobalClimateStrength` | 0 – 1 |
+| `ClimateNoiseLevel` | 0, or 0.01 – 8 |
 | `StartingClimateSearchRadiusBlocks` | 512 – 4 000 000 |
 | `StartingClimateNorthSouthCost` | 1 – 100 |
 | `ScaleOverride` | 0, or 1 – 16 |
 | `VerticalExaggerationOverride` | 0, or 0.05 – 20 |
 
-An unrecognised `InferenceDevice`, `HeightMode`, `RainfallBasis` or `ClimateMode` falls back to its
-default rather than failing to load.
+An unrecognised `InferenceDevice`, `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls
+back to its default rather than failing to load.

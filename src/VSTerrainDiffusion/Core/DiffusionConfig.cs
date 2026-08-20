@@ -277,6 +277,57 @@ public class WorldGenConfig
     public bool GlacierIce { get; set; } = true;
 
     /// <summary>
+    /// Which way the world's ocean map and the model's terrain are made to agree.
+    ///
+    /// "input" conditions the model on the ocean map, so the world's "Land cover" and "Ocean scale"
+    /// settings - and any ocean map another mod installs in their place - decide where the sea is,
+    /// and the map itself is left untouched for everything else that reads it.
+    ///
+    /// "output" is the reverse: the model invents its own continents and the ocean map is rewritten
+    /// to match them. That gives coastlines drawn entirely from real-world terrain, at the price of
+    /// ignoring the world's settings and overwriting any other mod's ocean map.
+    /// </summary>
+    public string OceanMap { get; set; } = "input";
+
+    /// <summary>
+    /// input: how completely the ocean map overrides the model's own sense of where land belongs,
+    /// from 0 (ignored) to 1. Below 1 the map biases the coastline rather than setting it, which
+    /// keeps more of the model's structure at the cost of honouring the world settings less exactly.
+    /// </summary>
+    public float LandmaskStrength { get; set; } = 1f;
+
+    /// <summary>
+    /// input: how much noise the model is told the landmask carries, which is how it decides
+    /// whether the mask is a hint or an instruction. <em>Lower binds it more tightly</em> — the
+    /// value is mixed as <c>cos(atan(n))</c> conditioning against <c>sin(atan(n))</c> noise, so it
+    /// runs the opposite way to its name in the model's own config, where it is called
+    /// <c>cond_snr</c>.
+    ///
+    /// The model ships 0.5, at which it reproduces the ocean map over about 88% of the world;
+    /// 0.1 gets that to 95% and is the default here. Below that the gain is under 2% and the
+    /// conditioning starts flattening the land it does keep. Zero uses the model's own value.
+    /// </summary>
+    public float LandmaskNoiseLevel { get; set; } = 0.1f;
+
+    /// <summary>
+    /// How much of the world's "Global temperature" and "Global precipitation" settings is built
+    /// into the climate the model is conditioned on, from 0 to 1. The rest is applied to the
+    /// model's output afterwards, so the world reads the same either way; what changes is whether
+    /// the model knew. At 1 an arid world is drawn as an arid world, with the drainage, vegetation
+    /// and soils to match; at 0 it is a temperate world with its rainfall scaled down on the way
+    /// out, which is what this mod used to do and what vanilla does.
+    /// </summary>
+    public float GlobalClimateStrength { get; set; } = 1f;
+
+    /// <summary>
+    /// How much noise the model is told the shifted climate carries, on the same inverted scale as
+    /// <see cref="LandmaskNoiseLevel"/>: <em>lower binds it more tightly</em>. Only consulted when
+    /// one of the two settings is off its default, so an ordinary world keeps the model's own
+    /// climate character. Zero uses the model's value for every world.
+    /// </summary>
+    public float ClimateNoiseLevel { get; set; }
+
+    /// <summary>
     /// Honour the world's "Starting climate" setting by placing the spawn on land whose modelled
     /// temperature falls in the chosen band. Vanilla implements that setting by shifting its own
     /// climate map, which cannot be done to a model that predicts a specific world, so the player
@@ -354,6 +405,13 @@ public class WorldGenConfig
 
         SeasonalTemperatureStrength = Clamp(SeasonalTemperatureStrength, 0f, 4f, 1f);
         SeasonalPrecipitationStrength = Clamp(SeasonalPrecipitationStrength, 0f, 4f, 1f);
+
+        OceanMap = (OceanMap ?? "input").Trim().ToLowerInvariant();
+        if (OceanMap != "output") OceanMap = "input";
+        LandmaskStrength = Clamp(LandmaskStrength, 0f, 1f, 1f);
+        if (LandmaskNoiseLevel != 0f) LandmaskNoiseLevel = Clamp(LandmaskNoiseLevel, 0.01f, 8f, 0.1f);
+        GlobalClimateStrength = Clamp(GlobalClimateStrength, 0f, 1f, 1f);
+        if (ClimateNoiseLevel != 0f) ClimateNoiseLevel = Clamp(ClimateNoiseLevel, 0.01f, 8f, 0f);
 
         StartingClimateSearchRadiusBlocks = (int)Clamp(StartingClimateSearchRadiusBlocks, 512f, 4_000_000f, 65536f);
         StartingClimateNorthSouthCost = Clamp(StartingClimateNorthSouthCost, 1f, 100f, 2f);

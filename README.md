@@ -49,10 +49,81 @@ are finished, so you can tell the wait apart from a hang. `Logs/server-main.log`
 | Diffusion climate        | on      | Whether the model drives climate as well as terrain.                  |
 | **World height**         | —       | **Set this to 1024.** Vanilla's default is far too short for real mountains. |
 | Starting climate         | temperate | Honoured by moving the spawn, not the climate. See below.           |
+| Land cover               | 97.5%   | Honoured — it decides where the sea goes. See below.                  |
+| Ocean scale              | 500%    | Honoured — it decides how big the oceans are. See below.              |
+| Global temperature       | normal  | Honoured — the model draws a world that cold or that hot. See below.  |
+| Global precipitation     | normal  | Honoured — same, for rainfall.                                        |
 
 A dedicated server has no world-creation screen, so the first four are also reachable from the mod
 config as `worldGen.climateMode`, `worldGen.scaleOverride` and
 `worldGen.verticalExaggerationOverride`.
+
+### Land and sea
+
+The world's ocean map decides where the coastline is, and the model decides what it looks like.
+Before generating anything the mod reads Vintage Story's ocean map — the one "Land cover" and
+"Ocean scale" configure — and feeds it to the model as conditioning, so a world set to 50% land
+gets 50% land, with the shelf, the fjords and the mountains behind them drawn from real terrain.
+
+It reads *whichever* ocean map is installed rather than vanilla's in particular, so a mod that
+supplies its own — Continental World, for instance — is honoured on exactly the same terms, and
+the map is left untouched afterwards for everything else that reads it.
+
+Two things are worth knowing:
+
+- **Conditioning is soft.** The model is steered, not clamped, so the coast it draws wanders around
+  the one it was given rather than tracing it exactly, which is what gives it a natural shape
+  instead of the ocean map's blobs. Measured against vanilla's own map over 131 000 blocks, how
+  much of the world is sea comes out within about four points of what the map asked for, always
+  very slightly wetter; column by column, 88% of the world is on the side of the water it was
+  asked to be, and the disagreement is nearly all within one cell of a coastline.
+- **There is a resolution floor.** One conditioning pixel spans 512 blocks at the default diffusion
+  resolution, so a sea much smaller than that cannot be expressed and the model will fill it in as
+  land. Low "Ocean scale" settings lose their smallest islands and lakes for this reason — though
+  they hold up better than that suggests, still placing 91% of columns correctly at 100% scale,
+  where an ocean cell is only 1024 blocks across.
+
+Vanilla's defaults — 97.5% land, 500% ocean scale — give a nearly unbroken continent, which is a
+fine world but not what most people install this mod for. Around 40–60% land is where real
+coastlines start to appear.
+
+Set `worldGen.oceanMap` to `"output"` for the reverse arrangement: the model invents its own
+continents from real-world terrain, ignoring both world settings, and the ocean map is rewritten to
+match it.
+
+### A hotter, colder, wetter or drier world
+
+"Global temperature" and "Global precipitation" are settings vanilla applies to the climate map it
+draws at random: it generates its world and multiplies the numbers. This mod hands them to the
+model instead, so that a world set to "Semi-Arid" is *drawn* semi-arid — the model puts the forests
+where a drier world would have forests, and the soil, the snow line and the seasons follow, rather
+than a temperate world having its rainfall divided by two on the way to the screen.
+
+The two settings work differently underneath, because the quantities do. Rainfall runs from nothing
+to six metres a year, so it is scaled outright: four times the rain is four times the rain. Mean
+annual temperature occupies about forty degrees and has nothing above 30 °C anywhere on Earth, so
+instead of scaling it the mod moves the world along the real distribution towards its hot or cold
+end. What that cannot reach — the top two or three notches of the temperature setting ask for
+climates that do not exist — is scaled onto the model's output afterwards, as vanilla does, and
+lands in the same place vanilla does: the climate map saturates and the world reads 40 °C.
+
+Measured on two seeds across the whole range of both settings, against what vanilla's arithmetic
+would have produced for the same world:
+
+- **Temperature** lands within 2 °C of the setting at every notch up to "Hot", which overshoots by
+  about 5 °C for want of anywhere hotter to draw from. "Very hot" and "Scorching hot" saturate the
+  game's climate scale, exactly as they do in an unmodded world.
+- **Rainfall** lands within 10% in a region of ordinary wetness. Somewhere already very wet or very
+  dry moves perhaps half as far as asked: the model will not draw the Sahara four times wetter, and
+  vanilla's own rainfall byte saturates for much the same reason.
+
+The far settings interact with "Starting climate", which is a band of real temperatures: turn the
+world up to "Scorching hot" and there is no temperate land left anywhere for the spawn search to
+find, so it will scan its whole radius, say so in the log, and put you on the coolest thing going —
+usually a mountain top.
+
+Set `worldGen.globalClimateStrength` to 0 for the old arrangement, where the model knows nothing
+and both settings are applied to its output.
 
 ### Starting climate
 
@@ -84,19 +155,21 @@ Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whate
   the diffusion heightmap.
 - **Climate map** — temperature and rainfall from the model, pre-compensated for the altitude
   corrections the game applies on read. The geologic activity byte is still vanilla's.
+- **Global temperature and precipitation** — conditioning rather than post-processing, so the world
+  is drawn at the climate asked for instead of being drawn temperate and rescaled.
 - **Forest and shrub maps** — replaced with cover derived from the model's moisture and growing
   season.
-- **Ocean map** — fed from the model's elevation, so systems that avoid the sea agree with the
-  coastline that actually got generated.
+- **Ocean map** — read, not written. It is what the terrain is conditioned on, so the world's land
+  cover and ocean scale settings, or another mod's ocean map, decide where the sea goes.
 - **Surface pass** — after vanilla's block layers, two things it cannot know about are fixed up:
   slopes too steep to hold soil are scoured back to bare rock (vanilla upholsters cliff faces in
   eight blocks of dirt), and ground whose warmest month never rises above freezing is capped with
   glacier ice.
 - **Seasons** — temperature and rainfall swing through the year on the model's seasonality instead
   of latitude.
-- **Spawn** — the model decides where continents are, so the world centre is as likely to be open
-  ocean as land. The spawn is searched for and moved to solid ground, in the world's chosen
-  starting climate.
+- **Spawn** — moved to solid ground in the world's chosen starting climate. Vanilla forces land at
+  the map centre through the ocean map, and the terrain follows that, so on most worlds the search
+  does not have to go far.
 - **Surface block layer altitudes** — only when terrain is vertically exaggerated. Vanilla's bands
   are fractions of world height (bare mountain gravel above 0.66 of it) and assume a block is about
   a metre; at true scale that already lines up, so nothing is touched.
@@ -151,9 +224,10 @@ The model predicts four WorldClim bioclimatic variables everywhere it predicts e
 
 These are a real climatology, with continents, maritime coasts, continental interiors, rain shadows
 and altitude already in them. There is no latitude gradient layered on top: heading north does not
-get colder, because *where the model put the cold places* is what gets colder. `startingClimate`
-and `polarEquatorDistance` therefore do nothing; `globalTemperature` and `globalPrecipitation` still
-scale everything.
+get colder, because *where the model put the cold places* is what gets colder.
+`polarEquatorDistance` therefore does nothing, and `startingClimate` is honoured by moving the
+player rather than the climate. `globalTemperature` and `globalPrecipitation` are conditioning: the
+model draws the world at the climate they ask for.
 
 ### From bioclimate to what the game reads
 
@@ -288,6 +362,21 @@ chunks disagree with old ones.
 | `bareSlopeRock`                  | true          | Leave slopes too steep for soil as bare rock.                 |
 | `glacierIce`                     | true          | Cap permanently frozen ground with glacier ice.               |
 | `rescaleBlockLayerAltitudes`     | true          | Stretch vanilla's altitude bands. No effect at true scale.    |
+
+**Coastlines**
+
+| Key                              | Default   | Meaning                                                       |
+| -------------------------------- | --------- | ------------------------------------------------------------- |
+| `oceanMap`                       | `"input"` | `"input"` conditions the model on the world's ocean map; `"output"` lets the model invent the continents and rewrites the map to match. |
+| `landmaskStrength`               | 1         | How completely the ocean map overrides the model's own sense of where land belongs. |
+| `landmaskNoiseLevel`             | 0.1       | How much noise the model is told the mask carries. **Lower binds it more tightly**; the model's own value is 0.5. |
+
+**Global climate**
+
+| Key                              | Default | Meaning                                                         |
+| -------------------------------- | ------- | ---------------------------------------------------------------- |
+| `globalClimateStrength`          | 1       | How much of the world's global temperature and precipitation settings the model is conditioned on rather than having applied to its output. |
+| `climateNoiseLevel`              | 0       | How much noise the model is told the shifted climate carries, on the same inverted scale as `landmaskNoiseLevel`. Zero uses the model's own. |
 
 **Spawn**
 

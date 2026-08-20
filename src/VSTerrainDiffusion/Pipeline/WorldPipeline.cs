@@ -55,10 +55,23 @@ public sealed class WorldPipeline
     private readonly InfiniteTensor _latents;
     private readonly InfiniteTensor _residual;
 
+    private readonly ILandmaskSource _landmask;
+    private readonly float _landmaskStrength;
+    private readonly ClimateShift _climate;
+
     private SyntheticMapFactory _syntheticMapFactory;
     private ulong _seed;
 
-    public WorldPipeline(ulong seed, PipelineModels models)
+    /// <param name="landmask">
+    /// Decides where the sea goes, overriding the pipeline's own noise. Null lets the model invent
+    /// its own continents, which is the reference implementation's behaviour.
+    /// </param>
+    /// <param name="climate">
+    /// Biases the climate the model is conditioned on, for a world the player asked to be hotter,
+    /// colder, wetter or drier than the one the model would draw by itself.
+    /// </param>
+    public WorldPipeline(ulong seed, PipelineModels models, ILandmaskSource landmask = null,
+                         ClimateShift climate = default)
     {
         _seed = seed;
         _config = WorldPipelineModelConfig.Instance;
@@ -69,13 +82,37 @@ public sealed class WorldPipeline
                 "coarse_pooling=" + _config.CoarsePooling + " is not supported by this pipeline");
         }
 
+        WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
+        _landmask = landmask;
+        _landmaskStrength = landmask != null ? worldGen.LandmaskStrength : 0f;
+        _climate = climate;
+
         _latentCompression = _config.LatentCompression;
         _modelMeans = _config.CoarseMeans;
         _modelStds = _config.CoarseStds;
-        _condSnr = _config.CondSnr;
         _residualMean = _config.ResidualMean;
         _residualStd = _config.ResidualStd;
         _histogramRaw = _config.HistogramRaw ?? new float[5];
+
+        // A landmask is only worth supplying if the model is told to take it seriously. cond_snr is
+        // a first-class model input deciding how far each channel's conditioning binds, so the
+        // elevation channel is turned down (see the mixing in CoarseTile: despite the name, smaller
+        // means more conditioning). Copied rather than edited in place, because the config array is
+        // shared.
+        _condSnr = (float[])_config.CondSnr.Clone();
+        if (_landmaskStrength > 0f && worldGen.LandmaskNoiseLevel > 0f)
+        {
+            _condSnr[0] = worldGen.LandmaskNoiseLevel;
+        }
+
+        // Likewise for the two climate channels, but only for a world that asked for a climate of
+        // its own: with nothing to bind them to, binding them tighter would only trade the model's
+        // own sense of where weather comes from for the synthetic map's.
+        if (!_climate.IsNeutral && worldGen.GlobalClimateStrength > 0f && worldGen.ClimateNoiseLevel > 0f)
+        {
+            _condSnr[1] = worldGen.ClimateNoiseLevel;
+            _condSnr[3] = worldGen.ClimateNoiseLevel;
+        }
 
         _condVals = new float[_condSnr.Length];
         for (int i = 0; i < _condSnr.Length; i++) _condVals[i] = (float)Math.Log(_condSnr[i] / 8.0);
@@ -86,7 +123,7 @@ public sealed class WorldPipeline
         _baseModel = models.Base;
         _decoderModel = models.Decoder;
 
-        _syntheticMapFactory = new SyntheticMapFactory(seed);
+        _syntheticMapFactory = new SyntheticMapFactory(seed, _landmask, _landmaskStrength, _climate);
         _tileStore = new MemoryTileStore();
         _cacheLimitBytes = Math.Max(32L, DiffusionConfig.Instance.TileCacheMegabytes) * 1024 * 1024;
 
@@ -106,7 +143,7 @@ public sealed class WorldPipeline
     {
         if (newSeed == _seed) return;
         _seed = newSeed;
-        _syntheticMapFactory = new SyntheticMapFactory(newSeed);
+        _syntheticMapFactory = new SyntheticMapFactory(newSeed, _landmask, _landmaskStrength, _climate);
         _tileStore.ClearAllCaches();
     }
 
@@ -163,6 +200,9 @@ public sealed class WorldPipeline
                 condImg[ch * plane + px] = (synthetic[ch * plane + px] - mean) / std;
         }
 
+        // Rotate each conditioning channel against noise by its own cond_snr. Note the direction:
+        // cos falls and sin rises with the angle, so a *larger* cond_snr leaves *less* of the
+        // conditioning behind, and the value is really a noise level however it is named upstream.
         float[] condNoise = GaussianNoisePatch.Generate(_seed, i1, j1, s, s, 5, s, s);
         var condMixed = new float[5 * plane];
         for (int ch = 0; ch < 5; ch++)

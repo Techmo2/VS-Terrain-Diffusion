@@ -109,9 +109,10 @@ public sealed class TerrainDiffusionProvider : IDisposable
     private long _tilesGenerated;
     private long _totalInferenceMillis;
 
-    public TerrainDiffusionProvider(ulong seed, PipelineModels models, DiffusionWorldSettings settings, ILogger logger)
+    public TerrainDiffusionProvider(ulong seed, PipelineModels models, DiffusionWorldSettings settings,
+                                    ILogger logger, ILandmaskSource landmask = null)
     {
-        _pipeline = new WorldPipeline(seed, models);
+        _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate);
         _settings = settings;
         _logger = logger;
         _tileSize = DiffusionConfig.Instance.TerrainTileSizeBlocks;
@@ -340,9 +341,13 @@ public sealed class TerrainDiffusionProvider : IDisposable
             tile.Slope[index] = slope[index];
 
             if (climate == null) continue;
-            tile.TemperatureC[index] = climate[index];
+
+            // Whatever the world's global climate settings did not get from the model is applied
+            // here rather than at the climate map, so that everything reading a tile - the map,
+            // the freeze line, the surface rules, the seasons - sees one consistent climate.
+            tile.TemperatureC[index] = _settings.WorldTemperature(climate[index]);
             tile.TemperatureSeasonality[index] = climate[plane + index];
-            tile.PrecipitationMm[index] = Math.Max(0f, climate[2 * plane + index]);
+            tile.PrecipitationMm[index] = Math.Max(0f, _settings.WorldPrecipitation(climate[2 * plane + index]));
             tile.PrecipitationCv[index] = Math.Max(0f, climate[3 * plane + index]);
         }
 
@@ -864,7 +869,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
                 int blockX = tile.BlockX + x;
                 if (!_settings.IsInsideWorld(blockX, blockZ)) continue;
 
-                float temperature = _settings.WorldTemperature(tile.TemperatureC[index]);
+                float temperature = tile.TemperatureC[index];
                 if (!band.Contains(temperature)) continue;
 
                 double cost = SpawnCost(blockZ - _settings.OriginBlockZ, blockX - _settings.OriginBlockX,

@@ -87,22 +87,16 @@ public sealed class DiffusionClimateMapLayer : DiffusionMapLayer
     private readonly MapLayerBase _baseline;
     private readonly RainfallScale _rainfall;
     private readonly int _seaLevel;
-    private readonly float _temperatureMultiplier;
-    private readonly float _temperatureOffset;
-    private readonly float _rainfallMultiplier;
 
     /// <summary>The vanilla layer this one decorates, so re-initialisation does not wrap twice.</summary>
     public MapLayerBase Baseline => _baseline;
 
     public DiffusionClimateMapLayer(long seed, MapLayerBase baseline, TerrainDiffusionProvider provider,
-                                    int seaLevel, float temperatureMultiplier, float rainfallMultiplier)
+                                    DiffusionWorldSettings settings)
         : base(seed, provider, TerraGenConfig.climateMapScale)
     {
         _baseline = baseline;
-        _seaLevel = seaLevel;
-        _temperatureMultiplier = temperatureMultiplier;
-        _rainfallMultiplier = rainfallMultiplier;
-        _temperatureOffset = DiffusionConfig.Instance.WorldGen.TemperatureOffsetC;
+        _seaLevel = settings.SeaLevel;
         _rainfall = RainfallScale.FromConfig(DiffusionConfig.Instance.WorldGen);
     }
 
@@ -125,8 +119,9 @@ public sealed class DiffusionClimateMapLayer : DiffusionMapLayer
         int surfaceY = Math.Max(tile.SurfaceY[index], _seaLevel - 1);
         int distanceToSeaLevel = surfaceY - _seaLevel;
 
+        // The world's global temperature setting and the config's offset are already in the tile.
         Bioclim climate = tile.ClimateAt(index);
-        float surfaceTemperature = climate.MeanTemperatureC * _temperatureMultiplier + _temperatureOffset;
+        float surfaceTemperature = climate.MeanTemperatureC;
 
         // Undo the game's own altitude correction so the surface lands on the intended value.
         int unscaledTemperature = GameMath.Clamp(
@@ -135,7 +130,7 @@ public sealed class DiffusionClimateMapLayer : DiffusionMapLayer
 
         // Likewise for rainfall: the game adds height and a coastal bonus on read, and the model
         // has already accounted for both.
-        int modelRainfall = (int)Math.Round(_rainfall.ToRainfall(climate) * _rainfallMultiplier);
+        int modelRainfall = _rainfall.ToRainfall(climate);
         int rainfall = GameMath.Clamp(
             modelRainfall
             - distanceToSeaLevel / 2
@@ -202,6 +197,10 @@ public sealed class DiffusionForestMapLayer : DiffusionMapLayer
 /// <summary>
 /// Feeds Vintage Story's ocean map from the model's elevation, so systems that avoid the sea
 /// (dungeons, some structures) agree with the terrain that actually got generated.
+///
+/// Only for <c>worldGen.oceanMap: "output"</c>, where the model invents the continents. The
+/// default runs the other way round - see <see cref="OceanMapLandmask"/> - and there the ocean map
+/// is the input the terrain was built from, so there is nothing here to correct.
 /// </summary>
 public sealed class DiffusionOceanMapLayer : DiffusionMapLayer
 {

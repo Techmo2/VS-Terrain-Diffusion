@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using Newtonsoft.Json;
+using VSTerrainDiffusion.Core;
 
 namespace VSTerrainDiffusion.Pipeline;
 
@@ -12,6 +13,42 @@ namespace VSTerrainDiffusion.Pipeline;
 public sealed class SyntheticMapFactory
 {
     private const int Channels = 5;
+
+    /// <summary>Conditioning channels the world's two global climate settings act on.</summary>
+    private const int TemperatureChannel = 1;
+
+    private const int PrecipitationChannel = 3;
+
+    /// <summary>
+    /// Bounds on the rank warp the climate settings are allowed to apply. Five squeezes the world
+    /// into roughly the driest or coldest twentieth of the real distribution and a fifth into the
+    /// wettest or hottest sixth, which is as far as a warp can go before it stops being a warp:
+    /// past that it flattens the channel to one value and the model loses the variation that makes
+    /// a climate a climate.
+    /// </summary>
+    private const float MinRankExponent = 0.2f;
+
+    private const float MaxRankExponent = 5f;
+
+    /// <summary>
+    /// How hard the model leans on a climate it is conditioned towards, as an exponent: shift the
+    /// conditioning by a factor r and the world comes out shifted by about r to this power. The
+    /// model amplifies rather than follows — a fifth of the rain in the conditioning is a seventh
+    /// of the rain on the ground — so a setting handed straight to it arrives overdone, and these
+    /// are what the request is divided by on the way in.
+    ///
+    /// Measured over 48x48 coarse cells on two seeds, comparing the median of the model's own land
+    /// against the median it was conditioned towards, over the full range of both settings. With
+    /// these values every setting the game offers lands within 2 C of what it asked for, and
+    /// within 10% for rainfall in a region of ordinary wetness. Two places do worse and both do so
+    /// by running out of world rather than by arithmetic: "Hot" comes out about 5 C over because
+    /// the model has no hotter climate left to draw, and an already very wet or very dry region
+    /// moves perhaps half as far as asked, being near the end of what the model will draw there.
+    /// </summary>
+    private const float TemperatureResponse = 1.25f;
+
+    private const float PrecipitationResponse = 1.15f;
+
     private const float BaseFrequency = 0.05f;
     private static readonly int[] Octaves = { 4, 2, 4, 4, 4 };
     private const float Lacunarity = 2.0f;
@@ -35,8 +72,28 @@ public sealed class SyntheticMapFactory
     private readonly FastNoiseLite[] _noises = new FastNoiseLite[Channels];
     private readonly float _aTempStd, _bTempStd, _tempStdP1, _tempStdP99;
 
+    private readonly ILandmaskSource _landmask;
+    private readonly float _landmaskStrength;
+
+    /// <summary>
+    /// Where the elevation quantile table crosses sea level, as a fractional table index. Splitting
+    /// the table there gives two sub-distributions - sea floors below, land above - and the
+    /// landmask picks between them per pixel.
+    /// </summary>
+    private readonly float _seaPosition;
+
+    /// <summary>Rank warp carrying the world's temperature setting; 1 leaves the channel alone.</summary>
+    private readonly float _temperatureExponent;
+
+    /// <summary>Scale carrying the world's precipitation setting; 1 leaves the channel alone.</summary>
+    private readonly float _precipitationScale;
+
     /// <param name="worldSeed">64-bit world seed; per-channel seeds use the low 31 bits.</param>
-    public SyntheticMapFactory(ulong worldSeed)
+    /// <param name="landmask">Decides where the sea goes, or null to let the noise decide.</param>
+    /// <param name="landmaskStrength">How completely the landmask overrides the noise, 0 to 1.</param>
+    /// <param name="climate">The world's global temperature and precipitation settings.</param>
+    public SyntheticMapFactory(ulong worldSeed, ILandmaskSource landmask = null, float landmaskStrength = 1f,
+                               ClimateShift climate = default)
     {
         PipelineData data = LoadData();
         _dataQuantiles = data.DataQuantileTables;
@@ -44,6 +101,14 @@ public sealed class SyntheticMapFactory
         _bTempStd = data.BTempStd;
         _tempStdP1 = data.TempStdP1;
         _tempStdP99 = data.TempStdP99;
+
+        _landmask = landmaskStrength > 0f ? landmask : null;
+        _landmaskStrength = Math.Clamp(landmaskStrength, 0f, 1f);
+        _seaPosition = FindSeaPosition(_dataQuantiles[0]);
+
+        ClimatePlan plan = PlanClimate(climate);
+        _temperatureExponent = plan.TemperatureExponent;
+        _precipitationScale = plan.PrecipitationScale;
 
         float[] frequencyMult = WorldPipelineModelConfig.Instance.FrequencyMult;
         for (int ch = 0; ch < Channels; ch++)
@@ -130,16 +195,35 @@ public sealed class SyntheticMapFactory
         int plane = h * w;
         var raw = new float[Channels][];
 
+        // Null when there is no landmask, or none to be had for this window; the elevation channel
+        // then falls through to the same plain quantile lookup as the climate channels.
+        float[] sea = _landmask?.SeaFraction(x1, y1, x2, y2);
+
         for (int ch = 0; ch < Channels; ch++)
         {
             FastNoiseLite fnl = _noises[ch];
             float[] nq = _noiseQuantiles[ch];
             float[] dq = _dataQuantiles[ch];
+            bool masked = ch == 0 && sea != null;
+            float exponent = ch == TemperatureChannel ? _temperatureExponent : 1f;
+            float scale = ch == PrecipitationChannel ? _precipitationScale : 1f;
             var channel = new float[plane];
             int k = 0;
             for (int r = 0; r < h; r++)
-                for (int c = 0; c < w; c++)
-                    channel[k++] = Interp(fnl.GetNoise(x1 + c, y1 + r), nq, dq);
+            {
+                for (int c = 0; c < w; c++, k++)
+                {
+                    float noise = fnl.GetNoise(x1 + c, y1 + r);
+                    if (masked)
+                        channel[k] = SampleTable(dq, ApplyLandmask(TablePosition(noise, nq), sea[k], dq.Length));
+                    else if (exponent != 1f)
+                        channel[k] = SampleTable(dq, WarpRank(TablePosition(noise, nq), exponent, dq.Length));
+                    else if (scale != 1f)
+                        channel[k] = Math.Clamp(Interp(noise, nq, dq) * scale, dq[0], dq[dq.Length - 1]);
+                    else
+                        channel[k] = Interp(noise, nq, dq);
+                }
+            }
             raw[ch] = channel;
         }
 
@@ -176,7 +260,14 @@ public sealed class SyntheticMapFactory
         return result;
     }
 
-    /// <summary>Linear interpolation matching numpy's np.interp, clamping at the table boundaries.</summary>
+    /// <summary>
+    /// Linear interpolation matching numpy's np.interp, clamping at the table boundaries.
+    ///
+    /// Deliberately not written as <c>SampleTable(fp, TablePosition(x, xp))</c>, which is the same
+    /// function: routing a rank back through a float would move a value by a part in a million at
+    /// the top of an interval, and this path generates the terrain of every world that is not using
+    /// a landmask, including ones that already exist.
+    /// </summary>
     internal static float Interp(float x, float[] xp, float[] fp)
     {
         int n = xp.Length;
@@ -191,5 +282,183 @@ public sealed class SyntheticMapFactory
         }
         float t = (x - xp[lo]) / (xp[hi] - xp[lo]);
         return fp[lo] + t * (fp[hi] - fp[lo]);
+    }
+
+    /// <summary>
+    /// Where <paramref name="x"/> falls in <paramref name="xp"/>, as a fractional index. This is
+    /// the noise value's rank in its own distribution, which is what makes the two quantile tables
+    /// interchangeable: the same position read out of the data table is the matched value.
+    /// </summary>
+    internal static float TablePosition(float x, float[] xp)
+    {
+        int n = xp.Length;
+        if (x <= xp[0]) return 0f;
+        if (x >= xp[n - 1]) return n - 1f;
+
+        int lo = 0, hi = n - 1;
+        while (hi - lo > 1)
+        {
+            int mid = (lo + hi) >> 1;
+            if (xp[mid] <= x) lo = mid; else hi = mid;
+        }
+        return lo + (x - xp[lo]) / (xp[hi] - xp[lo]);
+    }
+
+    /// <summary>Reads a quantile table at a fractional index, clamping at both ends.</summary>
+    internal static float SampleTable(float[] fp, float position)
+    {
+        int n = fp.Length;
+        if (position <= 0f) return fp[0];
+        if (position >= n - 1) return fp[n - 1];
+
+        int lo = (int)position;
+        float t = position - lo;
+        return fp[lo] + t * (fp[lo + 1] - fp[lo]);
+    }
+
+    /// <summary>
+    /// Bends a rank in the elevation distribution towards the half of it the landmask asks for.
+    ///
+    /// A pixel the map calls sea is drawn from the sea-floor half of the distribution and one it
+    /// calls land from the land half, each keeping its own shape - so shelves, abyssal plains,
+    /// plains and mountains all still occur in their real-world proportions, only now on the side
+    /// of the coastline the world was configured to put them.
+    ///
+    /// Part-sea pixels interpolate between the two, which lands them near sea level. That is the
+    /// right answer for this channel even though it reads as a bias: what the model is being told
+    /// is the pixel's *mean* elevation, and the mean of a 7.68 km cell with a coastline through it
+    /// really is well below zero, because the sea floor on one side is far deeper than the land on
+    /// the other is high. Splitting the warp at the pixel's own sea fraction instead - so that the
+    /// share coming out under water is exactly the share asked for - was tried and is worse: it
+    /// hands coastal cells the full range of land heights and abyssal depths, and the model turns
+    /// them into whole mountains or whole trenches rather than a coast (86.0% of columns on the
+    /// right side of the water against 88.2% for this).
+    /// </summary>
+    private float ApplyLandmask(float position, float seaFraction, int tableLength)
+    {
+        float span = tableLength - 1f;
+        float u = position / span;
+        float uSea = _seaPosition / span;
+        float sea = Math.Clamp(seaFraction, 0f, 1f);
+
+        float wanted = sea * (u * uSea) + (1f - sea) * (uSea + u * (1f - uSea));
+        return (u + _landmaskStrength * (wanted - u)) * span;
+    }
+
+    /// <summary>
+    /// Bends a channel's whole distribution towards its hot, cold, wet or dry end.
+    ///
+    /// The warp is <c>u^k</c> on the rank, which is strictly increasing for any positive k: every
+    /// pixel keeps its place in the order and only the values attached to those places move. That
+    /// is what a shifted climate should be. Scaling the values instead would be simpler and wrong
+    /// — four times a 25 C mean is 100 C, a reading with no counterpart on Earth and so none in
+    /// the model's training data either, and the conditioning would clamp to its maximum
+    /// everywhere and hand the model a world with no climate variation left in it at all.
+    /// </summary>
+    private static float WarpRank(float position, float exponent, int tableLength)
+    {
+        float span = tableLength - 1f;
+        return (float)Math.Pow(position / span, exponent) * span;
+    }
+
+    /// <summary>
+    /// Works out how much of a world's climate settings the model can be asked for and how much
+    /// has to be applied to what it produces.
+    ///
+    /// The model is asked for a conditioning shift of <c>m^(1/response)</c>, which is the shift
+    /// that comes back out as <c>m</c>; then the anchor is clamped to what the real climate
+    /// distribution can express, and the correction carries whatever that clamp cost. Most
+    /// settings need no correction at all. The ones that do are the hot end of the temperature
+    /// scale, where there is nothing left to ask for: the world's warmest mean annual temperature
+    /// is about 30 C, so "very hot" and "scorching hot" both draw the hottest climate on Earth and
+    /// then have the difference between that and what was asked for scaled onto the result — which
+    /// is what vanilla does too, its own climate byte having saturated at 40 C long before.
+    /// </summary>
+    /// <returns>
+    /// The division of labour, or <see cref="ClimatePlan.Unconditioned"/> if the model's data is
+    /// not on disk yet — on a fresh install the world is read once before anything is downloaded,
+    /// and a world that cannot consult the model still has to honour its settings.
+    /// </returns>
+    public static ClimatePlan PlanClimate(ClimateShift climate)
+    {
+        float strength = DiffusionConfig.Instance.WorldGen.GlobalClimateStrength;
+        if (strength <= 0f || climate.IsNeutral) return ClimatePlan.Unconditioned(climate);
+
+        PipelineData data;
+        try
+        {
+            data = LoadData();
+        }
+        catch (InvalidOperationException)
+        {
+            return ClimatePlan.Unconditioned(climate);
+        }
+
+        (float exponent, float temperatureDelivered) = PlanTemperature(
+            data.DataQuantileTables[TemperatureChannel], climate.Temperature, strength);
+
+        // Rainfall needs no clamping and so no correction: the conditioning is scaled outright and
+        // the model returns the scale it was given, raised to its response.
+        float scale = Asked(climate.Precipitation, strength, PrecipitationResponse);
+        float precipitationDelivered = (float)Math.Pow(scale, PrecipitationResponse);
+
+        return new ClimatePlan(
+            exponent, scale,
+            climate.Temperature / temperatureDelivered,
+            climate.Precipitation / precipitationDelivered);
+    }
+
+    /// <summary>
+    /// The conditioning shift to ask for, being the one that comes back out as the shift the world
+    /// wants — or a fraction of it, where the conditioning has been turned down.
+    /// </summary>
+    private static float Asked(float multiplier, float strength, float response)
+        => (float)Math.Pow(Math.Max(1e-4f, multiplier), strength / response);
+
+    /// <summary>
+    /// The temperature warp, and the shift the world will actually come out with because of it.
+    ///
+    /// Temperature is warped by rank where rainfall is scaled outright, because the two
+    /// distributions are shaped nothing alike. Annual rainfall runs from nothing to six metres and
+    /// scaling it lands inside that range whatever the setting asks for. Mean annual temperature
+    /// occupies about forty degrees, from -7 C to 36 C, with no room above: scaling it by anything
+    /// over 1.1 walks straight off the end of the world's climate and takes every pixel with it,
+    /// where a rank warp merely moves the world towards its hot end and stops when it gets there.
+    /// </summary>
+    private static (float Exponent, float Delivered) PlanTemperature(
+        float[] table, float multiplier, float strength)
+    {
+        // Temperature scales from -20 C, the bottom of the scale Vintage Story multiplies on.
+        const float origin = ClimateShift.ScaleFloorC;
+
+        float span = table.Length - 1f;
+        float median = SampleTable(table, span * 0.5f);
+        float asked = Asked(multiplier, strength, TemperatureResponse);
+        float wanted = origin + (median - origin) * asked;
+        if (Math.Abs(wanted - median) < 1e-3f) return (1f, 1f);
+
+        // Clamped off both ends of the table: a rank of exactly 0 has no logarithm, and one of
+        // exactly 1 has no warp that reaches it. The exponent bounds then decide how far the warp
+        // is allowed to go before it stops being a warp and starts being a flat field.
+        float rank = Math.Clamp(TablePosition(wanted, table) / span, 1e-3f, 1f - 1e-3f);
+        float exponent = Math.Clamp(
+            (float)(Math.Log(rank) / Math.Log(0.5)), MinRankExponent, MaxRankExponent);
+
+        float reached = SampleTable(table, span * (float)Math.Pow(0.5, exponent));
+        float delivered = (float)Math.Pow((reached - origin) / (median - origin), TemperatureResponse);
+        return (exponent, delivered);
+    }
+
+    /// <summary>Fractional index at which the elevation table passes through sea level.</summary>
+    private static float FindSeaPosition(float[] elevationQuantiles)
+    {
+        for (int i = 1; i < elevationQuantiles.Length; i++)
+        {
+            float below = elevationQuantiles[i - 1], above = elevationQuantiles[i];
+            if (below <= 0f && above > 0f) return i - 1 + -below / (above - below);
+        }
+
+        // A table that never crosses sea level cannot be split into a sea half and a land half.
+        return (elevationQuantiles.Length - 1) * 0.5f;
     }
 }

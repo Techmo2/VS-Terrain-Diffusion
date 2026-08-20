@@ -14,8 +14,9 @@ namespace VSTerrainDiffusion;
 
 /// <summary>
 /// Entry point. Swaps vanilla's terrain generator for the diffusion heightmap generator and points
-/// the climate, forest, shrub and ocean maps at the same model, leaving every other world
-/// generation pass alone.
+/// the climate, forest and shrub maps at the same model, leaving every other world generation pass
+/// alone. The ocean map goes the other way: it is read as conditioning for the model rather than
+/// written, so the world's own land cover and ocean scale settings still decide where the sea is.
 /// </summary>
 public class TerrainDiffusionModSystem : ModSystem
 {
@@ -85,7 +86,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _settings = DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.Instance.NativeResolution);
 
         _provider?.Dispose();
-        _provider = new TerrainDiffusionProvider(WorldSeed(), models, _settings, _api.Logger);
+        _provider = new TerrainDiffusionProvider(WorldSeed(), models, _settings, _api.Logger, BuildLandmask());
 
         // The spawn search can run before the height mapping is settled - and it should, because
         // the survey wants to be centred on where people will actually play.
@@ -118,6 +119,17 @@ public class TerrainDiffusionModSystem : ModSystem
 
         _api.Logger.Notification("[{0}] Active: {1}", DiffusionPaths.ModId, _settings.Describe());
         WarnAboutWorldHeight();
+    }
+
+    /// <summary>
+    /// The landmask the model is conditioned on, or null when the model is to decide the coastline
+    /// itself. Built before the first tile, because every tile depends on it.
+    /// </summary>
+    private ILandmaskSource BuildLandmask()
+    {
+        if (DiffusionConfig.Instance.WorldGen.OceanMap != "input") return null;
+        return new OceanMapLandmask(
+            () => _api.ModLoader.GetModSystem<GenMaps>()?.oceanGen, _settings, _api.Logger);
     }
 
     /// <summary>Loads the ONNX models, or null if they could not be had.</summary>
@@ -338,9 +350,17 @@ public class TerrainDiffusionModSystem : ModSystem
             return;
         }
 
-        // The ocean map always follows the model: otherwise systems that avoid the sea would
-        // disagree with the coastline that actually got generated.
-        genMaps.oceanGen = new DiffusionOceanMapLayer(_api.WorldManager.Seed + 1873, _provider);
+        // In "input" mode the ocean map is what the terrain was conditioned on, so it is already
+        // the coastline that got generated and overwriting it would throw away the very settings -
+        // and the very other mod's map - the terrain was built to honour. Only the reverse mode,
+        // where the model invented the continents, has anything to correct.
+        if (DiffusionConfig.Instance.WorldGen.OceanMap == "output")
+        {
+            genMaps.oceanGen = new DiffusionOceanMapLayer(_api.WorldManager.Seed + 1873, _provider);
+            _api.Logger.Notification(
+                "[{0}] The model decides the coastline; the world's ocean map has been replaced to match it.",
+                DiffusionPaths.ModId);
+        }
 
         if (_settings.ClimateMode == DiffusionClimateMode.Off)
         {
@@ -363,12 +383,21 @@ public class TerrainDiffusionModSystem : ModSystem
             return;
         }
 
-        ITreeAttribute worldConfig = _api.WorldManager.SaveGame.WorldConfiguration;
-        float rainfallMultiplier = worldConfig.GetString("globalPrecipitation", "1").ToFloat(1f);
-
         genMaps.climateGen = new DiffusionClimateMapLayer(
-            _api.WorldManager.Seed + 1, vanillaClimate, _provider,
-            _api.World.SeaLevel, _settings.TemperatureMultiplier, rainfallMultiplier);
+            _api.WorldManager.Seed + 1, vanillaClimate, _provider, _settings);
+
+        if (!_settings.Climate.IsNeutral)
+        {
+            // Worth saying, because it is not what these settings do in vanilla: they are part of
+            // the world the model draws rather than a scaling of the numbers it produced.
+            _api.Logger.Notification(
+                "[{0}] The model is drawing a world {1}.{2}", DiffusionPaths.ModId, _settings.Climate,
+                IsCorrected(_settings)
+                    ? $" What it cannot reach is scaled onto its output afterwards " +
+                      $"({_settings.TemperatureCorrection:0.##}x temperature, " +
+                      $"{_settings.RainfallCorrection:0.##}x rainfall)."
+                    : string.Empty);
+        }
 
         WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
         genMaps.forestGen = new DiffusionForestMapLayer(
@@ -379,9 +408,16 @@ public class TerrainDiffusionModSystem : ModSystem
             worldGen.ShrubDensityMultiplier);
     }
 
+    /// <summary>True when some of the world's climate settings had to be left to the output.</summary>
+    private static bool IsCorrected(DiffusionWorldSettings settings)
+        => Math.Abs(settings.TemperatureCorrection - 1f) > 0.01f
+           || Math.Abs(settings.RainfallCorrection - 1f) > 0.01f;
+
     /// <summary>
-    /// Vanilla guarantees land at the map centre by forcing the ocean map; since the model decides
-    /// where continents are, that guarantee is gone and the spawn has to be found instead.
+    /// Finds somewhere to wake up. Vanilla guarantees land at the map centre by forcing its ocean
+    /// map, and conditioning the terrain on that map carries the guarantee through, so this
+    /// usually only has to move the spawn far enough to satisfy the starting climate - and in
+    /// "output" mode, where the model decides the coastline itself, far enough to find land at all.
     ///
     /// It runs on every start, not just new saves, so that an existing world's height survey stays
     /// centred where it always was.
