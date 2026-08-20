@@ -328,14 +328,24 @@ public sealed class DiffusionWorldSettings
     private static float DepthCurve(float meters) => (float)(Math.Sqrt(meters + 10.0) - Math.Sqrt(10.0) + 1.0);
 
     /// <summary>
-    /// Converts a model elevation in metres to a block Y coordinate.
+    /// Converts a model elevation in metres to a block Y coordinate: the topmost solid block of
+    /// that column.
+    ///
+    /// Zero metres is the waterline, which is the <em>top</em> of block
+    /// <see cref="WaterSurfaceY"/> — the sea fills every block below <see cref="SeaLevel"/>, so
+    /// the last one it fills is the one under it. Land measured from <c>SeaLevel</c> instead would
+    /// stand a block proud of the water everywhere along every coast, since a whole block of
+    /// height is 15 m of elevation at the default resolution and the entire shore falls inside the
+    /// first one.
     ///
     /// Land is linear up to the knee and then bends over towards the ceiling. The bend is
     /// <c>u / (1 + u)</c>, which has slope 1 at the join so there is no crease, and — unlike a
     /// saturating exponential — never quite flattens, so even in a region whose mountains overrun
     /// the world by several kilometres the summits stay rounded instead of shearing off into a
     /// mesa. Ocean floors use a square-root curve so that abyssal plains stay within the (much
-    /// shallower) block budget below sea level.
+    /// shallower) block budget below sea level; that curve is a block deep before it starts, which
+    /// is what keeps the water at the shore from being a puddle, so it is measured from sea level
+    /// rather than from the waterline.
     /// </summary>
     public int ElevationToBlockY(float meters)
     {
@@ -353,11 +363,17 @@ public sealed class DiffusionWorldSettings
                 float u = (linear - _kneeBlocks) / span;
                 y = _kneeBlocks + span * (u / (1f + u));
             }
-            return SeaLevel + (int)y;
+            return WaterSurfaceY + (int)y;
         }
 
         return Math.Max(2, SeaLevel - (int)(DepthCurve(-meters) * _oceanScale));
     }
+
+    /// <summary>
+    /// The topmost block the sea fills, whose upper face is the waterline. Ground at this height
+    /// is level with the water rather than a step above it.
+    /// </summary>
+    public int WaterSurfaceY => SeaLevel - 1;
 
     /// <summary>Highest block Y the mapping can ever return, used for sanity logging.</summary>
     public int MaxBlockY => ElevationToBlockY(ModelMaxElevationMeters);
