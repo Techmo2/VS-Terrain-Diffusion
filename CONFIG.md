@@ -8,6 +8,8 @@ well.
 
 The listing below is the file exactly as the mod generates it, with a comment on every field. **JSON
 does not allow comments** — copy values out of it, do not paste the whole thing over your config.
+[Ranges](#ranges) at the end gives every numeric field's hard limit, the narrower range worth
+staying inside, and its default.
 
 Settings under `WorldGen` change what the world looks like. Editing them after a world has been
 explored makes new chunks disagree with the ones already on disk.
@@ -140,16 +142,32 @@ explored makes new chunks disagree with the ones already on disk.
 
     // Scales the forest cover the model's moisture implies. Vintage Story's own forest map is
     // noise with no climate signal at all, so this replaces it outright; raise for denser woods.
+    //
+    // TREES ON THE GROUND GO AS THE SQUARE OF THIS. The mod writes a 0-255 forest byte; vanilla
+    // draws candidate tree positions from the climate and accepts each with probability
+    // (byte / 255) squared. So 1.0 -> 1.4 is roughly double the trees, not 40% more. Two corollaries:
+    // the byte saturates at 255, so much above 1.2 only flattens the wet end while still lifting
+    // dry ground; and 0 does not give a bare world, because that acceptance probability has a floor
+    // of 0.0025 which still scatters the odd lone tree. For no trees at all, use the world's own
+    // "Forestation & shrubs" setting at -100%.
+    //
+    // That world setting is additive where this is proportional: it shifts every place by the same
+    // amount, deserts included, while this preserves the climate pattern and scales the contrast.
+    // Both apply, the world setting on top of this one.
+    //
+    // Water and ground too steep to hold soil are cut to zero before this is applied, so it cannot
+    // put woods on a cliff or the sea.
     "ForestDensityMultiplier": 1.0,
 
-    // Scales shrub cover the same way.
+    // Scales shrub cover the same way, with the same squaring.
     "ShrubDensityMultiplier": 1.0,
 
     // ---- Seasons -------------------------------------------------------------------------------
 
-    // Swing temperature through the year using the model's temperature seasonality instead of
-    // Vintage Story's latitude bands. Continental interiors then get hard winters and hot summers
-    // while maritime and tropical climates stay even.
+    // Swing temperature through the year using the model's temperature seasonality (BIO4) rather
+    // than from latitude alone, which is all vanilla has to go on. Continental interiors then get
+    // hard winters and hot summers while maritime and tropical climates at the same latitude stay
+    // even. Latitude still shows through, because a polar climate is a strongly seasonal one.
     "SeasonalTemperature": true,
 
     // Multiplies the modelled seasonal temperature swing. Zero gives a world with no seasons.
@@ -162,10 +180,15 @@ explored makes new chunks disagree with the ones already on disk.
     // Multiplies the modelled wet/dry season contrast.
     "SeasonalPrecipitationStrength": 1.0,
 
-    // Give the world two hemispheres with opposite seasons, split at the middle of the map. Off
-    // by default: without a latitude temperature gradient to go with it, crossing the line just
-    // makes the calendar disagree with itself.
-    "SeasonHemispheres": false,
+    // Swing the year the opposite way south of the equator. On by default, and not really
+    // optional: Vintage Story already does this. Its calendar takes the hemisphere from the sign of
+    // the same latitude this mod reads, and shifts the year half a turn for the southern one, which
+    // is what decides foliage, crop growth and everything else that asks what season it is. Off,
+    // the southern hemisphere gets leaves that fall in the spring, because only the temperature
+    // curve stayed northern. There is no world it is right to turn off: the game's hemisphere does
+    // not depend on LatitudeStrength, and on a "Patchy" world it reports one hemisphere everywhere
+    // so the setting does nothing anyway.
+    "SeasonHemispheres": true,
 
     // ---- Surface ---------------------------------------------------------------------------
 
@@ -225,6 +248,22 @@ explored makes new chunks disagree with the ones already on disk.
     // conditioning already tracks what it is asked for closely at the model's own setting.
     "ClimateNoiseLevel": 0.0,
 
+    // ---- Latitude ------------------------------------------------------------------------------
+
+    // How much of a north-south climate gradient the world gets, from 0 to 1.
+    //
+    // The model's climate is a real climatology - continents, maritime coasts, rain shadows,
+    // altitude - but nothing in it knows which way is north, so left alone it puts the cold places
+    // wherever its noise put them and the world's "polarEquatorDistance" means nothing. At 1 the
+    // equator, the subtropical deserts, the mid-latitude storm track and the ice caps are
+    // conditioned into the model at the latitudes the game says they belong, and everything the
+    // model knows about coasts and mountains happens WITHIN those bands. At 0 the world is
+    // unrooted, which is what the mod did before 0.5.
+    //
+    // Which block is at which latitude is read from Vintage Story, not invented here, so day
+    // length, midnight sun and the hemispheres all agree with the snow line for free.
+    "LatitudeStrength": 1.0,
+
     // ---- Spawn ---------------------------------------------------------------------------------
 
     // Honour the world's "Starting climate" setting by placing the spawn on land whose modelled
@@ -269,38 +308,42 @@ explored makes new chunks disagree with the ones already on disk.
 
 ## Ranges
 
-Anything outside these is clamped on load, and a value that is not a number at all is replaced with
-the default.
+**Clamped to** is the hard limit: anything outside it is pulled back on load, and a value that is
+not a number at all is replaced with the default. **Useful** is the narrower range where the setting
+does something worth having — nothing outside it is forbidden, and the two differ because the clamp
+only has to stop the mod breaking, not stop the world looking silly.
 
-| Field | Range |
-| --- | --- |
-| `TileCacheMegabytes`, `TerrainTileCacheMegabytes` | 32 – 4096 |
-| `TerrainTileSizeBlocks` | 64 – 1024, rounded down to a multiple of 32 |
-| `TargetPeakFillFraction` | 0.2 – 1 |
-| `PeakQuantile` | 0.5 – 1 |
-| `CalibrationRadiusBlocks` | 512 – 4 000 000 |
-| `CalibrationProbes` | 0 – 64 |
-| `ReliefFactor` | 1 – 5 |
-| `MinAutoExaggeration`, `MaxAutoExaggeration` | 0.05 – 100 (max is raised to min if lower) |
-| `MetersPerBlockVertical` | 0 or greater |
-| `LinearKneeFraction` | 0.1 – 0.99 |
-| `OceanDepthFraction` | 0.05 – 1 |
-| `SlopeDetailStrength` | 0 – 8 |
-| `MoistureMedian` | 0.01 – 100 |
-| `MoistureSpread`, `RainfallSpread` | 0.1 – 4 |
-| `RainfallMedianMm` | 10 – 10 000 |
-| `RainfallBias` | -1 – 1 |
-| `TemperatureOffsetC` | -40 – 40 |
-| `ForestDensityMultiplier`, `ShrubDensityMultiplier` | 0 – 4 |
-| `SeasonalTemperatureStrength`, `SeasonalPrecipitationStrength` | 0 – 4 |
-| `LandmaskStrength` | 0 – 1 |
-| `LandmaskNoiseLevel` | 0, or 0.01 – 8 |
-| `GlobalClimateStrength` | 0 – 1 |
-| `ClimateNoiseLevel` | 0, or 0.01 – 8 |
-| `StartingClimateSearchRadiusBlocks` | 512 – 4 000 000 |
-| `StartingClimateNorthSouthCost` | 1 – 100 |
-| `ScaleOverride` | 0, or 1 – 16 |
-| `VerticalExaggerationOverride` | 0, or 0.05 – 20 |
+| Field | Clamped to | Useful | Default |
+| --- | --- | --- | --- |
+| `TileCacheMegabytes`, `TerrainTileCacheMegabytes` | 32 – 4096 | 128 – 1024 | 256 |
+| `TerrainTileSizeBlocks` | 64 – 1024, rounded down to a multiple of 32 | 128 – 512 | 256 |
+| `TargetPeakFillFraction` | 0.2 – 1 | 0.8 – 0.95 | 0.92 |
+| `PeakQuantile` | 0.5 – 1 | 0.99 – 0.999 | 0.995 |
+| `CalibrationRadiusBlocks` | 512 – 4 000 000 | 2048 – 16384 | 4096 |
+| `CalibrationProbes` | 0 – 64 | 4 – 16 | 8 |
+| `ReliefFactor` | 1 – 5 | 1.3 – 2 | 1.6 |
+| `MinAutoExaggeration`, `MaxAutoExaggeration` | 0.05 – 100 (max is raised to min if lower) | 1 – 4, 4 – 30 | 1, 20 |
+| `MetersPerBlockVertical` | 0 or greater | 5 – 30 | 0 |
+| `LinearKneeFraction` | 0.1 – 0.99 | 0.7 – 0.95 | 0.85 |
+| `OceanDepthFraction` | 0.05 – 1 | 0.6 – 1 | 0.9 |
+| `SlopeDetailStrength` | 0 – 8 | 0.5 – 2 | 1 |
+| `MoistureMedian` | 0.01 – 100 | 0.4 – 0.9 | 0.62 |
+| `MoistureSpread`, `RainfallSpread` | 0.1 – 4 | 0.7 – 1.4, 0.6 – 1.2 | 1, 0.8 |
+| `RainfallMedianMm` | 10 – 10 000 | 300 – 900 | 540 |
+| `RainfallBias` | -1 – 1 | -0.1 – 0.2 | 0.05 |
+| `TemperatureOffsetC` | -40 – 40 | -5 – 5 | 0 |
+| `ForestDensityMultiplier` | 0 – 4 | 0.7 – 1.5 (squared on the ground) | 1 |
+| `ShrubDensityMultiplier` | 0 – 4 | 0.5 – 2 (squared on the ground) | 1 |
+| `SeasonalTemperatureStrength`, `SeasonalPrecipitationStrength` | 0 – 4 | 0.5 – 1.5 | 1 |
+| `LandmaskStrength` | 0 – 1 | 0.8 – 1 | 1 |
+| `LandmaskNoiseLevel` | 0, or 0.01 – 8 | 0.05 – 0.5 | 0.1 |
+| `GlobalClimateStrength` | 0 – 1 | 0.5 – 1 | 1 |
+| `ClimateNoiseLevel` | 0, or 0.01 – 8 | 0, or 0.1 – 0.5 | 0 |
+| `LatitudeStrength` | 0 – 1 | 0, or 0.5 – 1 | 1 |
+| `StartingClimateSearchRadiusBlocks` | 512 – 4 000 000 | 16384 – 262144 | 65536 |
+| `StartingClimateNorthSouthCost` | 1 – 100 | 1 – 4 | 2 |
+| `ScaleOverride` | 0, or 1 – 16 | 0, or 1 – 6 | 0 |
+| `VerticalExaggerationOverride` | 0, or 0.05 – 20 | 0, or 0.5 – 2 | 0 |
 
 An unrecognised `InferenceDevice`, `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls
 back to its default rather than failing to load.

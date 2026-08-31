@@ -58,6 +58,7 @@ public sealed class WorldPipeline
     private readonly ILandmaskSource _landmask;
     private readonly float _landmaskStrength;
     private readonly ClimateShift _climate;
+    private readonly ILatitudeSource _latitude;
 
     private SyntheticMapFactory _syntheticMapFactory;
     private ulong _seed;
@@ -70,8 +71,13 @@ public sealed class WorldPipeline
     /// Biases the climate the model is conditioned on, for a world the player asked to be hotter,
     /// colder, wetter or drier than the one the model would draw by itself.
     /// </param>
+    /// <param name="latitude">
+    /// Puts that climate on a north-south axis, so the tropics and the ice land where the world's
+    /// polar distance says they should. Null leaves the climate unrooted, which is the reference
+    /// implementation's behaviour.
+    /// </param>
     public WorldPipeline(ulong seed, PipelineModels models, ILandmaskSource landmask = null,
-                         ClimateShift climate = default)
+                         ClimateShift climate = default, ILatitudeSource latitude = null)
     {
         _seed = seed;
         _config = WorldPipelineModelConfig.Instance;
@@ -86,6 +92,7 @@ public sealed class WorldPipeline
         _landmask = landmask;
         _landmaskStrength = landmask != null ? worldGen.LandmaskStrength : 0f;
         _climate = climate;
+        _latitude = latitude != null && !latitude.IsNeutral ? latitude : null;
 
         _latentCompression = _config.LatentCompression;
         _modelMeans = _config.CoarseMeans;
@@ -106,9 +113,12 @@ public sealed class WorldPipeline
         }
 
         // Likewise for the two climate channels, but only for a world that asked for a climate of
-        // its own: with nothing to bind them to, binding them tighter would only trade the model's
-        // own sense of where weather comes from for the synthetic map's.
-        if (!_climate.IsNeutral && worldGen.GlobalClimateStrength > 0f && worldGen.ClimateNoiseLevel > 0f)
+        // its own - a global setting off its default, or latitude bands: with nothing to bind them
+        // to, binding them tighter would only trade the model's own sense of where weather comes
+        // from for the synthetic map's.
+        bool steeredClimate = _latitude != null
+                              || (!_climate.IsNeutral && worldGen.GlobalClimateStrength > 0f);
+        if (steeredClimate && worldGen.ClimateNoiseLevel > 0f)
         {
             _condSnr[1] = worldGen.ClimateNoiseLevel;
             _condSnr[3] = worldGen.ClimateNoiseLevel;
@@ -123,7 +133,7 @@ public sealed class WorldPipeline
         _baseModel = models.Base;
         _decoderModel = models.Decoder;
 
-        _syntheticMapFactory = new SyntheticMapFactory(seed, _landmask, _landmaskStrength, _climate);
+        _syntheticMapFactory = new SyntheticMapFactory(seed, _landmask, _landmaskStrength, _climate, _latitude);
         _tileStore = new MemoryTileStore();
         _cacheLimitBytes = Math.Max(32L, DiffusionConfig.Instance.TileCacheMegabytes) * 1024 * 1024;
 
@@ -143,7 +153,7 @@ public sealed class WorldPipeline
     {
         if (newSeed == _seed) return;
         _seed = newSeed;
-        _syntheticMapFactory = new SyntheticMapFactory(newSeed, _landmask, _landmaskStrength, _climate);
+        _syntheticMapFactory = new SyntheticMapFactory(newSeed, _landmask, _landmaskStrength, _climate, _latitude);
         _tileStore.ClearAllCaches();
     }
 

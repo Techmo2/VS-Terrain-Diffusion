@@ -225,16 +225,23 @@ public class WorldGenConfig
     /// <summary>
     /// Scales the forest cover the model's moisture implies. Vintage Story's own forest map is
     /// noise with no climate signal at all, so this replaces it outright; raise for denser woods.
+    ///
+    /// Trees on the ground go as the <em>square</em> of this. What the mod writes is a 0-255 forest
+    /// byte; vanilla draws candidate tree positions from the climate and accepts each one with
+    /// probability <c>(byte / 255)^2</c>, so 1.4 is about twice the trees rather than four tenths
+    /// more. The byte also saturates, which is why much above 1.2 only flattens the wet end, and
+    /// why the setting bites hardest where cover was low to begin with.
     /// </summary>
     public float ForestDensityMultiplier { get; set; } = 1f;
 
-    /// <summary>Scales shrub cover the same way.</summary>
+    /// <summary>Scales shrub cover the same way, with the same squaring.</summary>
     public float ShrubDensityMultiplier { get; set; } = 1f;
 
     /// <summary>
-    /// Swing temperature through the year using the model's temperature seasonality, instead of
-    /// Vintage Story's latitude bands. Continental interiors then get hard winters and hot summers
-    /// while maritime and tropical climates stay even.
+    /// Swing temperature through the year using the model's temperature seasonality (BIO4) rather
+    /// than from latitude alone, which is all vanilla has to go on. Continental interiors then get
+    /// hard winters and hot summers while maritime and tropical climates at the same latitude stay
+    /// even. Latitude still shows through, because a polar climate is a strongly seasonal one.
     /// </summary>
     public bool SeasonalTemperature { get; set; } = true;
 
@@ -251,11 +258,22 @@ public class WorldGenConfig
     public float SeasonalPrecipitationStrength { get; set; } = 1f;
 
     /// <summary>
-    /// Give the world two hemispheres with opposite seasons, split at the middle of the map. Off by
-    /// default: without a latitude temperature gradient to go with it, crossing the line just makes
-    /// the calendar disagree with itself.
+    /// Swing the year the opposite way south of the equator.
+    ///
+    /// On by default, and not really optional: Vintage Story already does this. Its calendar takes
+    /// the hemisphere from the sign of the same latitude this mod reads, and
+    /// <c>GetSeasonRel</c> shifts the year half a turn for the southern one - which is what decides
+    /// foliage, crop growth and everything else that asks the calendar what season it is. Leaving
+    /// this off does not give the world one hemisphere; it gives it a southern hemisphere whose
+    /// leaves fall in the spring, because only the temperature curve stayed northern.
+    ///
+    /// There is no world it is right to turn off. The game's own hemisphere does not depend on this
+    /// mod's latitude bands, so even at <see cref="LatitudeStrength"/> 0 the calendar still flips
+    /// and this should follow it; on a "Patchy" world the game reports one hemisphere everywhere
+    /// and the setting does nothing either way. It stays a switch only because someone may prefer
+    /// one long season to a world that is half out of step with their own.
     /// </summary>
-    public bool SeasonHemispheres { get; set; }
+    public bool SeasonHemispheres { get; set; } = true;
 
     /// <summary>
     /// Stretch the altitude bands of vanilla's surface block layers to match the terrain height, so
@@ -326,6 +344,22 @@ public class WorldGenConfig
     /// climate character. Zero uses the model's value for every world.
     /// </summary>
     public float ClimateNoiseLevel { get; set; }
+
+    /// <summary>
+    /// How much of a north-south climate gradient the world gets, from 0 to 1.
+    ///
+    /// The model's climate is a real climatology with continents, maritime coasts, rain shadows and
+    /// altitude in it, but nothing in it knows which way is north: left alone it puts the cold
+    /// places wherever its noise put them, and the world's <c>polarEquatorDistance</c> means
+    /// nothing. At 1 the equator, the subtropical deserts, the mid-latitude storm track and the ice
+    /// caps are conditioned into the model at the latitudes the game says they belong, and
+    /// everything the model knows about coasts and mountains happens <em>within</em> those bands.
+    /// At 0 the world is unrooted, which is what the mod did before 0.5.
+    ///
+    /// Which block is at which latitude is the game's answer, not this mod's, so day length,
+    /// midnight sun and the hemispheres all agree with the snow line for free.
+    /// </summary>
+    public float LatitudeStrength { get; set; } = 1f;
 
     /// <summary>
     /// Honour the world's "Starting climate" setting by placing the spawn on land whose modelled
@@ -411,6 +445,7 @@ public class WorldGenConfig
         LandmaskStrength = Clamp(LandmaskStrength, 0f, 1f, 1f);
         if (LandmaskNoiseLevel != 0f) LandmaskNoiseLevel = Clamp(LandmaskNoiseLevel, 0.01f, 8f, 0.1f);
         GlobalClimateStrength = Clamp(GlobalClimateStrength, 0f, 1f, 1f);
+        LatitudeStrength = Clamp(LatitudeStrength, 0f, 1f, 1f);
         if (ClimateNoiseLevel != 0f) ClimateNoiseLevel = Clamp(ClimateNoiseLevel, 0.01f, 8f, 0f);
 
         StartingClimateSearchRadiusBlocks = (int)Clamp(StartingClimateSearchRadiusBlocks, 512f, 4_000_000f, 65536f);

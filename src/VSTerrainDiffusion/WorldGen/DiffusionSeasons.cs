@@ -138,11 +138,12 @@ public class DiffusionSeasons : ModSystem
         float? seasonOverride = _api.World.Calendar.SeasonOverride;
         double month = seasonOverride.HasValue ? seasonOverride.Value * 12f : yearRel * 12.0;
 
-        // Without a latitude temperature gradient, two hemispheres only mean the calendar
-        // disagrees with itself halfway across the map, so this is off unless asked for.
+        // The same test Vintage Story's own calendar makes - SurvivalCoreSystem hands it
+        // OnGetLatitude and GetSeasonRel shifts the southern year half a turn - so the temperature
+        // curve and the season the game reports agree about which way round the year runs.
         bool southern = _config.SeasonHemispheres
                         && !seasonOverride.HasValue
-                        && _api.World.Calendar.OnGetLatitude(pos.Z) < 0.0;
+                        && !(_api.World.Calendar.OnGetLatitude(pos.Z) > 0.0);
 
         return GameMath.Smootherstep(Math.Abs(GameMath.CyclicValueDistance(southern ? 6.5 : 0.5, month, 12.0) / 6.0));
     }

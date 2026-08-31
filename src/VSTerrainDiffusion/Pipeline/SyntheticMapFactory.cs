@@ -49,6 +49,22 @@ public sealed class SyntheticMapFactory
 
     private const float PrecipitationResponse = 1.15f;
 
+    /// <summary>
+    /// How much of the map's own climate noise survives inside a latitude band, as a fraction of
+    /// the global spread.
+    ///
+    /// The synthetic map is drawn from the whole world's distribution at every pixel, so left
+    /// undamped one row of it swings across forty degrees of mean annual temperature - the entire
+    /// equator-to-pole range - and the band underneath would be invisible. Real land at one
+    /// latitude spreads about 6 C either side of its zonal mean, against 12 for the distribution as
+    /// a whole, which is where the temperature figure comes from; rainfall is damped less because
+    /// its spread within a belt really is most of its spread overall - the Atacama and the Amazon
+    /// are the same latitude.
+    /// </summary>
+    private const float TemperatureAnomaly = 0.5f;
+
+    private const float PrecipitationAnomaly = 0.7f;
+
     private const float BaseFrequency = 0.05f;
     private static readonly int[] Octaves = { 4, 2, 4, 4, 4 };
     private const float Lacunarity = 2.0f;
@@ -75,6 +91,9 @@ public sealed class SyntheticMapFactory
     private readonly ILandmaskSource _landmask;
     private readonly float _landmaskStrength;
 
+    /// <summary>Puts each row of the map in its latitude band, or null for an unbanded world.</summary>
+    private readonly ILatitudeSource _latitude;
+
     /// <summary>
     /// Where the elevation quantile table crosses sea level, as a fractional table index. Splitting
     /// the table there gives two sub-distributions - sea floors below, land above - and the
@@ -92,8 +111,9 @@ public sealed class SyntheticMapFactory
     /// <param name="landmask">Decides where the sea goes, or null to let the noise decide.</param>
     /// <param name="landmaskStrength">How completely the landmask overrides the noise, 0 to 1.</param>
     /// <param name="climate">The world's global temperature and precipitation settings.</param>
+    /// <param name="latitude">Bands the climate channels north to south, or null to leave them flat.</param>
     public SyntheticMapFactory(ulong worldSeed, ILandmaskSource landmask = null, float landmaskStrength = 1f,
-                               ClimateShift climate = default)
+                               ClimateShift climate = default, ILatitudeSource latitude = null)
     {
         PipelineData data = LoadData();
         _dataQuantiles = data.DataQuantileTables;
@@ -105,8 +125,11 @@ public sealed class SyntheticMapFactory
         _landmask = landmaskStrength > 0f ? landmask : null;
         _landmaskStrength = Math.Clamp(landmaskStrength, 0f, 1f);
         _seaPosition = FindSeaPosition(_dataQuantiles[0]);
+        _latitude = latitude != null && !latitude.IsNeutral ? latitude : null;
 
-        ClimatePlan plan = PlanClimate(climate);
+        // A banded world carries its global climate settings in the bands themselves, one absolute
+        // climate per row, so the whole-world warp that stands in for them otherwise is not wanted.
+        ClimatePlan plan = _latitude != null ? ClimatePlan.Unconditioned(ClimateShift.None) : PlanClimate(climate);
         _temperatureExponent = plan.TemperatureExponent;
         _precipitationScale = plan.PrecipitationScale;
 
@@ -199,27 +222,58 @@ public sealed class SyntheticMapFactory
         // then falls through to the same plain quantile lookup as the climate channels.
         float[] sea = _landmask?.SeaFraction(x1, y1, x2, y2);
 
+        // Rows run along Z, which is the axis latitude is measured on, so a band is one climate per
+        // row. Resolved up front because the two banded channels want the same rows.
+        float[] bandTemperature = null, bandPrecipitation = null;
+        if (_latitude != null)
+        {
+            bandTemperature = new float[h];
+            bandPrecipitation = new float[h];
+            for (int r = 0; r < h; r++)
+            {
+                _latitude.BandAt(y1 + r, out bandTemperature[r], out bandPrecipitation[r]);
+            }
+        }
+
         for (int ch = 0; ch < Channels; ch++)
         {
             FastNoiseLite fnl = _noises[ch];
             float[] nq = _noiseQuantiles[ch];
             float[] dq = _dataQuantiles[ch];
             bool masked = ch == 0 && sea != null;
-            float exponent = ch == TemperatureChannel ? _temperatureExponent : 1f;
-            float scale = ch == PrecipitationChannel ? _precipitationScale : 1f;
+            float channelExponent = ch == TemperatureChannel ? _temperatureExponent : 1f;
+            float channelScale = ch == PrecipitationChannel ? _precipitationScale : 1f;
+            bool bandedTemperature = bandTemperature != null && ch == TemperatureChannel;
+            bool bandedPrecipitation = bandPrecipitation != null && ch == PrecipitationChannel;
+            float median = bandedTemperature || bandedPrecipitation ? SampleTable(dq, (dq.Length - 1) * 0.5f) : 0f;
             var channel = new float[plane];
             int k = 0;
             for (int r = 0; r < h; r++)
             {
+                // A banded row is anchored, not shifted: the band says what the climate at this
+                // latitude is and the noise becomes the region's departure from it, damped so that
+                // the departure stays a regional anomaly instead of swamping the band it sits in.
+                float band = bandedTemperature ? bandTemperature[r]
+                    : bandedPrecipitation ? bandPrecipitation[r] : 0f;
+
                 for (int c = 0; c < w; c++, k++)
                 {
                     float noise = fnl.GetNoise(x1 + c, y1 + r);
                     if (masked)
                         channel[k] = SampleTable(dq, ApplyLandmask(TablePosition(noise, nq), sea[k], dq.Length));
-                    else if (exponent != 1f)
-                        channel[k] = SampleTable(dq, WarpRank(TablePosition(noise, nq), exponent, dq.Length));
-                    else if (scale != 1f)
-                        channel[k] = Math.Clamp(Interp(noise, nq, dq) * scale, dq[0], dq[dq.Length - 1]);
+                    else if (bandedTemperature)
+                        channel[k] = Math.Clamp(
+                            band + (Interp(noise, nq, dq) - median) * TemperatureAnomaly,
+                            dq[0], dq[dq.Length - 1]);
+                    else if (bandedPrecipitation)
+                        channel[k] = Math.Clamp(
+                            band * (float)Math.Pow(Math.Max(1e-3f, Interp(noise, nq, dq)) / median,
+                                                   PrecipitationAnomaly),
+                            dq[0], dq[dq.Length - 1]);
+                    else if (channelExponent != 1f)
+                        channel[k] = SampleTable(dq, WarpRank(TablePosition(noise, nq), channelExponent, dq.Length));
+                    else if (channelScale != 1f)
+                        channel[k] = Math.Clamp(Interp(noise, nq, dq) * channelScale, dq[0], dq[dq.Length - 1]);
                     else
                         channel[k] = Interp(noise, nq, dq);
                 }
@@ -414,6 +468,134 @@ public sealed class SyntheticMapFactory
     /// </summary>
     private static float Asked(float multiplier, float strength, float response)
         => (float)Math.Pow(Math.Max(1e-4f, multiplier), strength / response);
+
+    /// <summary>
+    /// What the model actually puts on the ground when it is conditioned on a given climate,
+    /// measured rather than derived.
+    ///
+    /// Two things separate the two numbers. The land the model draws stands above sea level, and
+    /// its own lapse rate cools it; and the model amplifies, leaning about 16% further from its
+    /// neutral climate than the conditioning asked. Both are steady enough to invert: the slope
+    /// held to within 3% across three seeds, and it is the slope that decides whether a latitude
+    /// gradient survives the model at all.
+    ///
+    /// The offset is not steady, and deliberately not corrected for. It ran from -5 C to -9 C
+    /// between the three seeds, because it is mostly the relief of whichever continents that seed
+    /// drew, and a world of high plateaus really is colder than a world of coastal plains - the
+    /// same reason Siberia is colder than Ireland. These are the mean over the three, so an
+    /// ordinary world lands on its bands and a mountainous one comes out a few degrees under.
+    ///
+    /// Measured over a 64x64 coarse box (about 250 km square at the default resolution) on seeds
+    /// 1234, 777 and 424242, taking the median of every land pixel, with the whole map conditioned
+    /// on one climate at a time.
+    /// </summary>
+    private static readonly float[] ResponseConditioningC = { -7f, -2f, 2f, 6f, 10f, 14f, 18f, 22f, 26f, 30f };
+
+    private static readonly float[] ResponseLandC =
+        { -14.33f, -11.40f, -7.63f, -3.03f, 1.87f, 6.77f, 11.57f, 16.23f, 20.70f, 24.87f };
+
+    /// <summary>
+    /// The same for rainfall, which the model damps rather than amplifies: land comes out at about
+    /// two thirds of the rain the conditioning carries, near enough proportionally that the curve is
+    /// straight in the log of both.
+    /// </summary>
+    private static readonly float[] ResponseConditioningMm = { 250f, 400f, 600f, 900f, 1400f, 2200f };
+
+    private static readonly float[] ResponseLandMm = { 166f, 286f, 439f, 679f, 1073f, 1681f };
+
+    /// <summary>
+    /// How much wetter a banded world comes out than the curve above predicts.
+    ///
+    /// The curve was measured with one climate over the whole map. A banded world is not that: its
+    /// conditioning runs from a rainforest to an ice cap down one meridian, and the model returns
+    /// about a third more rain across it than the flat case does - most of it at the cold end,
+    /// where it declines to dry out a polar belt as far as the zonal means say it should. Measured
+    /// as the median of world-against-band over three full equator-to-pole transects (1.21, 1.35,
+    /// 1.47), and applied to the curve in both directions so that the ask comes down and the answer
+    /// lands on the band.
+    /// </summary>
+    private const float BandedRainfallBias = 1.34f;
+
+    /// <summary>The rainfall curve in the log of both axes, with the banded bias folded in.</summary>
+    private static readonly float[] LogResponseConditioningMm = Log(ResponseConditioningMm, 1f);
+
+    private static readonly float[] LogResponseLandMm = Log(ResponseLandMm, BandedRainfallBias);
+
+    private static float[] Log(float[] values, float bias)
+    {
+        var result = new float[values.Length];
+        for (int i = 0; i < values.Length; i++) result[i] = (float)Math.Log(values[i] * bias);
+        return result;
+    }
+
+    /// <summary>
+    /// Works out how one latitude's climate is divided between the model and its output.
+    ///
+    /// Most of it the model can simply be asked for, once the ask is put through the inverse of its
+    /// measured response. What it cannot be asked for is a climate it has never seen: mean annual
+    /// temperature in the model's world tops out at 35.6 C and bottoms at -7.5 C, which after the
+    /// response is land between about -14 C and 31 C. From roughly 80 degrees poleward the band
+    /// wants an ice cap colder than that, so the conditioning is pinned to the coldest climate there
+    /// is and the last few degrees are an offset on the output. That is the same bargain the hot end
+    /// of <c>globalTemperature</c> strikes, and the same one vanilla strikes when its climate byte
+    /// saturates.
+    ///
+    /// Called once per entry of <see cref="LatitudeBands"/>' table rather than per pixel, which is
+    /// why it can afford to search the quantile tables.
+    /// </summary>
+    /// <param name="wantedC">Mean annual temperature the band wants on the ground, in Celsius.</param>
+    /// <param name="wantedMm">Annual rainfall the band wants on the ground, in millimetres.</param>
+    /// <exception cref="InvalidOperationException">The model's data is not on disk.</exception>
+    public static LatitudeBandPlan PlanLatitude(float wantedC, float wantedMm)
+    {
+        PipelineData data = LoadData();
+        float[] temperature = data.DataQuantileTables[TemperatureChannel];
+        float[] rainfall = data.DataQuantileTables[PrecipitationChannel];
+
+        float conditioningC = Math.Clamp(
+            Interp(wantedC, ResponseLandC, ResponseConditioningC, true),
+            temperature[0], temperature[temperature.Length - 1]);
+        float conditioningMm = Math.Clamp(
+            (float)Math.Exp(Interp((float)Math.Log(Math.Max(1f, wantedMm)), LogResponseLandMm,
+                                   LogResponseConditioningMm, true)),
+            rainfall[0], rainfall[rainfall.Length - 1]);
+
+        float deliveredC = Interp(conditioningC, ResponseConditioningC, ResponseLandC, true);
+        float deliveredMm = (float)Math.Exp(
+            Interp((float)Math.Log(Math.Max(1f, conditioningMm)), LogResponseConditioningMm,
+                   LogResponseLandMm, true));
+
+        return new LatitudeBandPlan(
+            conditioningC, conditioningMm,
+            wantedC - deliveredC,
+            deliveredMm > 0f ? wantedMm / deliveredMm : 1f);
+    }
+
+    /// <summary>
+    /// <see cref="Interp(float, float[], float[])"/> with the option of continuing the end segments
+    /// past the table instead of flattening at them, which is what an inverted response needs: a
+    /// band a little hotter than anything measured should ask for a little more conditioning, not
+    /// for exactly the most that was measured.
+    /// </summary>
+    private static float Interp(float x, float[] xp, float[] fp, bool extrapolate)
+    {
+        int n = xp.Length;
+        if (!extrapolate) return Interp(x, xp, fp);
+        if (x < xp[0]) return fp[0] + (x - xp[0]) * (fp[1] - fp[0]) / (xp[1] - xp[0]);
+        if (x > xp[n - 1])
+            return fp[n - 1] + (x - xp[n - 1]) * (fp[n - 1] - fp[n - 2]) / (xp[n - 1] - xp[n - 2]);
+        return Interp(x, xp, fp);
+    }
+
+    /// <summary>The climate the model draws when nothing has told it otherwise.</summary>
+    public static (float TemperatureC, float PrecipitationMm) NeutralClimate()
+    {
+        PipelineData data = LoadData();
+        float[] temperature = data.DataQuantileTables[TemperatureChannel];
+        float[] rainfall = data.DataQuantileTables[PrecipitationChannel];
+        return (SampleTable(temperature, (temperature.Length - 1) * 0.5f),
+                SampleTable(rainfall, (rainfall.Length - 1) * 0.5f));
+    }
 
     /// <summary>
     /// The temperature warp, and the shift the world will actually come out with because of it.

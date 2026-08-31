@@ -21,7 +21,7 @@
   "worldconfig-diffusionVerticalExaggeration-2": "2x (extreme)",
 
   "worldconfig-diffusionClimate": "Diffusion climate",
-  "worldconfig-diffusionClimate-hover": "Whether the model drives the climate as well as the terrain. The model predicts real bioclimatic variables — annual temperature and how far it swings through the year, annual rainfall and how unevenly it falls — which set the world's temperature, rainfall, forests and seasons in place of Vintage Story's latitude bands.",
+  "worldconfig-diffusionClimate-hover": "Whether the model drives the climate as well as the terrain. The model predicts real bioclimatic variables — annual temperature and how far it swings through the year, annual rainfall and how unevenly it falls — which set the world's temperature, rainfall, forests and seasons. Latitude still decides which band a place is in, from the world's polar-equator distance; the model decides what the coasts, rain shadows and mountains do within it.",
   "worldconfig-diffusionClimate-full": "Model climate (recommended)",
   "worldconfig-diffusionClimate-off": "Off - vanilla climate",
 

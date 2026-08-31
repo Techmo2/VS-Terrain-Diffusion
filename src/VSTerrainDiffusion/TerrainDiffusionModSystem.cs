@@ -399,6 +399,14 @@ public class TerrainDiffusionModSystem : ModSystem
                     : string.Empty);
         }
 
+        _api.Logger.Notification(
+            _settings.Latitude.IsNeutral
+                ? $"[{DiffusionPaths.ModId}] Latitude bands {_settings.Latitude.Status}; the model's climate " +
+                  "keeps its cold places wherever it drew them."
+                : $"[{DiffusionPaths.ModId}] Latitude bands {_settings.Latitude.Status}. Heading north or " +
+                  "south now changes the climate, and the equator sits where the world's starting " +
+                  "climate put it.");
+
         WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
         genMaps.forestGen = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 2, _provider, TerraGenConfig.forestMapScale, false,
@@ -627,6 +635,14 @@ public class TerrainDiffusionModSystem : ModSystem
                 : $"({x}, {y}, {z}): temperature seasonality {seasonality.Value.TemperatureSigmaC:0.0} C sigma, " +
                   $"precipitation seasonality {seasonality.Value.PrecipitationCv:0}%"
         };
+
+        // Which way round the year runs here, and why. The hemisphere is the game's own - the sign
+        // of its latitude - so this is also the season every other system will think it is.
+        double latitude = _api.World.Calendar.OnGetLatitude(z);
+        lines.Add(
+            $"Latitude {Math.Abs(latitude) * 90.0:0.0} deg " +
+            $"{(latitude > 0.0 ? "north" : "south")}, season {_api.World.Calendar.GetSeason(pos)}, " +
+            $"bands {_settings?.Latitude.Status ?? "unknown"}");
 
         // Midday on the first day of each season, so the numbers are comparable to each other.
         // Rainfall is reported as a share of the place's annual average rather than as the

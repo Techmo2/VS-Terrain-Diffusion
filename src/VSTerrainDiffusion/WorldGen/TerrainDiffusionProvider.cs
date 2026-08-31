@@ -112,7 +112,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
     public TerrainDiffusionProvider(ulong seed, PipelineModels models, DiffusionWorldSettings settings,
                                     ILogger logger, ILandmaskSource landmask = null)
     {
-        _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate);
+        _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude);
         _settings = settings;
         _logger = logger;
         _tileSize = DiffusionConfig.Instance.TerrainTileSizeBlocks;
@@ -342,12 +342,15 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
             if (climate == null) continue;
 
-            // Whatever the world's global climate settings did not get from the model is applied
-            // here rather than at the climate map, so that everything reading a tile - the map,
-            // the freeze line, the surface rules, the seasons - sees one consistent climate.
-            tile.TemperatureC[index] = _settings.WorldTemperature(climate[index]);
+            // Whatever the world's global climate settings and its latitude bands did not get from
+            // the model is applied here rather than at the climate map, so that everything reading
+            // a tile - the map, the freeze line, the surface rules, the seasons - sees one
+            // consistent climate. Rows run along Z, which is the axis latitude is measured on.
+            int columnZ = tile.BlockZ + index / size;
+            tile.TemperatureC[index] = _settings.WorldTemperature(climate[index], columnZ);
             tile.TemperatureSeasonality[index] = climate[plane + index];
-            tile.PrecipitationMm[index] = Math.Max(0f, _settings.WorldPrecipitation(climate[2 * plane + index]));
+            tile.PrecipitationMm[index] =
+                Math.Max(0f, _settings.WorldPrecipitation(climate[2 * plane + index], columnZ));
             tile.PrecipitationCv[index] = Math.Max(0f, climate[3 * plane + index]);
         }
 
@@ -748,7 +751,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
                     if (!InsideWorld(dr, dc, coarseToNative)) continue;
 
                     double cost = SpawnCost(dr, dc, northSouthCost);
-                    float temperature = _settings.WorldTemperature(CellTemperature(coarse, plane, w, r, c));
+                    int cellBlockZ = _settings.OriginBlockZ + dr * blocksPerCoarseCell;
+                    float temperature = _settings.WorldTemperature(
+                        CellTemperature(coarse, plane, w, r, c), cellBlockZ);
 
                     if (band == null)
                     {

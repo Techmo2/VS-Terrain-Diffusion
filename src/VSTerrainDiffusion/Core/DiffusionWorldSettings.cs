@@ -76,14 +76,26 @@ public sealed class DiffusionWorldSettings
     public float RainfallCorrection { get; private set; } = 1f;
 
     /// <summary>
+    /// Where the equator and the poles are, and what climate that implies. Never null;
+    /// <see cref="LatitudeBands.None"/> for a world with no latitude gradient.
+    /// </summary>
+    public LatitudeBands Latitude { get; private set; } = LatitudeBands.None;
+
+    /// <summary>
     /// A model temperature as the world will actually read it, once whatever is left of the
     /// world's global setting and the config's offset are in. Every column's temperature passes
     /// through here on its way into a tile, so the climate map, the freeze line, the surface rules
     /// and the spawn search all read one number.
+    ///
+    /// The Z coordinate is what decides latitude in Vintage Story, and the latitude band the model
+    /// could not be conditioned all the way into is added here.
     /// </summary>
-    public float WorldTemperature(float modelTemperatureC)
+    public float WorldTemperature(float modelTemperatureC, int blockZ)
     {
-        float celsius = ClimateShift.ApplyTemperature(modelTemperatureC, TemperatureCorrection)
+        // Latitude first, because the world's global setting scales the whole climate including
+        // its north-south gradient: half a world is half its tropics and half its ice.
+        float banded = modelTemperatureC + Latitude.TemperatureOffsetC(blockZ);
+        float celsius = ClimateShift.ApplyTemperature(banded, TemperatureCorrection)
                         + _shaping.TemperatureOffsetC;
 
         // The far ends of the temperature setting ask for climates that are not on any scale the
@@ -94,8 +106,8 @@ public sealed class DiffusionWorldSettings
     }
 
     /// <summary>Annual rainfall as the world will read it, in millimetres.</summary>
-    public float WorldPrecipitation(float modelPrecipitationMm)
-        => modelPrecipitationMm * RainfallCorrection;
+    public float WorldPrecipitation(float modelPrecipitationMm, int blockZ)
+        => modelPrecipitationMm * RainfallCorrection * Latitude.RainfallFactor(blockZ);
 
     /// <summary>Whether a world block column exists at these coordinates.</summary>
     public bool IsInsideWorld(int blockX, int blockZ)
@@ -192,6 +204,24 @@ public sealed class DiffusionWorldSettings
                 : null
         };
 
+        // Built after the settings object because it needs the model origin and the block scale,
+        // and read straight from the game rather than invented: polarEquatorDistance is the world's
+        // own setting, and the phase that puts the map centre on the chosen starting climate is
+        // Vintage Story's own too.
+        settings.Latitude = LatitudeBands.ForWorld(
+            api, settings,
+            ReadWorldConfig(worldConfig, "worldClimate", "realistic"),
+            ReadWorldConfig(worldConfig, "polarEquatorDistance", "50000").ToInt(50000),
+            shaping.LatitudeStrength, climate);
+
+        if (!settings.Latitude.IsNeutral)
+        {
+            // Each band already carries the world's global climate settings, so the whole-world
+            // correction that stands in for them on an unbanded world would apply them twice.
+            settings.TemperatureCorrection = 1f;
+            settings.RainfallCorrection = 1f;
+        }
+
         settings.RecomputeMapping();
         return settings;
     }
@@ -200,7 +230,12 @@ public sealed class DiffusionWorldSettings
     /// Builds settings without a running world, for the offline tools. The model origin sits at
     /// block (0, 0) so tool coordinates are model coordinates.
     /// </summary>
-    public static DiffusionWorldSettings ForOfflineUse(float nativeResolution, int scale, int mapSizeY, int seaLevel)
+    /// <param name="latitude">
+    /// Bands to generate under, for checking a banded world without a server. Null for an
+    /// unbanded one.
+    /// </param>
+    public static DiffusionWorldSettings ForOfflineUse(float nativeResolution, int scale, int mapSizeY,
+                                                       int seaLevel, LatitudeBands latitude = null)
     {
         var settings = new DiffusionWorldSettings
         {
@@ -212,7 +247,8 @@ public sealed class DiffusionWorldSettings
             VerticalExaggeration = 1f,
             SlopeDetailStrength = DiffusionConfig.Instance.WorldGen.SlopeDetailStrength,
             MapSizeY = mapSizeY,
-            SeaLevel = seaLevel
+            SeaLevel = seaLevel,
+            Latitude = latitude ?? LatitudeBands.None
         };
 
         settings.RecomputeMapping();
@@ -408,7 +444,8 @@ public sealed class DiffusionWorldSettings
         return $"scale {Scale} ({MetersPerBlock:0.##} m/block), {height}, " +
                $"sea level {SeaLevel}, world height {MapSizeY}, headroom {HeadroomBlocks} blocks " +
                $"(linear up to {LinearRangeMeters:0} m), climate {ClimateMode.ToString().ToLowerInvariant()}" +
-               (Climate.IsNeutral ? "" : $" ({Climate})");
+               (Climate.IsNeutral ? "" : $" ({Climate})") +
+               $", latitude bands {Latitude.Status}";
     }
 
     /// <summary>
