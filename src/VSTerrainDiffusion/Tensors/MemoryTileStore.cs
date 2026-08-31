@@ -13,20 +13,18 @@ public delegate IReadOnlyList<FloatTensor> BatchTensorFunction(
 
 /// <summary>
 /// In-memory factory and LRU cache for <see cref="InfiniteTensor"/> window outputs.
-/// Each registered tensor keeps its own window cache with a per-tensor byte budget.
+/// All registered tensors share one byte budget and access-ordered eviction queue.
 /// </summary>
 public sealed class MemoryTileStore
 {
     private sealed class WindowCache
     {
-        // Access-ordered LRU: dictionary for lookup, linked list for recency.
         public readonly Dictionary<WindowKey, LinkedListNode<CacheNode>> Map = new();
-        public readonly LinkedList<CacheNode> Order = new();
-        public long Bytes;
     }
 
     private sealed class CacheNode
     {
+        public string CacheId;
         public WindowKey Key;
         public FloatTensor Value;
     }
@@ -59,7 +57,16 @@ public sealed class MemoryTileStore
 
     private readonly Dictionary<string, WindowCache> _caches = new();
     private readonly Dictionary<string, InfiniteTensor> _tensors = new();
+    private readonly Dictionary<string, int> _activeReaders = new();
+    private readonly LinkedList<CacheNode> _order = new();
+    private readonly long _cacheLimitBytes;
+    private long _cachedBytes;
     private long _totalComputedWindowCount;
+
+    public MemoryTileStore(long cacheLimitBytes)
+    {
+        _cacheLimitBytes = cacheLimitBytes;
+    }
 
     // ---------------------------------------------------------------------
     // Factory
@@ -72,13 +79,12 @@ public sealed class MemoryTileStore
         TensorFunction function,
         TensorWindow outputWindow,
         InfiniteTensor[] deps,
-        TensorWindow[] depWindows,
-        long cacheLimitBytes)
+        TensorWindow[] depWindows)
     {
         if (_tensors.TryGetValue(id, out var existing)) return existing;
 
         var tensor = new InfiniteTensor(id, shape, outputWindow, function, null, 0,
-            deps, depWindows, this, cacheLimitBytes);
+            deps, depWindows, this);
         Register(id, tensor);
         return tensor;
     }
@@ -91,13 +97,12 @@ public sealed class MemoryTileStore
         TensorWindow outputWindow,
         InfiniteTensor[] deps,
         TensorWindow[] depWindows,
-        long cacheLimitBytes,
         int batchSize)
     {
         if (_tensors.TryGetValue(id, out var existing)) return existing;
 
         var tensor = new InfiniteTensor(id, shape, outputWindow, null, batchFunction, batchSize,
-            deps, depWindows, this, cacheLimitBytes);
+            deps, depWindows, this);
         Register(id, tensor);
         return tensor;
     }
@@ -118,33 +123,57 @@ public sealed class MemoryTileStore
         var key = new WindowKey(windowIndex);
         if (cache.Map.TryGetValue(key, out var node))
         {
-            cache.Order.Remove(node);
-            cache.Order.AddLast(node);
+            _order.Remove(node);
+            _order.AddLast(node);
             return;
         }
 
-        var added = cache.Order.AddLast(new CacheNode { Key = key, Value = output });
+        var added = _order.AddLast(new CacheNode { CacheId = id, Key = key, Value = output });
         cache.Map[key] = added;
-        cache.Bytes += output.ByteSize;
+        _cachedBytes += output.ByteSize;
         Interlocked.Increment(ref _totalComputedWindowCount);
     }
 
     /// <summary>Number of windows newly computed and cached since startup.</summary>
     public long TotalComputedWindowCount => Interlocked.Read(ref _totalComputedWindowCount);
 
-    internal void EvictIfNeeded(string id, long limitBytes)
+    internal void BeginRead(string id)
     {
-        if (limitBytes == long.MaxValue) return;
-        if (!_caches.TryGetValue(id, out var cache)) return;
+        _activeReaders.TryGetValue(id, out int readers);
+        _activeReaders[id] = readers + 1;
+    }
 
-        // Keep at least one entry even if it alone exceeds the limit.
-        while (cache.Bytes > limitBytes && cache.Map.Count > 1)
+    internal void EndRead(string id)
+    {
+        if (!_activeReaders.TryGetValue(id, out int readers))
         {
-            var first = cache.Order.First;
-            if (first == null) break;
-            cache.Order.RemoveFirst();
-            cache.Map.Remove(first.Value.Key);
-            cache.Bytes -= first.Value.Value.ByteSize;
+            EvictIfNeeded();
+            return;
+        }
+
+        readers--;
+        if (readers == 0) _activeReaders.Remove(id);
+        else _activeReaders[id] = readers;
+        EvictIfNeeded();
+    }
+
+    private void EvictIfNeeded()
+    {
+        if (_cacheLimitBytes == long.MaxValue) return;
+
+        while (_cachedBytes > _cacheLimitBytes)
+        {
+            LinkedListNode<CacheNode> candidate = _order.First;
+            while (candidate != null && _activeReaders.ContainsKey(candidate.Value.CacheId))
+                candidate = candidate.Next;
+
+            // Active reads pin their tensor's windows until the requested slice has been copied.
+            // If every entry is pinned, the outermost read will trim the cache when it completes.
+            if (candidate == null) break;
+
+            _order.Remove(candidate);
+            _caches[candidate.Value.CacheId].Map.Remove(candidate.Value.Key);
+            _cachedBytes -= candidate.Value.Value.ByteSize;
         }
     }
 
@@ -152,8 +181,8 @@ public sealed class MemoryTileStore
     {
         if (!_caches.TryGetValue(id, out var cache)) return null;
         if (!cache.Map.TryGetValue(new WindowKey(windowIndex), out var node)) return null;
-        cache.Order.Remove(node);
-        cache.Order.AddLast(node);
+        _order.Remove(node);
+        _order.AddLast(node);
         return node.Value.Value;
     }
 
@@ -166,19 +195,11 @@ public sealed class MemoryTileStore
         foreach (var cache in _caches.Values)
         {
             cache.Map.Clear();
-            cache.Order.Clear();
-            cache.Bytes = 0;
         }
+        _order.Clear();
+        _cachedBytes = 0;
     }
 
     /// <summary>Total bytes currently held across all window caches.</summary>
-    public long CachedBytes
-    {
-        get
-        {
-            long total = 0;
-            foreach (var cache in _caches.Values) total += cache.Bytes;
-            return total;
-        }
-    }
+    public long CachedBytes => _cachedBytes;
 }

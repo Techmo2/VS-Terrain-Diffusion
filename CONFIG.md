@@ -11,15 +11,26 @@ does not allow comments** — copy values out of it, do not paste the whole thin
 [Ranges](#ranges) at the end gives every numeric field's hard limit, the narrower range worth
 staying inside, and its default.
 
-Settings under `WorldGen` change what the world looks like. Editing them after a world has been
-explored makes new chunks disagree with the ones already on disk.
+Settings under `WorldGen`, and the effective decoder precision, change what the world looks like.
+When `DecoderPrecision` is `auto`, selecting OpenVINO also selects the INT8 decoder. Use an explicit
+precision for an established world; changing it after exploration can make new chunks disagree with
+the ones already on disk.
 
 ```jsonc
 {
-  // Which execution provider runs the model: "auto", "cpu", "cuda", "directml" or "coreml".
+  // Which execution provider runs the model: "auto", "cpu", "openvino", "cuda", "directml"
+  // or "coreml". OpenVINO can accelerate the decoder on 64-bit Linux CPUs; the coarse and base
+  // stages remain on ONNX Runtime CPU to keep memory use predictable. It runs in an isolated
+  // helper and falls back to ONNX Runtime CPU if the native compiler is not usable on the host.
   // "auto" picks CoreML on macOS, DirectML on 64-bit Windows, CUDA on Linux with an NVIDIA
   // driver present, and CPU everywhere else.
   "InferenceDevice": "auto",
+
+  // Where ONNX Runtime loads model graphs from: "memory", "file", or "auto". Memory makes GPU
+  // model switching faster. File uses about 1 GB less RAM with the current optimised models.
+  // Auto uses files for CPU inference, resident GPU sessions, and GPU hosts with less than 8 GB
+  // available; otherwise it keeps the graphs in memory.
+  "ModelLoadMode": "auto",
 
   // Keep only one of the three models resident on the GPU at a time. Costs a little time on each
   // stage switch, and holds peak VRAM near 1.5 GB instead of about 2.5 GB.
@@ -29,22 +40,34 @@ explored makes new chunks disagree with the ones already on disk.
   // saves a few seconds of hashing per start and gives up detection of a truncated download.
   "ValidateModelHashes": true,
 
-  // Download the matching ONNX Runtime native library automatically. Turn off to supply your own
-  // in TerrainDiffusionModels/onnxruntime/<version>/<flavour>/<rid>/.
+  // Download the matching ONNX Runtime and, when selected, OpenVINO native libraries
+  // automatically. Turn off to supply them yourself under TerrainDiffusionModels/onnxruntime/.
   "DownloadRuntime": true,
 
-  // Megabytes of decoded tensor windows kept per pipeline stage.
+  // Decoder model precision: "auto", "fp32" or "int8". Auto downloads and uses the optional
+  // decoder_model.int8.onnx when 64-bit Linux OpenVINO is requested, including its ONNX Runtime
+  // CPU fallback, and uses the original FP32 decoder otherwise. Explicit "int8" also permits
+  // controlled ONNX Runtime testing. Use "fp32" or "int8" rather than "auto" for an established
+  // world: INT8 can change newly generated terrain slightly.
+  "DecoderPrecision": "auto",
+
+  // Total megabytes of decoded tensor windows kept across all pipeline stages.
   "TileCacheMegabytes": 256,
+
+  // Number of latent windows sent through the base model together. Zero chooses one on CPU and
+  // four on GPU. Larger batches improve GPU utilisation but need more working memory.
+  "LatentBatchSize": 0,
 
   // Megabytes of finished terrain tiles to keep. This has to cover everything world generation
   // touches at once - a spawn area alone can span a hundred tiles - or tiles get evicted while
   // still in use and have to be rebuilt from scratch.
   "TerrainTileCacheMegabytes": 256,
 
-  // Side length, in blocks, of the terrain generated per model query. Larger values spread the
-  // model's latency over more chunks at the cost of a longer stall on first visit. Rounded down
-  // to a multiple of 32, and clamped to 64-1024.
-  "TerrainTileSizeBlocks": 256,
+  // Side length, in blocks, of the terrain generated per model query. Zero chooses 128 on CPU and
+  // 256 on GPU. Larger values spread the model's latency over more chunks at the cost of a longer
+  // stall on first visit. Explicit values are rounded down to a multiple of 32 and clamped to
+  // 64-1024.
+  "TerrainTileSizeBlocks": 0,
 
   // Log a line for every window the model computes. Very noisy; useful when profiling.
   "VerboseInference": false,
@@ -316,7 +339,8 @@ only has to stop the mod breaking, not stop the world looking silly.
 | Field | Clamped to | Useful | Default |
 | --- | --- | --- | --- |
 | `TileCacheMegabytes`, `TerrainTileCacheMegabytes` | 32 – 4096 | 128 – 1024 | 256 |
-| `TerrainTileSizeBlocks` | 64 – 1024, rounded down to a multiple of 32 | 128 – 512 | 256 |
+| `LatentBatchSize` | 0 – 16 | 0 – 4 | 0 |
+| `TerrainTileSizeBlocks` | 0, or 64 – 1024 rounded down to a multiple of 32 | 0, or 128 – 512 | 0 |
 | `TargetPeakFillFraction` | 0.2 – 1 | 0.8 – 0.95 | 0.92 |
 | `PeakQuantile` | 0.5 – 1 | 0.99 – 0.999 | 0.995 |
 | `CalibrationRadiusBlocks` | 512 – 4 000 000 | 2048 – 16384 | 4096 |
@@ -345,5 +369,13 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `ScaleOverride` | 0, or 1 – 16 | 0, or 1 – 6 | 0 |
 | `VerticalExaggerationOverride` | 0, or 0.05 – 20 | 0, or 0.5 – 2 | 0 |
 
-An unrecognised `InferenceDevice`, `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls
-back to its default rather than failing to load.
+An unrecognised `InferenceDevice`, `ModelLoadMode`, `DecoderPrecision`, `HeightMode`,
+`RainfallBasis`, `OceanMap` or `ClimateMode` falls back to its default rather than failing to load.
+
+The optional mixed-precision decoder is downloaded to
+`TerrainDiffusionModels/decoder_model.int8.onnx` when selected. Its SHA-256 is
+`0ce6eb771a072a8622448c30488f0505c009e43bebccd65246a4dd58fe8e2da6`; the exact recipe and
+calibration hashes are under `scripts/`. Keep `DecoderPrecision` fixed for an established world:
+although the quantised decoder tracks the FP32 output closely, changing it can make newly generated
+terrain differ slightly at chunk boundaries. `auto` follows the requested provider, so use `fp32`
+or `int8` explicitly once a world has been established.

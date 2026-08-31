@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
+using VSTerrainDiffusion.Native;
 
 namespace VSTerrainDiffusion.Pipeline;
 
@@ -26,8 +28,9 @@ public static class ModelAssetManager
         public string FileName;
         public string Sha256;
         public long SizeBytes;
+        public string UrlOverride;
 
-        public string Url =>
+        public string Url => UrlOverride ??
             $"https://huggingface.co/{RepositorySlug}/resolve/{Revision}/{FileName}?download=true";
     }
 
@@ -67,6 +70,15 @@ public static class ModelAssetManager
             SizeBytes = 774,
             Sha256 = "c60f0b74d89317e64cfc623fbfdd828f1b5b2e50aa75020ac4001103381853bd"
         }
+    };
+
+    private static readonly Asset Int8DecoderAsset = new()
+    {
+        FileName = "decoder_model.int8.onnx",
+        SizeBytes = 43496635,
+        Sha256 = "0ce6eb771a072a8622448c30488f0505c009e43bebccd65246a4dd58fe8e2da6",
+        UrlOverride =
+            "https://github.com/Techmo2/VS-Terrain-Diffusion/releases/download/decoder-int8-v1/decoder_model.int8.onnx"
     };
 
     private static readonly object Gate = new();
@@ -135,6 +147,89 @@ public static class ModelAssetManager
 
     public static string ResolveAssetPath(string fileName) => DiffusionPaths.ResolveAsset(fileName);
 
+    /// <summary>
+    /// Fetches the mixed-precision decoder when the selected provider needs it. Failure is not
+    /// fatal because the verified FP32 decoder is always available as a fallback.
+    /// </summary>
+    public static void EnsureOptionalDecoderReady(ILogger logger,
+                                                   CancellationToken cancellation = default)
+    {
+        if (!ShouldUseInt8Decoder()) return;
+
+        lock (Gate)
+        {
+            bool validate = DiffusionConfig.Instance.ValidateModelHashes;
+            string path = DiffusionPaths.ResolveAsset(Int8DecoderAsset.FileName);
+            bool needsDownload = !File.Exists(path) ||
+                                 new FileInfo(path).Length != Int8DecoderAsset.SizeBytes;
+            if (needsDownload)
+            {
+                Downloaded = true;
+                LoadingNotice.Post(logger,
+                    "Downloading the optional INT8 decoder ({0}). This happens once.",
+                    HumanBytes(Int8DecoderAsset.SizeBytes));
+            }
+
+            try
+            {
+                EnsureSingleAsset(Int8DecoderAsset, logger, validate, cancellation);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception e)
+            {
+                logger.Warning(
+                    "[{0}] Could not prepare the INT8 decoder ({1}); using the FP32 decoder",
+                    DiffusionPaths.ModId, e.Message);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Selects the optional mixed-precision decoder. The original decoder remains the safe
+    /// fallback, and is still downloaded and verified with the rest of the model set.
+    /// </summary>
+    public static string ResolveDecoderPath(ILogger logger)
+    {
+        string originalPath = ResolveAssetPath("decoder_model.onnx");
+        if (!ShouldUseInt8Decoder()) return originalPath;
+
+        string int8Path = ResolveAssetPath(Int8DecoderAsset.FileName);
+        if (!File.Exists(int8Path))
+        {
+            logger.Notification("[{0}] The INT8 decoder is not installed; using the FP32 decoder",
+                DiffusionPaths.ModId);
+            return originalPath;
+        }
+
+        var info = new FileInfo(int8Path);
+        bool invalidSize = info.Length != Int8DecoderAsset.SizeBytes;
+        bool invalidHash = DiffusionConfig.Instance.ValidateModelHashes && !invalidSize &&
+                           !Sha256Hex(int8Path).Equals(Int8DecoderAsset.Sha256, StringComparison.OrdinalIgnoreCase);
+        if (invalidSize || invalidHash)
+        {
+            logger.Warning("[{0}] '{1}' failed verification; using the FP32 decoder",
+                DiffusionPaths.ModId, Int8DecoderAsset.FileName);
+            return originalPath;
+        }
+
+        logger.Notification("[{0}] Using the mixed-precision INT8 decoder ({1})",
+            DiffusionPaths.ModId, HumanBytes(info.Length));
+        return int8Path;
+    }
+
+    private static bool ShouldUseInt8Decoder()
+    {
+        string precision = DiffusionConfig.Instance.DecoderPrecision;
+        return precision == "int8" ||
+               precision == "auto" &&
+               DiffusionConfig.Instance.InferenceDevice == "openvino" &&
+               OperatingSystem.IsLinux() &&
+               RuntimeInformation.OSArchitecture == Architecture.X64;
+    }
+
     private static void EnsureSingleAsset(Asset asset, ILogger logger, bool validate,
                                           CancellationToken cancellation)
     {
@@ -184,8 +279,8 @@ public static class ModelAssetManager
             if (!response.IsSuccessStatusCode)
             {
                 throw new ModelAssetException(
-                    $"Failed to download {asset.FileName} from Hugging Face (HTTP {(int)response.StatusCode}). " +
-                    $"Direct download: {OfflineHelpUrl}");
+                    $"Failed to download {asset.FileName} (HTTP {(int)response.StatusCode}). " +
+                    $"Direct download: {asset.Url}");
             }
 
             using (Stream netStream = response.Content.ReadAsStreamAsync(cancellation).GetAwaiter().GetResult())
@@ -213,6 +308,11 @@ public static class ModelAssetManager
             File.Move(tempPath, path, overwrite: true);
             logger.Notification("[{0}] Downloaded and verified '{1}'", DiffusionPaths.ModId, asset.FileName);
         }
+        catch (OperationCanceledException)
+        {
+            TryDelete(tempPath);
+            throw;
+        }
         catch (Exception e)
         {
             TryDelete(tempPath);
@@ -222,7 +322,7 @@ public static class ModelAssetManager
                 throw new ModelAssetException(
                     "The Terrain Diffusion models are missing and must be downloaded while online. " +
                     "Connect to the internet and restart the server, or place the files manually in " +
-                    DiffusionPaths.ModelDirectory + ". Direct download: " + OfflineHelpUrl, e);
+                    DiffusionPaths.ModelDirectory + ". Direct download: " + asset.Url, e);
             }
             throw new ModelAssetException("Failed downloading " + asset.FileName + ": " + e.Message, e);
         }
@@ -232,10 +332,11 @@ public static class ModelAssetManager
     {
         var buffer = new byte[1 << 20];
 
-        int read;
-        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+        while (true)
         {
-            cancellation.ThrowIfCancellationRequested();
+            int read = source.ReadAsync(buffer.AsMemory(), cancellation)
+                .AsTask().GetAwaiter().GetResult();
+            if (read == 0) break;
             destination.Write(buffer, 0, read);
         }
     }

@@ -1,0 +1,106 @@
+name: Build INT8 decoder release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - decoder-int8-v1
+
+permissions:
+  contents: write
+
+concurrency:
+  group: decoder-int8-release
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: decoder-int8-v1
+  SOURCE_URL: https://huggingface.co/xandergos/terrain-diffusion-30m-onnx/resolve/ad2df557eca5645f588766101cf3bc3682455c3e/decoder_model.onnx?download=true
+  SOURCE_SHA256: 6473ae47ca6ec4d743d30fe4f5d381fe4158899714eff09b762005bdbdef68c1
+  CALIBRATION_SHA256: 329e599de5876c2663d23a933328cb031bef0fc13bc739d3c78b3597a16f2dda
+
+jobs:
+  build-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scripts/requirements-quantize.txt
+
+      - name: Install quantisation tools
+        run: python -m pip install --disable-pip-version-check -r scripts/requirements-quantize.txt
+
+      - name: Download pinned source decoder
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/source build/calibration build/release
+          curl --fail --location --retry 5 --retry-all-errors \
+            --output build/source/decoder_model.onnx "$SOURCE_URL"
+          echo "$SOURCE_SHA256  build/source/decoder_model.onnx" | sha256sum --check --strict
+
+      - name: Unpack calibration data
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$CALIBRATION_SHA256  scripts/decoder-calibration-v1.zip" | sha256sum --check --strict
+          unzip -q scripts/decoder-calibration-v1.zip -d build/calibration
+
+      - name: Build and verify decoder
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/quantize_decoder.py \
+            build/source/decoder_model.onnx \
+            build/release/decoder_model.int8.onnx \
+            build/calibration/decoder-calibration-01.f32 \
+            build/calibration/decoder-calibration-02.f32 \
+            build/calibration/decoder-calibration-03.f32 \
+            build/calibration/decoder-calibration-04.f32
+          (cd build/release && sha256sum decoder_model.int8.onnx > decoder_model.int8.onnx.sha256)
+
+      - name: Assemble release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/calibration-bundle
+          cp build/calibration/decoder-calibration-*.f32 build/calibration-bundle/
+          cp scripts/quantize_decoder.py scripts/requirements-quantize.txt \
+            scripts/MODEL-LICENSE.txt scripts/README.md build/calibration-bundle/
+          cp scripts/MODEL-LICENSE.txt build/release/
+          touch -t 198001010000 build/calibration-bundle/*
+          (
+            cd build/calibration-bundle
+            zip -9 -X ../release/decoder-int8-v1-calibration.zip \
+              MODEL-LICENSE.txt README.md quantize_decoder.py requirements-quantize.txt \
+              decoder-calibration-01.f32 decoder-calibration-02.f32 \
+              decoder-calibration-03.f32 decoder-calibration-04.f32
+          )
+
+      - name: Create or update prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "Terrain Diffusion INT8 decoder v1" \
+              --notes-file scripts/decoder-int8-release-notes.md \
+              --prerelease
+            gh release upload "$RELEASE_TAG" build/release/* --clobber
+          else
+            gh release create "$RELEASE_TAG" build/release/* \
+              --target "$GITHUB_SHA" \
+              --title "Terrain Diffusion INT8 decoder v1" \
+              --notes-file scripts/decoder-int8-release-notes.md \
+              --prerelease --latest=false
+          fi

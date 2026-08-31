@@ -574,8 +574,12 @@ public class TerrainDiffusionModSystem : ModSystem
 
         return Vintagestory.API.Common.TextCommandResult.Success(
             $"Terrain Diffusion active.\n" +
-            $"Device: {OnnxRuntimeBootstrap.Provider} (ONNX Runtime {OnnxRuntimeBootstrap.OnnxRuntimeVersion}), " +
+            $"Configured runtime: {OnnxRuntimeBootstrap.ActiveRuntimeDescription}, " +
             $"{WorldPipelineModelConfig.Instance.NativeResolution:0.##} m per model pixel\n" +
+            $"Pipeline: latent batch {_provider.LatentBatchSize}, " +
+            $"{_provider.PipelineCachedBytes / 1048576.0:0.#}/{DiffusionConfig.Instance.TileCacheMegabytes} MB cached, " +
+            $"{_provider.PipelineComputedWindows} windows computed\n" +
+            $"Inference: {_provider.ModelTimingSummary}\n" +
             $"World: {_settings.Describe()}\n" +
             $"Tiles generated: {_provider.TilesGenerated} ({_provider.TileSize}x{_provider.TileSize} blocks, " +
             $"{_provider.AverageTileMillis} ms average)");

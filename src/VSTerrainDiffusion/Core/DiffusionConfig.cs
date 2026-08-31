@@ -8,12 +8,15 @@ namespace VSTerrainDiffusion.Core;
 /// </summary>
 public class DiffusionConfig
 {
-    /// <summary>"auto", "cpu", "cuda", "directml" or "coreml".</summary>
+    /// <summary>"auto", "cpu", "openvino", "cuda", "directml" or "coreml".</summary>
     public string InferenceDevice { get; set; } = "auto";
 
+    /// <summary>"auto", "memory" or "file". Controls where ONNX sessions load model graphs from.</summary>
+    public string ModelLoadMode { get; set; } = "auto";
+
     /// <summary>
-    /// Keep only one model resident on the GPU at a time. Costs a little time per stage switch but
-    /// keeps peak VRAM near 1.5 GB instead of ~2.5 GB.
+    /// Keep only one model resident in a GPU provider at a time. Costs time per stage switch but
+    /// substantially lowers peak VRAM.
     /// </summary>
     public bool OffloadModels { get; set; } = true;
 
@@ -21,13 +24,24 @@ public class DiffusionConfig
     public bool ValidateModelHashes { get; set; } = true;
 
     /// <summary>
-    /// Download the matching ONNX Runtime native library automatically. Turn off to supply your own
-    /// in <c>TerrainDiffusionModels/onnxruntime/&lt;rid&gt;/</c>.
+    /// Download the matching ONNX Runtime and optional OpenVINO native libraries automatically.
+    /// Turn off to supply them yourself under <c>TerrainDiffusionModels/onnxruntime/</c>.
     /// </summary>
     public bool DownloadRuntime { get; set; } = true;
 
-    /// <summary>Megabytes of decoded tensor windows kept per pipeline stage.</summary>
+    /// <summary>
+    /// "auto", "fp32" or "int8". Auto downloads and uses the smaller decoder when 64-bit Linux
+    /// OpenVINO is requested, including its ONNX Runtime CPU fallback, and uses the original
+    /// decoder everywhere else. Changing decoder precision can alter newly generated terrain
+    /// slightly, so use an explicit value for an established world.
+    /// </summary>
+    public string DecoderPrecision { get; set; } = "auto";
+
+    /// <summary>Total megabytes of decoded tensor windows kept across all pipeline stages.</summary>
     public int TileCacheMegabytes { get; set; } = 256;
+
+    /// <summary>Latent windows per base-model call. Zero selects one on CPU and four on GPU.</summary>
+    public int LatentBatchSize { get; set; }
 
     /// <summary>
     /// Megabytes of finished terrain tiles to keep. This has to cover everything world generation
@@ -39,9 +53,9 @@ public class DiffusionConfig
     /// <summary>
     /// Number of chunk columns' worth of terrain generated per model query, in blocks. Larger
     /// values amortise model latency over more chunks at the cost of a longer first-visit stall.
-    /// Must be a multiple of 32.
+    /// Zero selects 128 on CPU and 256 on GPU. Explicit values must be a multiple of 32.
     /// </summary>
-    public int TerrainTileSizeBlocks { get; set; } = 256;
+    public int TerrainTileSizeBlocks { get; set; }
 
     /// <summary>Log a line for every window the model computes. Very noisy; useful when profiling.</summary>
     public bool VerboseInference { get; set; }
@@ -83,12 +97,18 @@ public class DiffusionConfig
         if (TileCacheMegabytes < 32) TileCacheMegabytes = 32;
         if (TileCacheMegabytes > 4096) TileCacheMegabytes = 4096;
 
+        if (LatentBatchSize < 0) LatentBatchSize = 0;
+        if (LatentBatchSize > 16) LatentBatchSize = 16;
+
         if (TerrainTileCacheMegabytes < 32) TerrainTileCacheMegabytes = 32;
         if (TerrainTileCacheMegabytes > 4096) TerrainTileCacheMegabytes = 4096;
 
-        if (TerrainTileSizeBlocks < 64) TerrainTileSizeBlocks = 64;
-        if (TerrainTileSizeBlocks > 1024) TerrainTileSizeBlocks = 1024;
-        TerrainTileSizeBlocks -= TerrainTileSizeBlocks % 32;
+        if (TerrainTileSizeBlocks != 0)
+        {
+            if (TerrainTileSizeBlocks < 64) TerrainTileSizeBlocks = 64;
+            if (TerrainTileSizeBlocks > 1024) TerrainTileSizeBlocks = 1024;
+            TerrainTileSizeBlocks -= TerrainTileSizeBlocks % 32;
+        }
 
         InferenceDevice = (InferenceDevice ?? "auto").Trim().ToLowerInvariant();
         switch (InferenceDevice)
@@ -99,12 +119,28 @@ public class DiffusionConfig
             case "directml":
             case "dml":
             case "coreml":
+            case "openvino":
             case "gpu":
                 break;
             default:
                 InferenceDevice = "auto";
                 break;
         }
+
+        ModelLoadMode = (ModelLoadMode ?? "auto").Trim().ToLowerInvariant();
+        switch (ModelLoadMode)
+        {
+            case "auto":
+            case "memory":
+            case "file":
+                break;
+            default:
+                ModelLoadMode = "auto";
+                break;
+        }
+
+        DecoderPrecision = (DecoderPrecision ?? "auto").Trim().ToLowerInvariant();
+        if (DecoderPrecision is not ("auto" or "fp32" or "int8")) DecoderPrecision = "auto";
     }
 }
 

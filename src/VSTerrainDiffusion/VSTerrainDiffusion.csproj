@@ -63,6 +63,17 @@
   -->
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.4" />
+    <ProjectReference Include="..\VSTerrainDiffusion.OpenVinoWorker\VSTerrainDiffusion.OpenVinoWorker.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\VSTerrainDiffusion.OpenVinoWorker\bin\$(Configuration)\net10.0\VSTerrainDiffusion.OpenVinoWorker.dll"
+                      LogicalName="VSTerrainDiffusion.OpenVinoWorker.dll" />
+    <EmbeddedResource Include="..\VSTerrainDiffusion.OpenVinoWorker\bin\$(Configuration)\net10.0\VSTerrainDiffusion.OpenVinoWorker.deps.json"
+                      LogicalName="VSTerrainDiffusion.OpenVinoWorker.deps.json" />
+    <EmbeddedResource Include="..\VSTerrainDiffusion.OpenVinoWorker\bin\$(Configuration)\net10.0\VSTerrainDiffusion.OpenVinoWorker.runtimeconfig.json"
+                      LogicalName="VSTerrainDiffusion.OpenVinoWorker.runtimeconfig.json" />
   </ItemGroup>
 
   <ItemGroup>

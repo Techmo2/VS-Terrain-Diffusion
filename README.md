@@ -392,17 +392,22 @@ range is *forbidden* — it is just where the results stop being worth having.
 
 ### Inference
 
-Machine settings. Safe to change at any time.
+Machine settings. These are safe to change at any time except `decoderPrecision`; changing
+`inferenceDevice` while precision is `auto` can change it too. Use explicit `fp32` or `int8` for an
+established world.
 
 | Key                          | Default | Useful range | Meaning                                 |
 | ---------------------------- | ------- | ------------ | ---------------------------------------- |
-| `inferenceDevice`            | `auto`  | `auto` `cpu` `cuda` `directml` `coreml` | Leave on `auto` unless it picks wrong. |
+| `inferenceDevice`            | `auto`  | `auto` `cpu` `openvino` `cuda` `directml` `coreml` | OpenVINO can accelerate the decoder on 64-bit Linux CPUs while leaving the large stages on ORT CPU. A supervised helper contains native failures and falls back to ORT CPU. |
+| `modelLoadMode`              | `auto`  | `auto` `memory` `file` | Load model graphs from RAM or their optimised files. Auto uses files for CPU and memory-constrained hosts. |
 | `offloadModels`              | true    | on / off     | One model on the GPU at a time. Costs a little time per stage switch, saves ~1 GB of VRAM. Turn off if you have VRAM to spare. |
 | `validateModelHashes`        | true    | on / off     | Verify SHA-256 of existing model files on startup. Off saves a few seconds of disk read. |
-| `downloadRuntime`            | true    | on / off     | Fetch the ONNX Runtime native library automatically. |
-| `tileCacheMegabytes`         | 256     | 128 – 1024   | Decoded tensor windows per pipeline stage. |
+| `downloadRuntime`            | true    | on / off     | Fetch the ONNX Runtime and optional OpenVINO native libraries automatically. |
+| `decoderPrecision`           | `auto`  | `auto` `fp32` `int8` | Auto uses INT8 when 64-bit Linux OpenVINO is requested (including ORT fallback) and FP32 elsewhere. Use an explicit value for an established world. |
+| `tileCacheMegabytes`         | 256     | 128 – 1024   | Total decoded tensor-window cache across all pipeline stages. |
+| `latentBatchSize`            | 0       | 0 – 4        | Latent windows per base-model call. Zero chooses 1 on CPU and 4 on GPU. |
 | `terrainTileCacheMegabytes`  | 256     | 128 – 1024   | Finished terrain tiles. Raise if you see thrash warnings. |
-| `terrainTileSizeBlocks`      | 256     | 128 – 512    | Blocks generated per model invocation, a multiple of 32. Larger amortises the model better but wastes more work at the edges of what is being generated. |
+| `terrainTileSizeBlocks`      | 0       | 0, 128 – 512 | Blocks generated per model invocation, a multiple of 32. Zero chooses 128 on CPU and 256 on GPU; larger values amortise the model better but make first-visit stalls longer. |
 | `verboseInference`           | false   | on / off     | Log every model window. Noisy; for diagnosing slowness. |
 
 ### World generation
@@ -516,4 +521,6 @@ Needs the .NET 10 SDK and a Vintage Story install at `/opt/vintagestory` (overri
 
 - Terrain Diffusion model, the reference implementation and the original Minecraft mod:
   [xandergos](https://github.com/xandergos)
+- Mixed-precision decoder derived from that MIT-licensed model; its exact recipe and upstream
+  copyright notice are in [`scripts/`](scripts/).
 - Vintage Story integration: this mod
