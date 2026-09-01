@@ -357,7 +357,11 @@ public sealed class DiffusionWorldSettings
             LinearRangeMeters = _kneeBlocks / _blocksPerMeter;
         }
 
-        _oceanScale = _shaping.OceanDepthFraction * Math.Max(8, SeaLevel - 4) / DepthCurve(ModelMaxDepthMeters);
+        // Measured from the curve's own value at the shore, not from zero, because that is where
+        // the sea floor now starts: scaling the whole curve would scale its constant term too, and
+        // that term is meant to be one block of water whatever the world's height.
+        _oceanScale = _shaping.OceanDepthFraction * Math.Max(8, SeaLevel - 4)
+                      / (DepthCurve(ModelMaxDepthMeters) - DepthCurve(0f));
     }
 
     /// <summary>Shape of the sea-floor curve: steep near the coast, heavily compressed in the abyss.</summary>
@@ -378,10 +382,17 @@ public sealed class DiffusionWorldSettings
     /// <c>u / (1 + u)</c>, which has slope 1 at the join so there is no crease, and — unlike a
     /// saturating exponential — never quite flattens, so even in a region whose mountains overrun
     /// the world by several kilometres the summits stay rounded instead of shearing off into a
-    /// mesa. Ocean floors use a square-root curve so that abyssal plains stay within the (much
-    /// shallower) block budget below sea level; that curve is a block deep before it starts, which
-    /// is what keeps the water at the shore from being a puddle, so it is measured from sea level
-    /// rather than from the waterline.
+    /// mesa.
+    ///
+    /// Ocean floors use a square-root curve so that abyssal plains stay within the much shallower
+    /// block budget below sea level. It is measured from the same waterline the land is, and has
+    /// its own value at the shore taken off it, so that a column a handful of centimetres under
+    /// water is a handful of centimetres under water rather than a cliff. What stops it being a
+    /// puddle instead is the one-block floor below, which is a block because a block is the
+    /// smallest depth the world can hold — not because of anything to do with the depth curve.
+    /// That distinction is the whole bug this replaced: the floor used to be the curve's constant
+    /// term, which <see cref="_oceanScale"/> then multiplied, so the shallows came out three
+    /// blocks deep in a tall world and bone dry in a short one.
     /// </summary>
     public int ElevationToBlockY(float meters)
     {
@@ -402,7 +413,11 @@ public sealed class DiffusionWorldSettings
             return WaterSurfaceY + (int)y;
         }
 
-        return Math.Max(2, SeaLevel - (int)(DepthCurve(-meters) * _oceanScale));
+        // At least one block, because anything below the waterline has to hold water, and a block
+        // is the least the world can express: 15 m of elevation at the default resolution, so the
+        // whole intertidal zone lands inside the first one.
+        int depth = Math.Max(1, (int)((DepthCurve(-meters) - DepthCurve(0f)) * _oceanScale));
+        return Math.Max(2, WaterSurfaceY - depth);
     }
 
     /// <summary>
@@ -431,15 +446,21 @@ public sealed class DiffusionWorldSettings
         return blocks <= 0f ? 0f : blocks * MetersPerBlockVertical;
     }
 
+    /// <summary>
+    /// How the terrain's height is being mapped, as a phrase. Shared by the one-line log summary
+    /// and the field-per-line command readout so the two cannot drift apart.
+    /// </summary>
+    public string DescribeHeight() => IsCalibrated
+        ? $"calibrated to a {CalibratedPeakMeters:0} m peak ({EffectiveExaggeration:0.##}x, " +
+          $"{MetersPerBlockVertical:0.##} m/block vertical)"
+        : IsIsotropic
+            ? "true to scale (1 block = 1 block in every direction)"
+            : $"{EffectiveExaggeration:0.##}x ({MetersPerBlockVertical:0.##} m/block vertical)";
+
     /// <summary>Human-readable summary for the log and the /terraindiffusion command.</summary>
     public string Describe()
     {
-        string height = IsCalibrated
-            ? $"height calibrated to a {CalibratedPeakMeters:0} m peak ({EffectiveExaggeration:0.##}x, " +
-              $"{MetersPerBlockVertical:0.##} m/block vertical)"
-            : IsIsotropic
-                ? "height true to scale (1 block = 1 block in every direction)"
-                : $"height {EffectiveExaggeration:0.##}x ({MetersPerBlockVertical:0.##} m/block vertical)";
+        string height = "height " + DescribeHeight();
 
         return $"scale {Scale} ({MetersPerBlock:0.##} m/block), {height}, " +
                $"sea level {SeaLevel}, world height {MapSizeY}, headroom {HeadroomBlocks} blocks " +

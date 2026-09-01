@@ -101,7 +101,9 @@ explored makes new chunks disagree with the ones already on disk.
     // to 1 the more faithful the summits and the harder they clip.
     "LinearKneeFraction": 0.85,
 
-    // Fraction of the space below sea level that the deepest ocean reaches.
+    // Fraction of the space below sea level that the deepest ocean reaches. It scales the whole
+    // sea-floor curve except its shallow end, which is pinned to the waterline so that the first
+    // column past the shore is one block of water at any world height.
     "OceanDepthFraction": 0.9,
 
     // Multiplies the Perlin detail added to sloped ground. The model resolves features down to

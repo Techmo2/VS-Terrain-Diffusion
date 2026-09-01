@@ -377,9 +377,26 @@ vanilla's seasons for display.
 | Subcommand           | What it shows                                                          |
 | -------------------- | ---------------------------------------------------------------------- |
 | `status`             | Device, world scaling, tiles generated and average tile time.           |
-| `here`               | The model's elevation, slope, full bioclimate and derived cover at you. |
-| `season <x> <z>`     | Latitude, hemisphere, the game's season, and the year's temperature and rainfall cycle at a position. |
+| `here`               | Elevation, slope, full bioclimate and derived cover where you stand, plus the latitude diagnostics below. |
+| `season <x> <z>`     | The same diagnostics at a position, and the year's temperature and rainfall cycle there. Usable from a server console, where `here` is not. |
 | `column <x> <z>`     | What actually got generated in a column, next to what the model said.   |
+
+Every command prints one field per line. `here` and `season` share four for diagnosing the climate:
+
+- **Latitude** and **Hemisphere** — how far from the equator the game puts that Z, which side of it,
+  and the season the game's own calendar reports there. That season is the one every other system
+  will think it is, so it is the thing to check if foliage or crops look out of step.
+- **Sea-level temperature** — the same reading with the altitude taken back out, and the local lapse
+  rate the model fitted. This is the number to compare two places by, because it has the mountain
+  out of it. It costs a pipeline query rather than a tile lookup, so it is a little slower than the
+  rest of the readout.
+- **Band temperature** and **Band precipitation** — what the latitude band asked for here and how
+  far this column sits from it, plus a **Band offset applied** line when some of the band had to be
+  added after the model ran rather than conditioned into it.
+
+A single column is expected to scatter several degrees either side of its band: the band is a
+median over all the land in the belt, and everything that makes one place differ from another is
+the model's business. Consistent drift over many columns is what would indicate something wrong.
 
 ## Configuration
 
@@ -417,7 +434,7 @@ chunks disagree with old ones.
 | `heightMode`                     | `"isotropic"` | `"isotropic"` `"manual"` `"auto"` | True scale, a fixed metres-per-block, or fit the terrain to the world's height. |
 | `metersPerBlockVertical`         | 0             | 5 – 30       | `"manual"` only: metres of elevation per block. 0 leaves the mode's own answer. |
 | `linearKneeFraction`             | 0.85          | 0.7 – 0.95   | Fraction of the height mapped perfectly linearly before summits start compressing. Lower keeps more of the range for the compressed tail. |
-| `oceanDepthFraction`             | 0.9           | 0.6 – 1      | How much of the space below sea level the abyss reaches. Lower gives shallower seas and more room for the sea bed's detail. |
+| `oceanDepthFraction`             | 0.9           | 0.6 – 1      | How much of the space below sea level the abyss reaches. Lower gives shallower seas and more room for the sea bed's detail. The shore end is not scaled by it — the first column past the beach is one block of water at any world height. |
 | `slopeDetailStrength`            | 1             | 0.5 – 2      | Perlin roughness added to sloped ground. 0 gives glassy hillsides; above 2 the noise starts competing with the terrain. |
 | `scaleOverride`                  | 0             | 1 – 6        | Overrides the world's resolution: blocks per 30 m model pixel. 0 uses the world setting. Above 6 is settable but generation cost grows with the square. |
 | `verticalExaggerationOverride`   | 0             | 0.5 – 2      | Overrides the world's height multiplier. 0 uses the world setting. |
