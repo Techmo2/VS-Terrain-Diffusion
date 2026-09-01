@@ -232,7 +232,8 @@ Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whate
 ## What the mod changes
 
 - **Terrain pass** — vanilla `GenTerra`'s chunk handler is swapped for one that fills columns from
-  the diffusion heightmap.
+  the diffusion heightmap. When another mod has already replaced terrain generation, the model
+  supplies heights to *it* instead; see [Other terrain mods](#other-terrain-mods).
 - **Climate map** — temperature and rainfall from the model, pre-compensated for the altitude
   corrections the game applies on read. The geologic activity byte is still vanilla's.
 - **Global temperature and precipitation** — conditioning rather than post-processing, so the world
@@ -266,6 +267,61 @@ Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whate
 
 Everything else — rock strata, ores, caves, rivers, ponds, ruins, traders, temporal stability — is
 vanilla, running unchanged on top.
+
+## Other terrain mods
+
+Mods that only supply a map — Continental World's ocean map, for instance — need nothing special:
+the mod reads whatever map is installed and conditions the model on it.
+
+A mod that *replaces terrain generation itself* is a different matter. Two generators filling the
+same chunk column do not layer; the world comes out as the union of both landscapes with only one
+mod's heightmaps recorded, and the surface block layers get buried under the other mod's stone.
+There is only one arrangement that works, so that is the one the mod uses: whoever is generating
+terrain gets handed the model's heights and does the filling.
+
+**Algernon's Watersheds** is supported this way. Watersheds disables vanilla `GenTerra` and fills
+every column itself, so with both mods installed this mod stops generating terrain and instead
+answers every question Watersheds asks about the height of the ground: the height its whole
+watershed analysis is built on, the height a stream's profile is laid out against, the height after
+a stream has cut into it — which is what decides where the water surface and the banks go — and
+which blocks of a column are solid. Its drainage basins are then solved on the model's continents,
+its streams run down the valleys that are really there, and the carve depth it computed for a column
+is applied to the modelled hillside. Everything downstream of that — stream water, banks, rapids,
+groundwater, its block layer pass — is Watersheds' own, unchanged.
+
+Answering *all* of those from the model is the whole trick, not a nicety. A stream's water surface
+and the bed it lies in are worked out separately, so a single height left coming from Watersheds'
+own landscape strands water in the air where that landscape stood higher and leaves the channel dry
+below it. One consequence: Watersheds' ridge and gully erosion filter is switched off for these
+worlds. It exists to cut valley detail into fractal noise, the model's landscape already has erosion
+in it, and it is computed privately inside two of those height answers — so keeping it would put the
+water and the bed back out of step.
+
+Three things to expect:
+
+- **World creation takes longer.** The watershed analysis samples heights over a far wider area than
+  the chunks being generated — several kilometres around spawn — and every one of those samples has
+  to come from the model. Expect the first load to spend a few minutes generating terrain tiles it
+  will not visibly use yet. It is a one-time cost per area, and the tiles are cached.
+- **Watersheds decides where streams go, on its own terms.** In particular it refuses to path a
+  stream across terrain rougher than `SmallChunkRoughnessThreshold` in its
+  `ModConfig/Watersheds/TerrainAnalysisConfig.json` (2 blocks of RMSE from a plane across a chunk,
+  by default). Ordinary modelled landscape sits well inside that — a sample of chunks around a
+  460 m plateau measured 0.0 to 0.8 — but genuinely broken ground will not get small streams, the
+  same way it would not in an unmodified Watersheds world. Raise the threshold if you want them
+  anyway.
+- **Streams need somewhere to drain.** They path towards the sea, so a world generated at vanilla's
+  default land cover has almost no ocean for them to reach and produces almost no streams. That is
+  Watersheds' behaviour rather than this mod's, but it is worth knowing before concluding the two
+  are not working together.
+
+Watersheds keeps its stream maps in a database beside the save, so a world explored with an older
+version of this mod has streams in it that were plotted against the wrong landscape. Clear them with
+`/watersheds clearstreammaps` and regenerate the affected chunks, or start a new world.
+
+If Watersheds updates in a way this cannot reach into, the mod says so in the log and on the loading
+screen and takes itself out of the world entirely, leaving Watersheds' own terrain intact rather
+than generating a broken one.
 
 ## How it works
 

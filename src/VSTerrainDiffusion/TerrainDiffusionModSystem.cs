@@ -99,7 +99,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _generator = new GenDiffusionTerra(_api, _provider, _settings);
         _surface = new DiffusionSurface(_api, _provider);
 
-        InstallTerrainHandler();
+        if (!InstallTerrain()) return;
         InstallMapLayers();
 
         if (DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic)
@@ -129,7 +129,7 @@ public class TerrainDiffusionModSystem : ModSystem
     {
         if (DiffusionConfig.Instance.WorldGen.OceanMap != "input") return null;
         return new OceanMapLandmask(
-            () => _api.ModLoader.GetModSystem<GenMaps>()?.oceanGen, _settings, _api.Logger);
+            () => WorldMapLayers.Resolve(_api)?.Ocean, _settings, _api.Logger);
     }
 
     /// <summary>Loads the ONNX models, or null if they could not be had.</summary>
@@ -296,6 +296,57 @@ public class TerrainDiffusionModSystem : ModSystem
     private ulong WorldSeed() => (ulong)(uint)_api.WorldManager.Seed;
 
     /// <summary>
+    /// Gets the model's heights into the world, whichever mod is generating terrain.
+    ///
+    /// Normally that is vanilla and this mod takes its place. When another mod has replaced terrain
+    /// generation outright there is nowhere to stand: two generators filling the same column
+    /// produce the union of both landscapes with only one mod's heightmaps recorded, which leaves
+    /// the surface block layers buried under the other mod's rock. So the only supported
+    /// arrangement with such a mod is to hand it our heights and let it do the filling.
+    ///
+    /// Returns false when that could not be arranged, in which case this mod must stay out of the
+    /// world entirely rather than fight over it.
+    /// </summary>
+    private bool InstallTerrain()
+    {
+        if (WatershedsCompat.IsPresent(_api)) return InstallWatershedsHandover();
+
+        InstallTerrainHandler();
+        return true;
+    }
+
+    /// <summary>
+    /// Hands the diffusion heightmap to Algernon's Watersheds and leaves the filling, the rivers
+    /// and everything downstream of them to it. See <see cref="WatershedsCompat"/> for how.
+    /// </summary>
+    private bool InstallWatershedsHandover()
+    {
+        if (WatershedsCompat.TryInstall(_api, _provider, out string failure))
+        {
+            _api.Logger.Notification(
+                "[{0}] Algernon's Watersheds is generating this world's terrain, so the model is " +
+                "supplying its heights instead of filling chunks itself. Its rivers and streams are " +
+                "routed over the modelled landscape.", DiffusionPaths.ModId);
+            return true;
+        }
+
+        _api.Logger.Error(
+            "[{0}] Algernon's Watersheds also replaces terrain generation, and {1}. Both mods " +
+            "cannot generate the same world, so terrain is being left entirely to Watersheds and " +
+            "this mod is doing nothing. Remove one of the two, or update them.",
+            DiffusionPaths.ModId, failure);
+        LoadingNotice.Post(_api.Logger,
+            "disabled for this world. Algernon's Watersheds is generating the terrain and could not " +
+            "be handed the model's heights.");
+
+        _provider?.Dispose();
+        _provider = null;
+        _generator = null;
+        _surface = null;
+        return false;
+    }
+
+    /// <summary>
     /// Replaces vanilla GenTerra's Terrain-pass delegate in place, so the ordering relative to
     /// rock strata, caves and block layers is exactly what those systems expect.
     /// </summary>
@@ -343,11 +394,17 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     private void InstallMapLayers()
     {
-        var genMaps = _api.ModLoader.GetModSystem<GenMaps>();
+        WorldMapLayers genMaps = WorldMapLayers.Resolve(_api);
         if (genMaps == null)
         {
             _api.Logger.Warning("[{0}] GenMaps is not loaded; climate and ocean maps stay vanilla.", DiffusionPaths.ModId);
             return;
+        }
+
+        if (!genMaps.IsVanilla)
+        {
+            _api.Logger.Notification("[{0}] The world's map layers belong to {1}; reading and writing those.",
+                DiffusionPaths.ModId, genMaps.OwnerName);
         }
 
         // In "input" mode the ocean map is what the terrain was conditioned on, so it is already
@@ -356,7 +413,7 @@ public class TerrainDiffusionModSystem : ModSystem
         // where the model invented the continents, has anything to correct.
         if (DiffusionConfig.Instance.WorldGen.OceanMap == "output")
         {
-            genMaps.oceanGen = new DiffusionOceanMapLayer(_api.WorldManager.Seed + 1873, _provider);
+            genMaps.Ocean = new DiffusionOceanMapLayer(_api.WorldManager.Seed + 1873, _provider);
             _api.Logger.Notification(
                 "[{0}] The model decides the coastline; the world's ocean map has been replaced to match it.",
                 DiffusionPaths.ModId);
@@ -372,9 +429,9 @@ public class TerrainDiffusionModSystem : ModSystem
         // Wrap the vanilla climate layer rather than replace it: its geologic activity byte has
         // nothing to do with climate and is still wanted. On re-initialisation GenMaps rebuilds
         // climateGen, but unwrap defensively anyway.
-        MapLayerBase vanillaClimate = genMaps.climateGen is DiffusionClimateMapLayer alreadyWrapped
+        MapLayerBase vanillaClimate = genMaps.Climate is DiffusionClimateMapLayer alreadyWrapped
             ? alreadyWrapped.Baseline
-            : genMaps.climateGen;
+            : genMaps.Climate;
 
         if (vanillaClimate == null)
         {
@@ -383,7 +440,7 @@ public class TerrainDiffusionModSystem : ModSystem
             return;
         }
 
-        genMaps.climateGen = new DiffusionClimateMapLayer(
+        genMaps.Climate = new DiffusionClimateMapLayer(
             _api.WorldManager.Seed + 1, vanillaClimate, _provider, _settings);
 
         if (!_settings.Climate.IsNeutral)
@@ -408,10 +465,10 @@ public class TerrainDiffusionModSystem : ModSystem
                   "climate put it.");
 
         WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
-        genMaps.forestGen = new DiffusionForestMapLayer(
+        genMaps.Forest = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 2, _provider, TerraGenConfig.forestMapScale, false,
             worldGen.ForestDensityMultiplier);
-        genMaps.bushGen = new DiffusionForestMapLayer(
+        genMaps.Bush = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 3, _provider, TerraGenConfig.shrubMapScale, true,
             worldGen.ShrubDensityMultiplier);
     }
@@ -847,6 +904,7 @@ public class TerrainDiffusionModSystem : ModSystem
 
     private void OnShutdown()
     {
+        WatershedsCompat.Uninstall();
         _provider?.Dispose();
         _provider = null;
         PipelineModels.Shutdown();
