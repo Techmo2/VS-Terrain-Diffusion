@@ -432,7 +432,7 @@ vanilla's seasons for display.
 
 | Subcommand           | What it shows                                                          |
 | -------------------- | ---------------------------------------------------------------------- |
-| `status`             | Device, world scaling, tiles generated and average tile time.           |
+| `status`             | Device, world scaling, tiles generated, average tile time, and where that time went: total model inference, its share of tile time, and a per-stage breakdown. A low inference share means something other than the GPU is the bottleneck. |
 | `here`               | Elevation, slope, full bioclimate and derived cover where you stand, plus the latitude diagnostics below. |
 | `season <x> <z>`     | The same diagnostics at a position, and the year's temperature and rainfall cycle there. Usable from a server console, where `here` is not. |
 | `column <x> <z>`     | What actually got generated in a column, next to what the model said.   |
@@ -470,7 +470,7 @@ Machine settings. Safe to change at any time.
 | Key                          | Default | Useful range | Meaning                                 |
 | ---------------------------- | ------- | ------------ | ---------------------------------------- |
 | `inferenceDevice`            | `auto`  | `auto` `cpu` `cuda` `directml` `coreml` | Leave on `auto` unless it picks wrong. |
-| `offloadModels`              | true    | on / off     | One model on the GPU at a time. Costs a little time per stage switch, saves ~1 GB of VRAM. Turn off if you have VRAM to spare. |
+| `offloadModels`              | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
 | `validateModelHashes`        | true    | on / off     | Verify SHA-256 of existing model files on startup. Off saves a few seconds of disk read. |
 | `downloadRuntime`            | true    | on / off     | Fetch the ONNX Runtime native library automatically. |
 | `tileCacheMegabytes`         | 256     | 128 – 1024   | Decoded tensor windows per pipeline stage. |

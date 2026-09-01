@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
 using Microsoft.ML.OnnxRuntime;
 using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
@@ -13,9 +14,11 @@ namespace VSTerrainDiffusion.Pipeline;
 /// <summary>
 /// A single ONNX graph plus its inference session.
 ///
-/// With <see cref="DiffusionConfig.OffloadModels"/> on, only one model holds a GPU session at a
-/// time: the graph bytes stay in RAM and a session is created on demand, evicting whichever model
-/// held the GPU before. That keeps peak VRAM at roughly one model instead of all three.
+/// Normally every model keeps its session for the life of the server, because generating one
+/// terrain tile runs two or three of them and rebuilding a session for a graph of most of a
+/// gigabyte costs far more than the inference does. <see cref="DiffusionConfig.OffloadModels"/>
+/// trades that away on a card too small to hold all three: the graph bytes stay in RAM and a
+/// session is created on demand, evicting whichever model held the GPU before.
 /// </summary>
 public sealed class OnnxModel : IDisposable
 {
@@ -32,7 +35,35 @@ public sealed class OnnxModel : IDisposable
 
     /// <summary>Names of this graph's inputs, in declaration order.</summary>
     private readonly List<string> _inputNames = new();
-    private string _outputName;
+    private string[] _outputNames;
+
+    /// <summary>
+    /// Reused across runs. Both are only touched while holding this model's run lock, and building
+    /// them per call means a native allocation and a managed array on every step of every tile.
+    /// </summary>
+    private RunOptions _runOptions;
+    private readonly List<OrtValue> _inputValues = new();
+
+    private static long _inferenceTicks;
+    private static long _inferenceCount;
+
+    private long _modelTicks;
+    private long _modelRuns;
+
+    /// <summary>Wall-clock milliseconds spent running this particular graph.</summary>
+    public long ModelMillis => Interlocked.Read(ref _modelTicks) * 1000 / Stopwatch.Frequency;
+
+    /// <summary>Number of times this particular graph has been executed.</summary>
+    public long ModelRuns => Interlocked.Read(ref _modelRuns);
+
+    public string Name => _name;
+
+    /// <summary>Wall-clock milliseconds spent inside <c>session.Run</c> since startup.</summary>
+    public static long TotalInferenceMillis =>
+        Interlocked.Read(ref _inferenceTicks) * 1000 / Stopwatch.Frequency;
+
+    /// <summary>Number of graph executions since startup.</summary>
+    public static long TotalInferenceCount => Interlocked.Read(ref _inferenceCount);
 
     public OnnxModel(string modelFilePath, string name, ILogger logger)
     {
@@ -50,7 +81,7 @@ public sealed class OnnxModel : IDisposable
             : SessionKind.Configured);
 
         foreach (string inputName in probe.InputNames) _inputNames.Add(inputName);
-        _outputName = probe.OutputNames.Count > 0 ? probe.OutputNames[0] : null;
+        _outputNames = probe.OutputNames.Count > 0 ? new[] { probe.OutputNames[0] } : Array.Empty<string>();
 
         if (GpuEnabled && DiffusionConfig.Instance.OffloadModels)
         {
@@ -129,7 +160,13 @@ public sealed class OnnxModel : IDisposable
                         {
                             // Grow the arena only by what is requested; never pre-allocate all VRAM.
                             { "arena_extend_strategy", "kSameAsRequested" },
-                            // Heuristic search starts fast and keeps cuDNN workspaces small.
+                            // Heuristic search starts fast and keeps cuDNN workspaces small. Both
+                            // of the obvious alternatives were measured and rejected: EXHAUSTIVE
+                            // with cudnn_conv_use_max_workspace bought about 2% overall and then
+                            // asked for a 5 GB workspace for one decoder convolution, which fails
+                            // outright on a 6 GB card; and turning off use_tf32 (on by default, and
+                            // worth roughly a factor of two here) sends the same convolution down
+                            // an algorithm that wants the same 5 GB. The default is the fast path.
                             { "cudnn_conv_algo_search", "HEURISTIC" },
                             { "do_copy_in_default_stream", "1" }
                         });
@@ -210,7 +247,10 @@ public sealed class OnnxModel : IDisposable
                 $"Model '{_name}' expects {_inputNames.Count} inputs ({string.Join(", ", _inputNames)}) but got {inputs.Count}");
         }
 
-        var values = new List<OrtValue>(inputs.Count);
+        // CreateTensorValueFromMemory pins the caller's array rather than copying it, so the only
+        // copy on the way in is the one the execution provider makes onto the device.
+        List<OrtValue> values = _inputValues;
+        values.Clear();
         try
         {
             foreach ((float[] data, long[] shape) in inputs)
@@ -218,14 +258,23 @@ public sealed class OnnxModel : IDisposable
                 values.Add(OrtValue.CreateTensorValueFromMemory(data, shape));
             }
 
-            using var runOptions = new RunOptions();
+            _runOptions ??= new RunOptions();
+            long start = Stopwatch.GetTimestamp();
             using IDisposableReadOnlyCollection<OrtValue> results =
-                session.Run(runOptions, _inputNames, values, new[] { _outputName });
+                session.Run(_runOptions, _inputNames, values, _outputNames);
+            long elapsed = Stopwatch.GetTimestamp() - start;
+
+            Interlocked.Add(ref _inferenceTicks, elapsed);
+            Interlocked.Increment(ref _inferenceCount);
+            Interlocked.Add(ref _modelTicks, elapsed);
+            Interlocked.Increment(ref _modelRuns);
+
             return results[0].GetTensorDataAsSpan<float>().ToArray();
         }
         finally
         {
             foreach (OrtValue value in values) value.Dispose();
+            values.Clear();
         }
     }
 
@@ -323,5 +372,7 @@ public sealed class OnnxModel : IDisposable
 
         _residentSession?.Dispose();
         _residentSession = null;
+        _runOptions?.Dispose();
+        _runOptions = null;
     }
 }

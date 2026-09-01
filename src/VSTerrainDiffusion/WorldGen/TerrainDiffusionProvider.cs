@@ -212,6 +212,19 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
     public int TileSize => _tileSize;
 
+    /// <summary>
+    /// How much of the time spent generating tiles went to the models rather than to this mod's own
+    /// arithmetic. A low number means the bottleneck is here, not on the GPU.
+    /// </summary>
+    public long InferenceSharePercent
+    {
+        get
+        {
+            long total = Interlocked.Read(ref _totalInferenceMillis);
+            return total == 0 ? 0 : Math.Min(100, OnnxModel.TotalInferenceMillis * 100 / total);
+        }
+    }
+
     /// <summary>Returns the tile covering the given block position, generating it if needed.</summary>
     public TerrainTile GetTileAt(int blockX, int blockZ)
     {

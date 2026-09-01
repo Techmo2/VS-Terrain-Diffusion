@@ -635,9 +635,13 @@ public class TerrainDiffusionModSystem : ModSystem
             "",
             $"Device: {OnnxRuntimeBootstrap.Provider} (ONNX Runtime {OnnxRuntimeBootstrap.OnnxRuntimeVersion})",
             $"Model resolution: {WorldPipelineModelConfig.Instance.NativeResolution:0.##} m per pixel",
+            $"Models resident: {(DiffusionConfig.Instance.OffloadModels ? "no, one at a time (offloadModels)" : "yes")}",
             $"Tiles generated: {_provider.TilesGenerated}",
             $"Tile size: {_provider.TileSize}x{_provider.TileSize} blocks",
             $"Average tile time: {_provider.AverageTileMillis} ms",
+            $"Model inference: {OnnxModel.TotalInferenceMillis} ms over {OnnxModel.TotalInferenceCount} runs " +
+            $"({_provider.InferenceSharePercent}% of tile time)",
+            "  " + string.Join(", ", DescribeModelTimes()),
             "",
             $"Horizontal scale: {_settings.MetersPerBlock:0.##} m per block (scale {_settings.Scale})",
             $"Vertical scale: {_settings.DescribeHeight()}",
@@ -652,6 +656,19 @@ public class TerrainDiffusionModSystem : ModSystem
         lines.Add($"Latitude bands: {_settings.Latitude.Status}");
 
         return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
+    }
+
+    /// <summary>Per-stage inference cost, which is what says where the time is actually going.</summary>
+    private static IEnumerable<string> DescribeModelTimes()
+    {
+        PipelineModels models = PipelineModels.IsReady ? PipelineModels.Await() : null;
+        if (models == null) yield break;
+
+        foreach (OnnxModel model in new[] { models.Coarse, models.Base, models.Decoder })
+        {
+            if (model == null) continue;
+            yield return $"{model.Name} {model.ModelMillis} ms / {model.ModelRuns} runs";
+        }
     }
 
     private Vintagestory.API.Common.TextCommandResult OnHereCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
