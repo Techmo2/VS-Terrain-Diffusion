@@ -1,3 +1,4 @@
+using System.Globalization;
 using VSTerrainDiffusion.Native;
 
 return WorkerProgram.Run(args);
@@ -16,7 +17,7 @@ internal static class WorkerProgram
         {
             OpenVinoRuntime.ConfigureNativeDirectory(args[2]);
             using var runtime = new OpenVinoRuntime(
-                args[0], args[1], int.Parse(args[3]), Console.Error.WriteLine);
+                args[0], args[1], int.Parse(args[3], CultureInfo.InvariantCulture), Console.Error.WriteLine);
             using var reader = new BinaryReader(Console.OpenStandardInput());
             using var writer = new BinaryWriter(Console.OpenStandardOutput());
             writer.Write(OpenVinoWorkerProtocol.ReadyMagic);

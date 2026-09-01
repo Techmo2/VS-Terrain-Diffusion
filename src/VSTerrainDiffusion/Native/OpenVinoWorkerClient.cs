@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -66,7 +67,7 @@ public sealed class OpenVinoWorkerClient : IDisposable
         startInfo.ArgumentList.Add(Path.GetFullPath(modelPath));
         startInfo.ArgumentList.Add(Path.GetFullPath(cacheDirectory));
         startInfo.ArgumentList.Add(Path.GetFullPath(nativeDirectory));
-        startInfo.ArgumentList.Add(Math.Max(1, threadCount).ToString());
+        startInfo.ArgumentList.Add(Math.Max(1, threadCount).ToString(CultureInfo.InvariantCulture));
 
         string? inheritedLibraryPath = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH");
         startInfo.Environment["LD_LIBRARY_PATH"] = string.IsNullOrWhiteSpace(inheritedLibraryPath)
@@ -76,13 +77,13 @@ public sealed class OpenVinoWorkerClient : IDisposable
 
         _process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Could not start the OpenVINO worker process");
-        _process.ErrorDataReceived += OnErrorData;
-        _process.BeginErrorReadLine();
         _writer = new BinaryWriter(_process.StandardInput.BaseStream, Encoding.UTF8, leaveOpen: true);
         _reader = new BinaryReader(_process.StandardOutput.BaseStream, Encoding.UTF8, leaveOpen: true);
 
         try
         {
+            _process.ErrorDataReceived += OnErrorData;
+            _process.BeginErrorReadLine();
             int magic = CompleteWithTimeout(
                 () => _reader.ReadInt32(), StartupTimeout, "start", cancellation);
             if (magic != OpenVinoWorkerProtocol.ReadyMagic)
@@ -194,8 +195,8 @@ public sealed class OpenVinoWorkerClient : IDisposable
         if (string.IsNullOrWhiteSpace(args.Data)) return;
         lock (_standardError)
         {
-            if (_standardError.Length > 4096) _standardError.Remove(0, _standardError.Length - 4096);
             _standardError.AppendLine(args.Data);
+            if (_standardError.Length > 4096) _standardError.Remove(0, _standardError.Length - 4096);
         }
         _progress?.Invoke(args.Data);
     }

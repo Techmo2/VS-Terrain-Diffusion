@@ -8,7 +8,10 @@ namespace VSTerrainDiffusion.Core;
 /// </summary>
 public class DiffusionConfig
 {
-    /// <summary>"auto", "cpu", "openvino", "cuda", "directml" or "coreml".</summary>
+    /// <summary>
+    /// "auto", "cpu", "openvino", "cuda", "directml" or "coreml". OpenVINO is selected only
+    /// when requested explicitly.
+    /// </summary>
     public string InferenceDevice { get; set; } = "auto";
 
     /// <summary>"auto", "memory" or "file". Controls where ONNX sessions load model graphs from.</summary>
@@ -35,12 +38,10 @@ public class DiffusionConfig
     public bool DownloadRuntime { get; set; } = true;
 
     /// <summary>
-    /// "auto", "fp32" or "int8". Auto downloads and uses the smaller decoder when 64-bit Linux
-    /// OpenVINO is requested, including its ONNX Runtime CPU fallback, and uses the original
-    /// decoder everywhere else. Changing decoder precision can alter newly generated terrain
-    /// slightly, so use an explicit value for an established world.
+    /// "fp32" or "int8". INT8 is opt-in because changing decoder precision can alter newly
+    /// generated terrain slightly.
     /// </summary>
-    public string DecoderPrecision { get; set; } = "auto";
+    public string DecoderPrecision { get; set; } = "fp32";
 
     /// <summary>Total megabytes of decoded tensor windows kept across all pipeline stages.</summary>
     public int TileCacheMegabytes { get; set; } = 256;
@@ -144,8 +145,11 @@ public class DiffusionConfig
                 break;
         }
 
-        DecoderPrecision = (DecoderPrecision ?? "auto").Trim().ToLowerInvariant();
-        if (DecoderPrecision is not ("auto" or "fp32" or "int8")) DecoderPrecision = "auto";
+        DecoderPrecision = (DecoderPrecision ?? "fp32").Trim().ToLowerInvariant();
+        // Earlier development builds wrote "auto", which coupled OpenVINO to INT8. Treat it as
+        // the safe FP32 default when those configs are upgraded.
+        if (DecoderPrecision == "auto") DecoderPrecision = "fp32";
+        if (DecoderPrecision is not ("fp32" or "int8")) DecoderPrecision = "fp32";
     }
 }
 

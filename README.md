@@ -18,7 +18,7 @@ seasons all come from the same model, so the landscape and the life on it agree 
 Drop the release zip in your `Mods` folder. The models download themselves on first launch.
 
 - Vintage Story 1.22 (targets .NET 10, same as the game)
-- **~2.2 GB of disk** for the model files, fetched once
+- **~2.2 GB of disk** for the selected model files, fetched once, plus the optimised-graph cache
 - **~3 GB of RAM** while the models are resident
 - A GPU is strongly recommended. CPU inference works but is roughly 10-20x slower.
 
@@ -465,18 +465,17 @@ range is *forbidden* — it is just where the results stop being worth having.
 
 ### Inference
 
-Machine settings. These are safe to change at any time except `decoderPrecision`; changing
-`inferenceDevice` while precision is `auto` can change it too. Use explicit `fp32` or `int8` for an
-established world.
+Machine settings. Keep `inferenceDevice` and `decoderPrecision` fixed after exploring a world:
+changing either can make newly generated terrain disagree slightly with existing chunks.
 
 | Key                          | Default | Useful range | Meaning                                 |
 | ---------------------------- | ------- | ------------ | ---------------------------------------- |
-| `inferenceDevice`            | `auto`  | `auto` `cpu` `openvino` `cuda` `directml` `coreml` | OpenVINO can accelerate the decoder on 64-bit Linux CPUs while leaving the large stages on ORT CPU. A supervised helper contains native failures and falls back to ORT CPU. |
+| `inferenceDevice`            | `auto`  | `auto` `cpu` `openvino` `cuda` `directml` `coreml` | OpenVINO is opt-in. On 64-bit Linux it can accelerate the decoder while leaving the large stages on ORT CPU. A supervised helper contains native failures and falls back to ORT CPU; that fallback is logged because changing provider can alter new terrain slightly. |
 | `modelLoadMode`              | `auto`  | `auto` `memory` `file` | Load model graphs from RAM or their optimised files. Auto uses files for CPU and memory-constrained hosts. |
 | `offloadModels`              | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
 | `validateModelHashes`        | true    | on / off     | Verify SHA-256 of existing model files on startup. Off saves a few seconds of disk read. |
-| `downloadRuntime`            | true    | on / off     | Fetch the ONNX Runtime and optional OpenVINO native libraries automatically. |
-| `decoderPrecision`           | `auto`  | `auto` `fp32` `int8` | Auto uses INT8 when 64-bit Linux OpenVINO is requested (including ORT fallback) and FP32 elsewhere. Use an explicit value for an established world. |
+| `downloadRuntime`            | true    | on / off     | Fetch the ONNX Runtime and, when selected, OpenVINO native libraries automatically. |
+| `decoderPrecision`           | `fp32`  | `fp32` `int8` | Select and automatically fetch only the matching decoder. INT8 is opt-in and can change newly generated terrain slightly; a missing or invalid selected decoder stops model loading instead of silently changing precision. |
 | `tileCacheMegabytes`         | 256     | 128 – 1024   | Total decoded tensor-window cache across all pipeline stages. |
 | `latentBatchSize`            | 0       | 0 – 4        | Latent windows per base-model call. Zero chooses 1 on CPU and 4 on GPU. |
 | `terrainTileCacheMegabytes`  | 256     | 128 – 1024   | Finished terrain tiles. Raise if you see thrash warnings. |

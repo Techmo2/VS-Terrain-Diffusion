@@ -178,7 +178,9 @@ public static class OnnxRuntimeBootstrap
             }
             catch (Exception e) when (provider != InferenceProvider.Cpu && e is not OperationCanceledException)
             {
-                logger.Warning("[{0}] Could not prepare the {1} runtime ({2}); falling back to CPU.",
+                logger.Warning("[{0}] Could not prepare the {1} runtime ({2}); falling back to CPU. " +
+                               "Keep the effective provider fixed for an established world because provider changes " +
+                               "can alter newly generated terrain slightly.",
                     DiffusionPaths.ModId, provider, e.Message);
                 provider = InferenceProvider.Cpu;
                 onnxProvider = InferenceProvider.Cpu;
@@ -283,35 +285,46 @@ public static class OnnxRuntimeBootstrap
             ? "cuda" + DetectCudaMajorVersion()
             : provider.ToString().ToLowerInvariant();
         string directory = Path.Combine(DiffusionPaths.RuntimeDirectory, OnnxRuntimeVersion, flavour, rid);
+        List<NativeSource> sources = SourcesFor(provider, rid);
 
-        // A directory that already holds a runtime (downloaded earlier, or supplied by hand) is
-        // used as-is and never overwritten.
-        if (HasPrimaryLibrary(directory)) return directory;
+        if (HasCompleteRuntime(directory, sources)) return directory;
 
         if (!DiffusionConfig.Instance.DownloadRuntime)
         {
             throw new InvalidOperationException(
-                "Runtime downloads are disabled (downloadRuntime=false) and no ONNX Runtime was found in " + directory);
+                "Runtime downloads are disabled (downloadRuntime=false) and no complete ONNX Runtime was found in " +
+                directory);
         }
 
-        List<NativeSource> sources = SourcesFor(provider, rid);
-        Directory.CreateDirectory(directory);
+        string parent = Path.GetDirectoryName(directory)
+                        ?? throw new InvalidOperationException("ONNX Runtime directory has no parent");
+        Directory.CreateDirectory(parent);
+        string staging = directory + ".install-" + Guid.NewGuid().ToString("N");
+        Directory.CreateDirectory(staging);
 
         // Another first-run download the player is waiting on, so it goes on the loading screen too.
         Downloaded = true;
         LoadingNotice.Post(logger, "Downloading the {0} inference runtime. This happens once.",
             provider.ToString().ToUpperInvariant());
 
-        using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-        foreach (NativeSource source in sources)
+        try
         {
-            if (source.Kind == ArchiveKind.TarGz) ExtractFromTarGz(client, source, directory, logger, cancellation);
-            else ExtractFromZip(client, source, directory, logger, cancellation);
-        }
+            using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+            foreach (NativeSource source in sources)
+            {
+                if (source.Kind == ArchiveKind.TarGz)
+                    ExtractFromTarGz(client, source, staging, logger, cancellation);
+                else
+                    ExtractFromZip(client, source, staging, logger, cancellation);
+            }
 
-        if (!HasPrimaryLibrary(directory))
+            if (!HasCompleteRuntime(staging, sources))
+                throw new FileNotFoundException("ONNX Runtime native libraries are incomplete after download");
+            ReplaceDirectory(staging, directory);
+        }
+        finally
         {
-            throw new FileNotFoundException("ONNX Runtime native library missing after download in " + directory);
+            TryDeleteDirectory(staging);
         }
         return directory;
     }
@@ -707,8 +720,22 @@ public static class OnnxRuntimeBootstrap
         _ => "x64-win"
     };
 
-    private static bool HasPrimaryLibrary(string directory)
-        => Directory.Exists(directory) && File.Exists(Path.Combine(directory, PrimaryLibraryName()));
+    private static bool HasCompleteRuntime(string directory, IReadOnlyList<NativeSource> sources)
+    {
+        if (!Directory.Exists(directory)) return false;
+        foreach (NativeSource source in sources)
+        {
+            string[] fileNames = source.TargetFileNames ?? (source.Kind == ArchiveKind.TarGz
+                ? source.FileNames
+                : Array.ConvertAll(source.EntryPaths, Path.GetFileName));
+            foreach (string fileName in fileNames)
+            {
+                var file = new FileInfo(Path.Combine(directory, fileName));
+                if (!file.Exists || file.Length == 0) return false;
+            }
+        }
+        return true;
+    }
 
     private static bool HasStandaloneOpenVinoRuntime(string directory)
     {

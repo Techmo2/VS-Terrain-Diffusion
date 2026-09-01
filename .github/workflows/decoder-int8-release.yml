@@ -3,8 +3,18 @@ name: Build INT8 decoder release
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - decoder-int8-v1
+    paths:
+      - .github/workflows/decoder-int8-release.yml
+      - scripts/MODEL-LICENSE.txt
+      - scripts/README.md
+      - scripts/decoder-calibration-v1.zip
+      - scripts/decoder-int8-release-notes.md
+      - scripts/quantize_decoder.py
+      - scripts/requirements-quantize.txt
 
 permissions:
   contents: write

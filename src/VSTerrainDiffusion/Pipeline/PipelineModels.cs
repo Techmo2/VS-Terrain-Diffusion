@@ -89,7 +89,6 @@ public sealed class PipelineModels : IDisposable
             CancellationToken token = cancellation.Token;
             ModelAssetManager.EnsureAssetsReady(logger, token);
             OnnxRuntimeBootstrap.Initialize(logger, token);
-            ModelAssetManager.EnsureOptionalDecoderReady(logger, token);
             token.ThrowIfCancellationRequested();
 
             // Closes off whichever of the two downloads announced itself. Nothing is said at all on
@@ -209,7 +208,8 @@ public sealed class PipelineModels : IDisposable
         {
             cancellation.ThrowIfCancellationRequested();
             logger.Warning(
-                "[{0}] OpenVINO could not compile '{1}' ({2}); using ONNX Runtime CPU for this model.",
+                "[{0}] OpenVINO could not compile '{1}' ({2}); using ONNX Runtime CPU for this model. " +
+                "This provider change can alter newly generated terrain slightly.",
                 DiffusionPaths.ModId, name, e.Message);
             return new OnnxModel(cpuPath ?? openVinoPath, name, logger);
         }

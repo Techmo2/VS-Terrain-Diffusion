@@ -105,7 +105,8 @@ public sealed class OpenVinoModel : IModelRunner
                                          float[][] condInputs, long[][] condShapes)
     {
         _logger.Warning(
-            "[{0}] OpenVINO failed while running '{1}' ({2}); switching this model permanently to ONNX Runtime CPU.",
+            "[{0}] OpenVINO failed while running '{1}' ({2}); switching this model permanently to ONNX Runtime CPU. " +
+            "This provider change can alter newly generated terrain slightly.",
             DiffusionPaths.ModId, _name, openVinoFailure.Message);
         _runtime.Dispose();
         _runtime = null;

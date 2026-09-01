@@ -1,4 +1,4 @@
-Optional mixed-precision decoder for the Linux CPU/OpenVINO path in VS Terrain Diffusion.
+Optional mixed-precision decoder for the ONNX Runtime CPU and Linux OpenVINO paths in VS Terrain Diffusion.
 
 This is a model-data prerelease, not a mod release.
 

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -38,7 +37,7 @@ public static class ModelAssetManager
     /// Pinned manifest for the commit above. Sizes and hashes come from the Hugging Face
     /// <c>paths-info</c> API; regenerate them with tools/refresh-manifest.sh when bumping the revision.
     /// </summary>
-    private static readonly Asset[] Assets =
+    private static readonly Asset[] CommonAssets =
     {
         new()
         {
@@ -54,12 +53,6 @@ public static class ModelAssetManager
         },
         new()
         {
-            FileName = "decoder_model.onnx",
-            SizeBytes = 223854143,
-            Sha256 = "6473ae47ca6ec4d743d30fe4f5d381fe4158899714eff09b762005bdbdef68c1"
-        },
-        new()
-        {
             FileName = "pipeline_data.json",
             SizeBytes = 12226,
             Sha256 = "e3132c3ef0c65d8613615f9278ffe23bbd9363ddcd87f1cc6f18456bcc9efe5c"
@@ -70,6 +63,13 @@ public static class ModelAssetManager
             SizeBytes = 774,
             Sha256 = "c60f0b74d89317e64cfc623fbfdd828f1b5b2e50aa75020ac4001103381853bd"
         }
+    };
+
+    private static readonly Asset Fp32DecoderAsset = new()
+    {
+        FileName = "decoder_model.onnx",
+        SizeBytes = 223854143,
+        Sha256 = "6473ae47ca6ec4d743d30fe4f5d381fe4158899714eff09b762005bdbdef68c1"
     };
 
     private static readonly Asset Int8DecoderAsset = new()
@@ -84,6 +84,9 @@ public static class ModelAssetManager
     private static readonly object Gate = new();
     private static bool _ready;
 
+    private static Asset SelectedDecoderAsset =>
+        DiffusionConfig.Instance.DecoderPrecision == "int8" ? Int8DecoderAsset : Fp32DecoderAsset;
+
     public static string OfflineHelpUrl => $"https://huggingface.co/{RepositorySlug}/tree/{Revision}";
 
     /// <summary>Whether this run actually fetched anything, rather than finding it all on disk.</summary>
@@ -95,16 +98,22 @@ public static class ModelAssetManager
     /// figure quoted to the player matches what actually gets fetched. Only a file that passes the
     /// size check and then fails its hash escapes the count.
     /// </summary>
-    private static long PendingBytes(bool validate)
+    private static long PendingBytes()
     {
         long pending = 0;
-        foreach (Asset asset in Assets)
+        foreach (Asset asset in RequiredAssets())
         {
             string path = DiffusionPaths.ResolveAsset(asset.FileName);
             if (!File.Exists(path)) pending += asset.SizeBytes;
-            else if (validate && new FileInfo(path).Length != asset.SizeBytes) pending += asset.SizeBytes;
+            else if (new FileInfo(path).Length != asset.SizeBytes) pending += asset.SizeBytes;
         }
         return pending;
+    }
+
+    private static IEnumerable<Asset> RequiredAssets()
+    {
+        foreach (Asset asset in CommonAssets) yield return asset;
+        yield return SelectedDecoderAsset;
     }
 
     /// <summary>
@@ -125,7 +134,7 @@ public static class ModelAssetManager
 
             // The player is staring at a loading screen while this runs, so say what the wait is
             // for and how big it is. Once only, at the start: the log file has the detail.
-            long pending = PendingBytes(validate);
+            long pending = PendingBytes();
             if (pending > 0)
             {
                 Downloaded = true;
@@ -134,7 +143,7 @@ public static class ModelAssetManager
                     "finish loading when it completes.", HumanBytes(pending));
             }
 
-            foreach (Asset asset in Assets)
+            foreach (Asset asset in RequiredAssets())
             {
                 cancellation.ThrowIfCancellationRequested();
                 EnsureSingleAsset(asset, logger, validate, cancellation);
@@ -148,86 +157,23 @@ public static class ModelAssetManager
     public static string ResolveAssetPath(string fileName) => DiffusionPaths.ResolveAsset(fileName);
 
     /// <summary>
-    /// Fetches the mixed-precision decoder when the selected provider needs it. Failure is not
-    /// fatal because the verified FP32 decoder is always available as a fallback.
-    /// </summary>
-    public static void EnsureOptionalDecoderReady(ILogger logger,
-                                                   CancellationToken cancellation = default)
-    {
-        if (!ShouldUseInt8Decoder()) return;
-
-        lock (Gate)
-        {
-            bool validate = DiffusionConfig.Instance.ValidateModelHashes;
-            string path = DiffusionPaths.ResolveAsset(Int8DecoderAsset.FileName);
-            bool needsDownload = !File.Exists(path) ||
-                                 new FileInfo(path).Length != Int8DecoderAsset.SizeBytes;
-            if (needsDownload)
-            {
-                Downloaded = true;
-                LoadingNotice.Post(logger,
-                    "Downloading the optional INT8 decoder ({0}). This happens once.",
-                    HumanBytes(Int8DecoderAsset.SizeBytes));
-            }
-
-            try
-            {
-                EnsureSingleAsset(Int8DecoderAsset, logger, validate, cancellation);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception e)
-            {
-                logger.Warning(
-                    "[{0}] Could not prepare the INT8 decoder ({1}); using the FP32 decoder",
-                    DiffusionPaths.ModId, e.Message);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Selects the optional mixed-precision decoder. The original decoder remains the safe
-    /// fallback, and is still downloaded and verified with the rest of the model set.
+    /// Returns the decoder selected by the machine configuration. Asset preparation is deliberately
+    /// strict: silently changing precision after a download failure would change newly generated
+    /// terrain on the next successful start.
     /// </summary>
     public static string ResolveDecoderPath(ILogger logger)
     {
-        string originalPath = ResolveAssetPath("decoder_model.onnx");
-        if (!ShouldUseInt8Decoder()) return originalPath;
+        if (!_ready)
+            throw new InvalidOperationException("Terrain Diffusion model assets have not been prepared");
 
-        string int8Path = ResolveAssetPath(Int8DecoderAsset.FileName);
-        if (!File.Exists(int8Path))
-        {
-            logger.Notification("[{0}] The INT8 decoder is not installed; using the FP32 decoder",
-                DiffusionPaths.ModId);
-            return originalPath;
-        }
+        Asset decoder = SelectedDecoderAsset;
+        string path = ResolveAssetPath(decoder.FileName);
+        if (!File.Exists(path) || new FileInfo(path).Length != decoder.SizeBytes)
+            throw new ModelAssetException($"The selected decoder '{decoder.FileName}' is unavailable");
 
-        var info = new FileInfo(int8Path);
-        bool invalidSize = info.Length != Int8DecoderAsset.SizeBytes;
-        bool invalidHash = DiffusionConfig.Instance.ValidateModelHashes && !invalidSize &&
-                           !Sha256Hex(int8Path).Equals(Int8DecoderAsset.Sha256, StringComparison.OrdinalIgnoreCase);
-        if (invalidSize || invalidHash)
-        {
-            logger.Warning("[{0}] '{1}' failed verification; using the FP32 decoder",
-                DiffusionPaths.ModId, Int8DecoderAsset.FileName);
-            return originalPath;
-        }
-
-        logger.Notification("[{0}] Using the mixed-precision INT8 decoder ({1})",
-            DiffusionPaths.ModId, HumanBytes(info.Length));
-        return int8Path;
-    }
-
-    private static bool ShouldUseInt8Decoder()
-    {
-        string precision = DiffusionConfig.Instance.DecoderPrecision;
-        return precision == "int8" ||
-               precision == "auto" &&
-               DiffusionConfig.Instance.InferenceDevice == "openvino" &&
-               OperatingSystem.IsLinux() &&
-               RuntimeInformation.OSArchitecture == Architecture.X64;
+        logger.Notification("[{0}] Decoder precision: {1} ({2})", DiffusionPaths.ModId,
+            DiffusionConfig.Instance.DecoderPrecision.ToUpperInvariant(), HumanBytes(decoder.SizeBytes));
+        return path;
     }
 
     private static void EnsureSingleAsset(Asset asset, ILogger logger, bool validate,
@@ -237,12 +183,13 @@ public static class ModelAssetManager
         if (File.Exists(path))
         {
             var info = new FileInfo(path);
-            if (!validate)
+            bool validSize = info.Length == asset.SizeBytes;
+            if (validSize && !validate)
             {
                 logger.Notification("[{0}] Using existing '{1}' without hash validation", DiffusionPaths.ModId, asset.FileName);
                 return;
             }
-            if (info.Length == asset.SizeBytes && (asset.Sha256 == null || Sha256Hex(path).Equals(asset.Sha256, StringComparison.OrdinalIgnoreCase)))
+            if (validSize && (asset.Sha256 == null || Sha256Hex(path).Equals(asset.Sha256, StringComparison.OrdinalIgnoreCase)))
             {
                 logger.Notification("[{0}] Verified '{1}'", DiffusionPaths.ModId, asset.FileName);
                 return;
@@ -251,7 +198,7 @@ public static class ModelAssetManager
             // A file that looked complete but failed its hash was not in the pending total, so the
             // player was told nothing was being fetched. Rare, and worth its own line.
             logger.Warning("[{0}] '{1}' failed verification, re-downloading", DiffusionPaths.ModId, asset.FileName);
-            if (info.Length == asset.SizeBytes && !Downloaded)
+            if (validSize && !Downloaded)
             {
                 Downloaded = true;
                 LoadingNotice.Post(logger, "Re-downloading a world generation model that did not verify.");

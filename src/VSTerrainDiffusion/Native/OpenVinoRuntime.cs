@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 
@@ -50,7 +51,7 @@ public sealed class OpenVinoRuntime : IDisposable
             progress?.Invoke("core created; configuring hosted CPU execution");
             SetCpuProperty("CACHE_DIR", fullCachePath);
             SetCpuProperty("NUM_STREAMS", "1");
-            SetCpuProperty("INFERENCE_NUM_THREADS", threadCount.ToString());
+            SetCpuProperty("INFERENCE_NUM_THREADS", threadCount.ToString(CultureInfo.InvariantCulture));
             SetCpuProperty("PERFORMANCE_HINT", "LATENCY");
             progress?.Invoke("CPU execution configured; reading model");
             IntPtr model = IntPtr.Zero;

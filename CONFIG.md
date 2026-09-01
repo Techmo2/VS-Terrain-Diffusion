@@ -11,10 +11,9 @@ does not allow comments** — copy values out of it, do not paste the whole thin
 [Ranges](#ranges) at the end gives every numeric field's hard limit, the narrower range worth
 staying inside, and its default.
 
-Settings under `WorldGen`, and the effective decoder precision, change what the world looks like.
-When `DecoderPrecision` is `auto`, selecting OpenVINO also selects the INT8 decoder. Use an explicit
-precision for an established world; changing it after exploration can make new chunks disagree with
-the ones already on disk.
+Settings under `WorldGen`, the inference device, and the decoder precision can change what the world
+looks like. INT8 and OpenVINO must be selected explicitly; keep both machine settings fixed after
+exploration so new chunks do not disagree slightly with the ones already on disk.
 
 ```jsonc
 {
@@ -22,8 +21,9 @@ the ones already on disk.
   // or "coreml". OpenVINO can accelerate the decoder on 64-bit Linux CPUs; the coarse and base
   // stages remain on ONNX Runtime CPU to keep memory use predictable. It runs in an isolated
   // helper and falls back to ONNX Runtime CPU if the native compiler is not usable on the host.
-  // "auto" picks CoreML on macOS, DirectML on 64-bit Windows, CUDA on Linux with an NVIDIA
-  // driver present, and CPU everywhere else.
+  // That fallback is logged because changing provider can alter newly generated terrain slightly.
+  // OpenVINO is opt-in: "auto" never selects it. Auto picks CoreML on macOS, DirectML on 64-bit
+  // Windows, CUDA on Linux with an NVIDIA driver present, and CPU everywhere else.
   "InferenceDevice": "auto",
 
   // Where ONNX Runtime loads model graphs from: "memory", "file", or "auto". Memory makes GPU
@@ -40,19 +40,19 @@ the ones already on disk.
   "OffloadModels": false,
 
   // Check the SHA-256 of model files that are already on disk at every startup. Turning this off
-  // saves a few seconds of hashing per start and gives up detection of a truncated download.
+  // saves a few seconds of hashing per start; file sizes are still checked.
   "ValidateModelHashes": true,
 
   // Download the matching ONNX Runtime and, when selected, OpenVINO native libraries
   // automatically. Turn off to supply them yourself under TerrainDiffusionModels/onnxruntime/.
   "DownloadRuntime": true,
 
-  // Decoder model precision: "auto", "fp32" or "int8". Auto downloads and uses the optional
-  // decoder_model.int8.onnx when 64-bit Linux OpenVINO is requested, including its ONNX Runtime
-  // CPU fallback, and uses the original FP32 decoder otherwise. Explicit "int8" also permits
-  // controlled ONNX Runtime testing. Use "fp32" or "int8" rather than "auto" for an established
-  // world: INT8 can change newly generated terrain slightly.
-  "DecoderPrecision": "auto",
+  // Decoder model precision: "fp32" or "int8". The matching decoder is downloaded automatically;
+  // the unselected decoder is not required. INT8 uses decoder_model.int8.onnx with either OpenVINO
+  // or ONNX Runtime. It is never selected automatically because it can change newly generated
+  // terrain slightly. If the selected decoder cannot be downloaded or verified, loading stops
+  // instead of silently changing precision.
+  "DecoderPrecision": "fp32",
 
   // Total megabytes of decoded tensor windows kept across all pipeline stages.
   "TileCacheMegabytes": 256,
@@ -377,10 +377,9 @@ only has to stop the mod breaking, not stop the world looking silly.
 An unrecognised `InferenceDevice`, `ModelLoadMode`, `DecoderPrecision`, `HeightMode`,
 `RainfallBasis`, `OceanMap` or `ClimateMode` falls back to its default rather than failing to load.
 
-The optional mixed-precision decoder is downloaded to
-`TerrainDiffusionModels/decoder_model.int8.onnx` when selected. Its SHA-256 is
+The selected decoder is downloaded automatically. The optional mixed-precision decoder is stored at
+`TerrainDiffusionModels/decoder_model.int8.onnx`; its SHA-256 is
 `0ce6eb771a072a8622448c30488f0505c009e43bebccd65246a4dd58fe8e2da6`; the exact recipe and
-calibration hashes are under `scripts/`. Keep `DecoderPrecision` fixed for an established world:
-although the quantised decoder tracks the FP32 output closely, changing it can make newly generated
-terrain differ slightly at chunk boundaries. `auto` follows the requested provider, so use `fp32`
-or `int8` explicitly once a world has been established.
+calibration hashes are under `scripts/`. Keep `InferenceDevice` and `DecoderPrecision` fixed for an
+established world: changing either can introduce small numerical differences in newly generated
+terrain at chunk boundaries.

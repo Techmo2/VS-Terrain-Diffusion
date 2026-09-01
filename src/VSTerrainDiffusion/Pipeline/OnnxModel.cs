@@ -216,7 +216,7 @@ public sealed class OnnxModel : IModelRunner
                 _providerUnavailable = true;
                 _logger.Warning(
                     "[{0}] The {1} execution provider could not be initialised, so terrain generation will run on the CPU " +
-                    "(much slower). Cause: {2}",
+                    "(much slower). This provider change can alter newly generated terrain slightly. Cause: {2}",
                     DiffusionPaths.ModId, OnnxRuntimeBootstrap.Provider, e.Message);
             }
         }

@@ -1,7 +1,7 @@
 # INT8 decoder recipe
 
-`quantize_decoder.py` rebuilds the optional mixed-precision decoder used by the OpenVINO path. It
-starts from the decoder at Terrain Diffusion ONNX revision
+`quantize_decoder.py` rebuilds the optional mixed-precision decoder used by either OpenVINO or ONNX
+Runtime. It starts from the decoder at Terrain Diffusion ONNX revision
 `ad2df557eca5645f588766101cf3bc3682455c3e`, applies ONNX Runtime's basic graph optimisation, then
 uses static QDQ quantisation on the 67 convolution and matrix-multiplication nodes in the 64x64 and
 128x128 decoder stages. The remaining nodes stay in FP32.
@@ -29,6 +29,7 @@ nodes, and the exact output size and SHA-256. The release output is 43,496,635 b
 The generated ONNX file embeds its source URL, recipe, copyright, and full MIT licence. The upstream
 model is copyright Alexander Goslin and distributed under the MIT licence in `MODEL-LICENSE.txt`.
 
-GitHub Actions runs this recipe for the `decoder-int8-v1` tag (or a manual workflow dispatch),
-checks the exact output hash above, and attaches the model, checksum, licence, and rebuild bundle to
-the matching GitHub release. The generated model is not committed to the repository.
+GitHub Actions runs this recipe when it lands on `main`, for the `decoder-int8-v1` tag, or from a
+manual workflow dispatch. It checks the exact output hash above and attaches the model, checksum,
+licence, and rebuild bundle to the matching GitHub release. The generated model is not committed to
+the repository.
