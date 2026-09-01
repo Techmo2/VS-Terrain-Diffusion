@@ -99,7 +99,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _generator = new GenDiffusionTerra(_api, _provider, _settings);
         _surface = new DiffusionSurface(_api, _provider);
 
-        InstallTerrainHandler();
+        if (!InstallTerrain()) return;
         InstallMapLayers();
 
         if (DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic)
@@ -129,7 +129,7 @@ public class TerrainDiffusionModSystem : ModSystem
     {
         if (DiffusionConfig.Instance.WorldGen.OceanMap != "input") return null;
         return new OceanMapLandmask(
-            () => _api.ModLoader.GetModSystem<GenMaps>()?.oceanGen, _settings, _api.Logger);
+            () => WorldMapLayers.Resolve(_api)?.Ocean, _settings, _api.Logger);
     }
 
     /// <summary>Loads the ONNX models, or null if they could not be had.</summary>
@@ -296,6 +296,57 @@ public class TerrainDiffusionModSystem : ModSystem
     private ulong WorldSeed() => (ulong)(uint)_api.WorldManager.Seed;
 
     /// <summary>
+    /// Gets the model's heights into the world, whichever mod is generating terrain.
+    ///
+    /// Normally that is vanilla and this mod takes its place. When another mod has replaced terrain
+    /// generation outright there is nowhere to stand: two generators filling the same column
+    /// produce the union of both landscapes with only one mod's heightmaps recorded, which leaves
+    /// the surface block layers buried under the other mod's rock. So the only supported
+    /// arrangement with such a mod is to hand it our heights and let it do the filling.
+    ///
+    /// Returns false when that could not be arranged, in which case this mod must stay out of the
+    /// world entirely rather than fight over it.
+    /// </summary>
+    private bool InstallTerrain()
+    {
+        if (WatershedsCompat.IsPresent(_api)) return InstallWatershedsHandover();
+
+        InstallTerrainHandler();
+        return true;
+    }
+
+    /// <summary>
+    /// Hands the diffusion heightmap to Algernon's Watersheds and leaves the filling, the rivers
+    /// and everything downstream of them to it. See <see cref="WatershedsCompat"/> for how.
+    /// </summary>
+    private bool InstallWatershedsHandover()
+    {
+        if (WatershedsCompat.TryInstall(_api, _provider, out string failure))
+        {
+            _api.Logger.Notification(
+                "[{0}] Algernon's Watersheds is generating this world's terrain, so the model is " +
+                "supplying its heights instead of filling chunks itself. Its rivers and streams are " +
+                "routed over the modelled landscape.", DiffusionPaths.ModId);
+            return true;
+        }
+
+        _api.Logger.Error(
+            "[{0}] Algernon's Watersheds also replaces terrain generation, and {1}. Both mods " +
+            "cannot generate the same world, so terrain is being left entirely to Watersheds and " +
+            "this mod is doing nothing. Remove one of the two, or update them.",
+            DiffusionPaths.ModId, failure);
+        LoadingNotice.Post(_api.Logger,
+            "disabled for this world. Algernon's Watersheds is generating the terrain and could not " +
+            "be handed the model's heights.");
+
+        _provider?.Dispose();
+        _provider = null;
+        _generator = null;
+        _surface = null;
+        return false;
+    }
+
+    /// <summary>
     /// Replaces vanilla GenTerra's Terrain-pass delegate in place, so the ordering relative to
     /// rock strata, caves and block layers is exactly what those systems expect.
     /// </summary>
@@ -343,11 +394,17 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     private void InstallMapLayers()
     {
-        var genMaps = _api.ModLoader.GetModSystem<GenMaps>();
+        WorldMapLayers genMaps = WorldMapLayers.Resolve(_api);
         if (genMaps == null)
         {
             _api.Logger.Warning("[{0}] GenMaps is not loaded; climate and ocean maps stay vanilla.", DiffusionPaths.ModId);
             return;
+        }
+
+        if (!genMaps.IsVanilla)
+        {
+            _api.Logger.Notification("[{0}] The world's map layers belong to {1}; reading and writing those.",
+                DiffusionPaths.ModId, genMaps.OwnerName);
         }
 
         // In "input" mode the ocean map is what the terrain was conditioned on, so it is already
@@ -356,7 +413,7 @@ public class TerrainDiffusionModSystem : ModSystem
         // where the model invented the continents, has anything to correct.
         if (DiffusionConfig.Instance.WorldGen.OceanMap == "output")
         {
-            genMaps.oceanGen = new DiffusionOceanMapLayer(_api.WorldManager.Seed + 1873, _provider);
+            genMaps.Ocean = new DiffusionOceanMapLayer(_api.WorldManager.Seed + 1873, _provider);
             _api.Logger.Notification(
                 "[{0}] The model decides the coastline; the world's ocean map has been replaced to match it.",
                 DiffusionPaths.ModId);
@@ -372,9 +429,9 @@ public class TerrainDiffusionModSystem : ModSystem
         // Wrap the vanilla climate layer rather than replace it: its geologic activity byte has
         // nothing to do with climate and is still wanted. On re-initialisation GenMaps rebuilds
         // climateGen, but unwrap defensively anyway.
-        MapLayerBase vanillaClimate = genMaps.climateGen is DiffusionClimateMapLayer alreadyWrapped
+        MapLayerBase vanillaClimate = genMaps.Climate is DiffusionClimateMapLayer alreadyWrapped
             ? alreadyWrapped.Baseline
-            : genMaps.climateGen;
+            : genMaps.Climate;
 
         if (vanillaClimate == null)
         {
@@ -383,7 +440,7 @@ public class TerrainDiffusionModSystem : ModSystem
             return;
         }
 
-        genMaps.climateGen = new DiffusionClimateMapLayer(
+        genMaps.Climate = new DiffusionClimateMapLayer(
             _api.WorldManager.Seed + 1, vanillaClimate, _provider, _settings);
 
         if (!_settings.Climate.IsNeutral)
@@ -408,10 +465,10 @@ public class TerrainDiffusionModSystem : ModSystem
                   "climate put it.");
 
         WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
-        genMaps.forestGen = new DiffusionForestMapLayer(
+        genMaps.Forest = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 2, _provider, TerraGenConfig.forestMapScale, false,
             worldGen.ForestDensityMultiplier);
-        genMaps.bushGen = new DiffusionForestMapLayer(
+        genMaps.Bush = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 3, _provider, TerraGenConfig.shrubMapScale, true,
             worldGen.ShrubDensityMultiplier);
     }
@@ -572,17 +629,37 @@ public class TerrainDiffusionModSystem : ModSystem
             return Vintagestory.API.Common.TextCommandResult.Success("Terrain Diffusion is not running: " + reason);
         }
 
-        return Vintagestory.API.Common.TextCommandResult.Success(
-            $"Terrain Diffusion active.\n" +
-            $"Configured runtime: {OnnxRuntimeBootstrap.ActiveRuntimeDescription}, " +
-            $"{WorldPipelineModelConfig.Instance.NativeResolution:0.##} m per model pixel\n" +
-            $"Pipeline: latent batch {_provider.LatentBatchSize}, " +
-            $"{_provider.PipelineCachedBytes / 1048576.0:0.#}/{DiffusionConfig.Instance.TileCacheMegabytes} MB cached, " +
-            $"{_provider.PipelineComputedWindows} windows computed\n" +
-            $"Inference: {_provider.ModelTimingSummary}\n" +
-            $"World: {_settings.Describe()}\n" +
-            $"Tiles generated: {_provider.TilesGenerated} ({_provider.TileSize}x{_provider.TileSize} blocks, " +
-            $"{_provider.AverageTileMillis} ms average)");
+        var lines = new List<string>
+        {
+            "Terrain Diffusion active",
+            "",
+            $"Runtime: {OnnxRuntimeBootstrap.ActiveRuntimeDescription}",
+            $"Provider: {OnnxModel.ActiveProvider}",
+            $"Model resolution: {WorldPipelineModelConfig.Instance.NativeResolution:0.##} m per pixel",
+            $"Models resident: {(DiffusionConfig.Instance.OffloadModels ? "no, one at a time (offloadModels)" : "yes")}",
+            $"Latent batch: {_provider.LatentBatchSize}",
+            $"Pipeline cache: {_provider.PipelineCachedBytes / 1048576.0:0.#} / " +
+            $"{DiffusionConfig.Instance.TileCacheMegabytes} MB",
+            $"Pipeline windows computed: {_provider.PipelineComputedWindows}",
+            $"Tiles generated: {_provider.TilesGenerated}",
+            $"Tile size: {_provider.TileSize}x{_provider.TileSize} blocks",
+            $"Average tile time: {_provider.AverageTileMillis} ms",
+            $"Model inference: {_provider.ModelTimingSummary}",
+            $"Inference share of tile time: {_provider.InferenceSharePercent}%",
+            "",
+            $"Horizontal scale: {_settings.MetersPerBlock:0.##} m per block (scale {_settings.Scale})",
+            $"Vertical scale: {_settings.DescribeHeight()}",
+            $"Sea level: Y {_settings.SeaLevel}",
+            $"World height: {_settings.MapSizeY}",
+            $"Headroom: {_settings.HeadroomBlocks} blocks above sea level",
+            $"Linear up to: {_settings.LinearRangeMeters:0} m of elevation",
+            $"Climate: {_settings.ClimateMode.ToString().ToLowerInvariant()}"
+        };
+
+        if (!_settings.Climate.IsNeutral) lines.Add($"Global climate: {_settings.Climate}");
+        lines.Add($"Latitude bands: {_settings.Latitude.Status}");
+
+        return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
     }
 
     private Vintagestory.API.Common.TextCommandResult OnHereCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
@@ -598,17 +675,100 @@ public class TerrainDiffusionModSystem : ModSystem
         Bioclim climate = tile.ClimateAt(index);
         RainfallScale rainfall = RainfallScale.FromConfig(DiffusionConfig.Instance.WorldGen);
 
-        return Vintagestory.API.Common.TextCommandResult.Success(
-            $"At ({position.X}, {position.Z}):\n" +
-            $"Elevation: {tile.ElevationMeters[index]:0} m -> block Y {tile.SurfaceY[index]}, " +
-            $"slope {tile.Slope[index] * 100f:0.#}% (bare above {climate.BareSlopeThreshold * 100f:0}%)\n" +
-            $"Temperature: {climate.MeanTemperatureC:0.#} C mean, " +
-            $"{climate.ColdestMonthC:0.#} to {climate.WarmestMonthC:0.#} C through the year\n" +
-            $"Precipitation: {climate.PrecipitationMm:0} mm/year, {climate.PrecipitationCv:0}% seasonal variation\n" +
-            $"Aridity: {climate.AridityIndex:0.00} (PET {climate.PotentialEvapotranspirationMm:0} mm), " +
-            $"tree moisture {climate.TreeMoisture:0.00}, growing season {climate.GrowingSeasonDays:0} days\n" +
-            $"Game rainfall {rainfall.ToRainfall(climate)}/255, forest {climate.ForestDensity:0.00}, " +
-            $"shrubs {climate.ShrubDensity:0.00}");
+        var lines = new List<string> { $"Terrain Diffusion at ({position.X}, {position.Z})", "" };
+        lines.AddRange(PlaceLines(position));
+        lines.Add("");
+        lines.Add($"Elevation: {tile.ElevationMeters[index]:0} m");
+        lines.Add($"Surface block: Y {tile.SurfaceY[index]}");
+        lines.Add($"Slope: {tile.Slope[index] * 100f:0.#}% (bare rock above {climate.BareSlopeThreshold * 100f:0}%)");
+        lines.Add("");
+        lines.Add($"Mean temperature: {climate.MeanTemperatureC:0.#} C");
+        lines.AddRange(TemperatureLines(position));
+        lines.Add($"Coldest month: {climate.ColdestMonthC:0.#} C");
+        lines.Add($"Warmest month: {climate.WarmestMonthC:0.#} C");
+        lines.Add($"Temperature seasonality: {climate.TemperatureSigmaC:0.#} C sigma");
+        lines.Add("");
+        lines.Add($"Precipitation: {climate.PrecipitationMm:0} mm/year");
+        lines.AddRange(PrecipitationLines(position, climate));
+        lines.Add($"Precipitation seasonality: {climate.PrecipitationCv:0}%");
+        lines.Add("");
+        lines.Add($"Aridity index: {climate.AridityIndex:0.00}");
+        lines.Add($"Potential evapotranspiration: {climate.PotentialEvapotranspirationMm:0} mm");
+        lines.Add($"Tree moisture: {climate.TreeMoisture:0.00}");
+        lines.Add($"Growing season: {climate.GrowingSeasonDays:0} days");
+        lines.Add("");
+        lines.Add($"Game rainfall: {rainfall.ToRainfall(climate)} / 255");
+        lines.Add($"Forest cover: {climate.ForestDensity:0.00}");
+        lines.Add($"Shrub cover: {climate.ShrubDensity:0.00}");
+
+        return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
+    }
+
+    /// <summary>
+    /// Where a column sits between equator and pole, and which way round its year runs there. The
+    /// hemisphere is the game's own, so the season named here is the one every other system will
+    /// think it is.
+    /// </summary>
+    private IEnumerable<string> PlaceLines(Vintagestory.API.MathTools.BlockPos pos)
+    {
+        double latitude = _api.World.Calendar.OnGetLatitude(pos.Z);
+        yield return $"Latitude: {Math.Abs(latitude) * 90.0:0.0} deg {(latitude > 0.0 ? "north" : "south")}";
+        yield return $"Hemisphere: {(latitude > 0.0 ? "northern" : "southern")}, " +
+                     $"currently {_api.World.Calendar.GetSeason(pos)}";
+        yield return $"Latitude bands: {_settings?.Latitude.Status ?? "unknown"}";
+    }
+
+    /// <summary>
+    /// The workings behind one column's temperature: the same reading with the altitude taken back
+    /// out, and what the latitude band was aiming for.
+    ///
+    /// The two answer different questions and neither settles anything on its own. The band is a
+    /// median over all the land in its belt, relief included, so the like-for-like figure is the
+    /// surface reading — and one column scatters either side of it by several degrees, which is the
+    /// point of having a model rather than a gradient. Sea level is the number to compare two
+    /// places by, because it has the mountain taken out of it.
+    ///
+    /// Empty when the pipeline could not be re-queried for the workings.
+    /// </summary>
+    private IEnumerable<string> TemperatureLines(Vintagestory.API.MathTools.BlockPos pos)
+    {
+        if (_provider == null || _settings == null) yield break;
+
+        TerrainDiffusionProvider.ColumnDetail? detail = _provider.GetColumnDetail(pos.X, pos.Z);
+        if (detail != null)
+        {
+            // Through the same corrections the surface value went through, so the two compare. The
+            // elevation behind it is the model pixel's own, which differs from the column's by the
+            // upsampling and the slope noise, so it is not repeated here.
+            float seaLevel = _settings.WorldTemperature(detail.Value.SeaLevelTemperatureC, pos.Z);
+            yield return $"Sea-level temperature: {seaLevel:0.#} C " +
+                         $"(lapse {detail.Value.LapseRateKPerKm:0.0} C/km)";
+        }
+
+        if (_settings.Latitude.IsNeutral) yield break;
+
+        TerrainTile tile = _provider.GetTileAt(pos.X, pos.Z);
+        float surface = tile.TemperatureC[tile.Index(pos.X - tile.BlockX, pos.Z - tile.BlockZ)];
+        float band = _settings.Latitude.BandTemperatureC(pos.Z);
+        float offset = _settings.Latitude.TemperatureOffsetC(pos.Z);
+
+        yield return $"Band temperature: {band:0.#} C (median over this belt's land; " +
+                     $"this column is {surface - band:+0.#;-0.#} C)";
+        if (Math.Abs(offset) >= 0.05f)
+        {
+            yield return $"Band offset applied: {offset:+0.#;-0.#} C, added after the model ran " +
+                         "because the conditioning could not reach it";
+        }
+    }
+
+    /// <summary>What the latitude band asked for in rainfall, against what this column reads.</summary>
+    private IEnumerable<string> PrecipitationLines(Vintagestory.API.MathTools.BlockPos pos, Bioclim climate)
+    {
+        if (_settings == null || _settings.Latitude.IsNeutral) yield break;
+
+        float band = _settings.Latitude.BandPrecipitationMm(pos.Z);
+        yield return $"Band precipitation: {band:0} mm (median over this belt's land; " +
+                     $"this column is {climate.PrecipitationMm / Math.Max(1f, band):0.00}x)";
     }
 
     /// <summary>
@@ -632,21 +792,22 @@ public class TerrainDiffusionModSystem : ModSystem
         var pos = new Vintagestory.API.MathTools.BlockPos(x, y, z);
 
         SeasonalityMap.Sample? seasonality = SeasonalityMap.At(_api.World.BlockAccessor, pos);
-        var lines = new List<string>
-        {
-            seasonality == null
-                ? $"({x}, {y}, {z}): no seasonality map here, so vanilla's latitude seasons apply."
-                : $"({x}, {y}, {z}): temperature seasonality {seasonality.Value.TemperatureSigmaC:0.0} C sigma, " +
-                  $"precipitation seasonality {seasonality.Value.PrecipitationCv:0}%"
-        };
+        var lines = new List<string> { $"Terrain Diffusion at ({x}, {y}, {z})", "" };
+        lines.AddRange(PlaceLines(pos));
+        lines.Add("");
+        lines.AddRange(TemperatureLines(pos));
 
-        // Which way round the year runs here, and why. The hemisphere is the game's own - the sign
-        // of its latitude - so this is also the season every other system will think it is.
-        double latitude = _api.World.Calendar.OnGetLatitude(z);
-        lines.Add(
-            $"Latitude {Math.Abs(latitude) * 90.0:0.0} deg " +
-            $"{(latitude > 0.0 ? "north" : "south")}, season {_api.World.Calendar.GetSeason(pos)}, " +
-            $"bands {_settings?.Latitude.Status ?? "unknown"}");
+        if (seasonality == null)
+        {
+            lines.Add("Seasonality: none mapped here, so vanilla's latitude seasons apply.");
+        }
+        else
+        {
+            lines.Add($"Temperature seasonality: {seasonality.Value.TemperatureSigmaC:0.0} C sigma");
+            lines.Add($"Precipitation seasonality: {seasonality.Value.PrecipitationCv:0}%");
+        }
+        lines.Add("");
+        lines.Add("Through the year, at midday:");
 
         // Midday on the first day of each season, so the numbers are comparable to each other.
         // Rainfall is reported as a share of the place's annual average rather than as the
@@ -698,7 +859,13 @@ public class TerrainDiffusionModSystem : ModSystem
         var accessor = _api.World.BlockAccessor;
         var lines = new List<string>
         {
-            $"Column ({x}, {z}): terrain height {terrainHeight}, rain height {rainHeight}, sea level {_api.World.SeaLevel}"
+            $"Terrain Diffusion column ({x}, {z})",
+            "",
+            $"Terrain height: Y {terrainHeight}",
+            $"Rain height: Y {rainHeight}",
+            $"Sea level: Y {_api.World.SeaLevel}",
+            "",
+            "Blocks:"
         };
 
         foreach (int y in new[] { rainHeight + 1, rainHeight, terrainHeight, terrainHeight - 1, terrainHeight - 4, 1 })
@@ -716,9 +883,12 @@ public class TerrainDiffusionModSystem : ModSystem
             TerrainTile tile = _provider.GetTileAt(x, z);
             int index = tile.Index(x - tile.BlockX, z - tile.BlockZ);
             Bioclim climate = tile.ClimateAt(index);
-            lines.Add($"  model: {tile.ElevationMeters[index]:0} m -> Y {tile.SurfaceY[index]}, " +
-                      $"{climate.MeanTemperatureC:0.#} C, {climate.PrecipitationMm:0} mm, " +
-                      $"tree moisture {climate.TreeMoisture:0.00}");
+            lines.Add("");
+            lines.Add("What the model said:");
+            lines.Add($"  Elevation: {tile.ElevationMeters[index]:0} m (Y {tile.SurfaceY[index]})");
+            lines.Add($"  Temperature: {climate.MeanTemperatureC:0.#} C");
+            lines.Add($"  Precipitation: {climate.PrecipitationMm:0} mm/year");
+            lines.Add($"  Tree moisture: {climate.TreeMoisture:0.00}");
         }
 
         // What the game actually reads at the surface, after blending and its own altitude
@@ -728,9 +898,13 @@ public class TerrainDiffusionModSystem : ModSystem
             _api.World.BlockAccessor.GetClimateAt(surfacePos, EnumGetClimateMode.WorldGenValues);
         if (climate2 != null)
         {
-            lines.Add($"  in game: {climate2.Temperature:0.#} C, rainfall {climate2.Rainfall:0.##}, " +
-                      $"fertility {climate2.Fertility:0.##}, forest {climate2.ForestDensity:0.##}, " +
-                      $"shrubs {climate2.ShrubDensity:0.##}");
+            lines.Add("");
+            lines.Add("What the game reads at the surface:");
+            lines.Add($"  Temperature: {climate2.Temperature:0.#} C");
+            lines.Add($"  Rainfall: {climate2.Rainfall:0.##}");
+            lines.Add($"  Fertility: {climate2.Fertility:0.##}");
+            lines.Add($"  Forest: {climate2.ForestDensity:0.##}");
+            lines.Add($"  Shrubs: {climate2.ShrubDensity:0.##}");
         }
 
         return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
@@ -738,6 +912,7 @@ public class TerrainDiffusionModSystem : ModSystem
 
     private void OnShutdown()
     {
+        WatershedsCompat.Uninstall();
         _provider?.Dispose();
         _provider = null;
         PipelineModels.Shutdown();

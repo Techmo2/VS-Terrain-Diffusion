@@ -162,6 +162,9 @@ public sealed class WorldPipeline
         $"base [{_baseModel.Backend}] {_baseModel.RunCount} calls/{_baseModel.RunItems} items/{_baseModel.RunMilliseconds} ms, " +
         $"decoder [{_decoderModel.Backend}] {_decoderModel.RunCount} calls/{_decoderModel.RunItems} items/{_decoderModel.RunMilliseconds} ms";
 
+    public long TotalModelInferenceMilliseconds =>
+        _coarseModel.RunMilliseconds + _baseModel.RunMilliseconds + _decoderModel.RunMilliseconds;
+
     /// <summary>Switches to a different world seed and drops every cached window.</summary>
     public void SetSeed(ulong newSeed)
     {
@@ -451,6 +454,9 @@ public sealed class WorldPipeline
         float[] weights = LinearWeightWindow(s);
         float t = (float)Math.Atan(EdmScheduler.SigmaMax / SigmaData);
 
+        // Deliberately not batched. The decoder is the widest graph in the pipeline and already
+        // saturates the GPU with one 256x256 window: batching four of them measured 5% slower for
+        // the same work, because there is no launch overhead left to hide.
         return _tileStore.GetOrCreate("init_residual_map", new int?[] { 2, null, null },
             (windowIndex, args) => DecoderTile(windowIndex, args[0], t, weights),
             outWindow, new[] { _latents }, new[] { inputWindow });
@@ -476,8 +482,6 @@ public sealed class WorldPipeline
             }
         }
 
-        float[] upsampled = NearestUpsample(latents, 4, sl, sl, s, s);
-
         float[] noise = GaussianNoisePatch.Generate(_seed + 5819, i1, j1, s, s, 1, s, s);
         var xT = new float[plane];
         var modelIn = new float[5 * plane];
@@ -486,7 +490,10 @@ public sealed class WorldPipeline
             xT[k] = sinT * noise[k] * SigmaData; // the sample starts at zero
             modelIn[k] = xT[k] / SigmaData;
         }
-        Array.Copy(upsampled, 0, modelIn, plane, 4 * plane);
+
+        // Straight into the model input rather than through a 4 x 256 x 256 staging buffer: that is
+        // a megabyte of copying for every window the decoder produces.
+        NearestUpsampleInto(latents, 4, sl, sl, s, s, modelIn, plane);
 
         float[] rawPrediction = _decoderModel.RunModel(modelIn, new long[] { 1, 5, s, s }, new[] { t }, null, null);
 
@@ -706,18 +713,32 @@ public sealed class WorldPipeline
     internal static float[] NearestUpsample(float[] source, int channels, int sh, int sw, int dh, int dw)
     {
         var destination = new float[channels * dh * dw];
+        NearestUpsampleInto(source, channels, sh, sw, dh, dw, destination, 0);
+        return destination;
+    }
+
+    /// <summary>
+    /// Nearest-neighbour upsample written straight into <paramref name="destination"/> at
+    /// <paramref name="offset"/>. The column mapping repeats for every row, so it is computed once
+    /// and reused rather than divided per pixel.
+    /// </summary>
+    internal static void NearestUpsampleInto(float[] source, int channels, int sh, int sw,
+                                             int dh, int dw, float[] destination, int offset)
+    {
+        var columnMap = new int[dw];
+        for (int col = 0; col < dw; col++) columnMap[col] = col * sw / dw;
+
         for (int c = 0; c < channels; c++)
         {
             for (int r = 0; r < dh; r++)
             {
                 int sr = r * sh / dh;
-                int dstRow = c * dh * dw + r * dw;
+                int dstRow = offset + c * dh * dw + r * dw;
                 int srcRow = c * sh * sw + sr * sw;
                 for (int col = 0; col < dw; col++)
-                    destination[dstRow + col] = source[srcRow + col * sw / dw];
+                    destination[dstRow + col] = source[srcRow + columnMap[col]];
             }
         }
-        return destination;
     }
 
     internal static float[][] To2D(float[] flat, int h, int w)

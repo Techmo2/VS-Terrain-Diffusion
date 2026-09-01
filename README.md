@@ -232,7 +232,8 @@ Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whate
 ## What the mod changes
 
 - **Terrain pass** — vanilla `GenTerra`'s chunk handler is swapped for one that fills columns from
-  the diffusion heightmap.
+  the diffusion heightmap. When another mod has already replaced terrain generation, the model
+  supplies heights to *it* instead; see [Other terrain mods](#other-terrain-mods).
 - **Climate map** — temperature and rainfall from the model, pre-compensated for the altitude
   corrections the game applies on read. The geologic activity byte is still vanilla's.
 - **Global temperature and precipitation** — conditioning rather than post-processing, so the world
@@ -266,6 +267,61 @@ Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whate
 
 Everything else — rock strata, ores, caves, rivers, ponds, ruins, traders, temporal stability — is
 vanilla, running unchanged on top.
+
+## Other terrain mods
+
+Mods that only supply a map — Continental World's ocean map, for instance — need nothing special:
+the mod reads whatever map is installed and conditions the model on it.
+
+A mod that *replaces terrain generation itself* is a different matter. Two generators filling the
+same chunk column do not layer; the world comes out as the union of both landscapes with only one
+mod's heightmaps recorded, and the surface block layers get buried under the other mod's stone.
+There is only one arrangement that works, so that is the one the mod uses: whoever is generating
+terrain gets handed the model's heights and does the filling.
+
+**Algernon's Watersheds** is supported this way. Watersheds disables vanilla `GenTerra` and fills
+every column itself, so with both mods installed this mod stops generating terrain and instead
+answers every question Watersheds asks about the height of the ground: the height its whole
+watershed analysis is built on, the height a stream's profile is laid out against, the height after
+a stream has cut into it — which is what decides where the water surface and the banks go — and
+which blocks of a column are solid. Its drainage basins are then solved on the model's continents,
+its streams run down the valleys that are really there, and the carve depth it computed for a column
+is applied to the modelled hillside. Everything downstream of that — stream water, banks, rapids,
+groundwater, its block layer pass — is Watersheds' own, unchanged.
+
+Answering *all* of those from the model is the whole trick, not a nicety. A stream's water surface
+and the bed it lies in are worked out separately, so a single height left coming from Watersheds'
+own landscape strands water in the air where that landscape stood higher and leaves the channel dry
+below it. One consequence: Watersheds' ridge and gully erosion filter is switched off for these
+worlds. It exists to cut valley detail into fractal noise, the model's landscape already has erosion
+in it, and it is computed privately inside two of those height answers — so keeping it would put the
+water and the bed back out of step.
+
+Three things to expect:
+
+- **World creation takes longer.** The watershed analysis samples heights over a far wider area than
+  the chunks being generated — several kilometres around spawn — and every one of those samples has
+  to come from the model. Expect the first load to spend a few minutes generating terrain tiles it
+  will not visibly use yet. It is a one-time cost per area, and the tiles are cached.
+- **Watersheds decides where streams go, on its own terms.** In particular it refuses to path a
+  stream across terrain rougher than `SmallChunkRoughnessThreshold` in its
+  `ModConfig/Watersheds/TerrainAnalysisConfig.json` (2 blocks of RMSE from a plane across a chunk,
+  by default). Ordinary modelled landscape sits well inside that — a sample of chunks around a
+  460 m plateau measured 0.0 to 0.8 — but genuinely broken ground will not get small streams, the
+  same way it would not in an unmodified Watersheds world. Raise the threshold if you want them
+  anyway.
+- **Streams need somewhere to drain.** They path towards the sea, so a world generated at vanilla's
+  default land cover has almost no ocean for them to reach and produces almost no streams. That is
+  Watersheds' behaviour rather than this mod's, but it is worth knowing before concluding the two
+  are not working together.
+
+Watersheds keeps its stream maps in a database beside the save, so a world explored with an older
+version of this mod has streams in it that were plotted against the wrong landscape. Clear them with
+`/watersheds clearstreammaps` and regenerate the affected chunks, or start a new world.
+
+If Watersheds updates in a way this cannot reach into, the mod says so in the log and on the loading
+screen and takes itself out of the world entirely, leaving Watersheds' own terrain intact rather
+than generating a broken one.
 
 ## How it works
 
@@ -376,10 +432,27 @@ vanilla's seasons for display.
 
 | Subcommand           | What it shows                                                          |
 | -------------------- | ---------------------------------------------------------------------- |
-| `status`             | Device, world scaling, tiles generated and average tile time.           |
-| `here`               | The model's elevation, slope, full bioclimate and derived cover at you. |
-| `season <x> <z>`     | Latitude, hemisphere, the game's season, and the year's temperature and rainfall cycle at a position. |
+| `status`             | Device, world scaling, tiles generated, average tile time, and where that time went: total model inference, its share of tile time, and a per-stage breakdown. A low inference share means something other than the GPU is the bottleneck. |
+| `here`               | Elevation, slope, full bioclimate and derived cover where you stand, plus the latitude diagnostics below. |
+| `season <x> <z>`     | The same diagnostics at a position, and the year's temperature and rainfall cycle there. Usable from a server console, where `here` is not. |
 | `column <x> <z>`     | What actually got generated in a column, next to what the model said.   |
+
+Every command prints one field per line. `here` and `season` share four for diagnosing the climate:
+
+- **Latitude** and **Hemisphere** — how far from the equator the game puts that Z, which side of it,
+  and the season the game's own calendar reports there. That season is the one every other system
+  will think it is, so it is the thing to check if foliage or crops look out of step.
+- **Sea-level temperature** — the same reading with the altitude taken back out, and the local lapse
+  rate the model fitted. This is the number to compare two places by, because it has the mountain
+  out of it. It costs a pipeline query rather than a tile lookup, so it is a little slower than the
+  rest of the readout.
+- **Band temperature** and **Band precipitation** — what the latitude band asked for here and how
+  far this column sits from it, plus a **Band offset applied** line when some of the band had to be
+  added after the model ran rather than conditioned into it.
+
+A single column is expected to scatter several degrees either side of its band: the band is a
+median over all the land in the belt, and everything that makes one place differ from another is
+the model's business. Consistent drift over many columns is what would indicate something wrong.
 
 ## Configuration
 
@@ -400,7 +473,7 @@ established world.
 | ---------------------------- | ------- | ------------ | ---------------------------------------- |
 | `inferenceDevice`            | `auto`  | `auto` `cpu` `openvino` `cuda` `directml` `coreml` | OpenVINO can accelerate the decoder on 64-bit Linux CPUs while leaving the large stages on ORT CPU. A supervised helper contains native failures and falls back to ORT CPU. |
 | `modelLoadMode`              | `auto`  | `auto` `memory` `file` | Load model graphs from RAM or their optimised files. Auto uses files for CPU and memory-constrained hosts. |
-| `offloadModels`              | true    | on / off     | One model on the GPU at a time. Costs a little time per stage switch, saves ~1 GB of VRAM. Turn off if you have VRAM to spare. |
+| `offloadModels`              | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
 | `validateModelHashes`        | true    | on / off     | Verify SHA-256 of existing model files on startup. Off saves a few seconds of disk read. |
 | `downloadRuntime`            | true    | on / off     | Fetch the ONNX Runtime and optional OpenVINO native libraries automatically. |
 | `decoderPrecision`           | `auto`  | `auto` `fp32` `int8` | Auto uses INT8 when 64-bit Linux OpenVINO is requested (including ORT fallback) and FP32 elsewhere. Use an explicit value for an established world. |
@@ -422,7 +495,7 @@ chunks disagree with old ones.
 | `heightMode`                     | `"isotropic"` | `"isotropic"` `"manual"` `"auto"` | True scale, a fixed metres-per-block, or fit the terrain to the world's height. |
 | `metersPerBlockVertical`         | 0             | 5 – 30       | `"manual"` only: metres of elevation per block. 0 leaves the mode's own answer. |
 | `linearKneeFraction`             | 0.85          | 0.7 – 0.95   | Fraction of the height mapped perfectly linearly before summits start compressing. Lower keeps more of the range for the compressed tail. |
-| `oceanDepthFraction`             | 0.9           | 0.6 – 1      | How much of the space below sea level the abyss reaches. Lower gives shallower seas and more room for the sea bed's detail. |
+| `oceanDepthFraction`             | 0.9           | 0.6 – 1      | How much of the space below sea level the abyss reaches. Lower gives shallower seas and more room for the sea bed's detail. The shore end is not scaled by it — the first column past the beach is one block of water at any world height. |
 | `slopeDetailStrength`            | 1             | 0.5 – 2      | Perlin roughness added to sloped ground. 0 gives glassy hillsides; above 2 the noise starts competing with the terrain. |
 | `scaleOverride`                  | 0             | 1 – 6        | Overrides the world's resolution: blocks per 30 m model pixel. 0 uses the world setting. Above 6 is settable but generation cost grows with the square. |
 | `verticalExaggerationOverride`   | 0             | 0.5 – 2      | Overrides the world's height multiplier. 0 uses the world setting. |

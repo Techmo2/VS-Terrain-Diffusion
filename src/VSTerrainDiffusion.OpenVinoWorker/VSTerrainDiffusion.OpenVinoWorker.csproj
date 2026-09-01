@@ -12,6 +12,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\VSTerrainDiffusion\Native\OpenVinoRuntime.cs" Link="Native\OpenVinoRuntime.cs" />
+    <Compile Include="..\VSTerrainDiffusion\Native\OpenVinoLibraryResolver.cs" Link="Native\OpenVinoLibraryResolver.cs" />
     <Compile Include="..\VSTerrainDiffusion\Native\OpenVinoWorkerProtocol.cs" Link="Native\OpenVinoWorkerProtocol.cs" />
   </ItemGroup>
 </Project>

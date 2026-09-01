@@ -26,7 +26,7 @@ public sealed class OpenVinoRuntime : IDisposable
     /// <summary>Configure where the standalone OpenVINO libraries were installed.</summary>
     internal static void ConfigureNativeDirectory(string directory)
     {
-        NativeLibraryResolver.ConfigureOpenVino(directory);
+        OpenVinoLibraryResolver.Configure(directory);
     }
 
     /// <summary>

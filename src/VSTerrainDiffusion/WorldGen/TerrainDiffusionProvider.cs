@@ -104,6 +104,80 @@ public sealed class TerrainDiffusionProvider : IDisposable
     private readonly object _evictionLock = new();
     private long _accessClock;
 
+    /// <summary>
+    /// One column's climate as the model produced it, before the world's own corrections. Only the
+    /// diagnostic commands ask for this; a tile keeps the finished numbers and not the workings.
+    /// </summary>
+    public readonly struct ColumnDetail
+    {
+        /// <summary>Elevation in metres, as the pipeline reports it for the model pixel.</summary>
+        public readonly float ElevationMeters;
+
+        /// <summary>Mean annual temperature at the surface, straight from the model.</summary>
+        public readonly float SurfaceTemperatureC;
+
+        /// <summary>The same with the altitude taken back out: the column's sea-level baseline.</summary>
+        public readonly float SeaLevelTemperatureC;
+
+        /// <summary>The local lapse rate the model fitted here, in degrees per kilometre (positive).</summary>
+        public readonly float LapseRateKPerKm;
+
+        public ColumnDetail(float elevationMeters, float surfaceTemperatureC,
+                            float seaLevelTemperatureC, float lapseRateKPerKm)
+        {
+            ElevationMeters = elevationMeters;
+            SurfaceTemperatureC = surfaceTemperatureC;
+            SeaLevelTemperatureC = seaLevelTemperatureC;
+            LapseRateKPerKm = lapseRateKPerKm;
+        }
+    }
+
+    /// <summary>
+    /// Reads back the workings behind one column's temperature: what the model said at the surface,
+    /// what that is with the altitude removed, and the lapse rate it used to get between them.
+    ///
+    /// Sea-level temperature is the number worth having when checking a latitude band, because the
+    /// band is a statement about a belt and a mountain in that belt is legitimately colder than it.
+    /// It costs a pipeline query rather than a tile lookup - the tile keeps the answer, not the
+    /// arithmetic - which is affordable here because nothing but a typed command calls it, and the
+    /// caches for a chunk somebody is standing in are already warm.
+    /// </summary>
+    /// <returns>Null if the pipeline could not be sampled.</returns>
+    public ColumnDetail? GetColumnDetail(int worldBlockX, int worldBlockZ)
+    {
+        int scale = Math.Max(1, _settings.Scale);
+        int i = FloorDiv(worldBlockZ - _settings.OriginBlockZ, scale);
+        int j = FloorDiv(worldBlockX - _settings.OriginBlockX, scale);
+
+        WorldPipeline.Sample sample;
+        _inferenceGate.Wait();
+        try
+        {
+            sample = _pipeline.Get(i, j, i + 1, j + 1, true);
+        }
+        catch (Exception e)
+        {
+            _logger.VerboseDebug("[{0}] Could not read column detail at ({1}, {2}): {3}",
+                DiffusionPaths.ModId, worldBlockX, worldBlockZ, e.Message);
+            return null;
+        }
+        finally
+        {
+            _inferenceGate.Release();
+        }
+
+        if (sample.Climate == null) return null;
+
+        // Channel 4 of the climate sample is the local lapse rate in degrees per metre, negative
+        // going up, and the surface value was built as baseline + lapse * elevation.
+        float elevation = sample.Elevation[0];
+        float surface = sample.Climate[0];
+        float lapse = sample.Climate[4];
+        float seaLevel = surface - lapse * Math.Max(0f, elevation);
+
+        return new ColumnDetail(elevation, surface, seaLevel, -lapse * 1000f);
+    }
+
     /// <summary>Serialises all pipeline work; the tile store is not thread safe.</summary>
     private readonly SemaphoreSlim _inferenceGate = new(1, 1);
 
@@ -151,6 +225,19 @@ public sealed class TerrainDiffusionProvider : IDisposable
     public long PipelineComputedWindows => _pipeline.TotalComputedWindowCount;
 
     public string ModelTimingSummary => _pipeline.ModelTimingSummary;
+
+    /// <summary>
+    /// How much of the time spent generating tiles went to the models rather than to this mod's own
+    /// arithmetic. A low number means the bottleneck is here, not on the GPU.
+    /// </summary>
+    public long InferenceSharePercent
+    {
+        get
+        {
+            long total = Interlocked.Read(ref _totalInferenceMillis);
+            return total == 0 ? 0 : Math.Min(100, _pipeline.TotalModelInferenceMilliseconds * 100 / total);
+        }
+    }
 
     /// <summary>Returns the tile covering the given block position, generating it if needed.</summary>
     public TerrainTile GetTileAt(int blockX, int blockZ)

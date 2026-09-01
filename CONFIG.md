@@ -32,9 +32,12 @@ the ones already on disk.
   // available; otherwise it keeps the graphs in memory.
   "ModelLoadMode": "auto",
 
-  // Keep only one of the three models resident on the GPU at a time. Costs a little time on each
-  // stage switch, and holds peak VRAM near 1.5 GB instead of about 2.5 GB.
-  "OffloadModels": true,
+  // Keep only one of the three models resident on the GPU at a time, holding peak VRAM near
+  // 1.5 GB instead of about 2.5 GB. Generating a single terrain tile runs the latent model and the
+  // decoder, so with this on every tile pays to rebuild a session for a graph of most of a
+  // gigabyte: measured on a 6 GB card it triples the average tile time, 66 ms to 197 ms. Turn it
+  // on only if the models will not fit on the card alongside everything else.
+  "OffloadModels": false,
 
   // Check the SHA-256 of model files that are already on disk at every startup. Turning this off
   // saves a few seconds of hashing per start and gives up detection of a truncated download.
@@ -124,7 +127,9 @@ the ones already on disk.
     // to 1 the more faithful the summits and the harder they clip.
     "LinearKneeFraction": 0.85,
 
-    // Fraction of the space below sea level that the deepest ocean reaches.
+    // Fraction of the space below sea level that the deepest ocean reaches. It scales the whole
+    // sea-floor curve except its shallow end, which is pinned to the waterline so that the first
+    // column past the shore is one block of water at any world height.
     "OceanDepthFraction": 0.9,
 
     // Multiplies the Perlin detail added to sloped ground. The model resolves features down to

@@ -54,6 +54,11 @@
       <HintPath>$(VintagestoryDir)/Lib/protobuf-net.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- Only used to hand the model's heights to another mod's terrain generator; see WatershedsCompat. -->
+    <Reference Include="0Harmony">
+      <HintPath>$(VintagestoryDir)/Lib/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!--

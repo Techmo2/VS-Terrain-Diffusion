@@ -15,10 +15,15 @@ public class DiffusionConfig
     public string ModelLoadMode { get; set; } = "auto";
 
     /// <summary>
-    /// Keep only one model resident in a GPU provider at a time. Costs time per stage switch but
-    /// substantially lowers peak VRAM.
+    /// Keep only one model resident on the GPU at a time, rebuilding a session whenever another
+    /// stage needs the device. That holds peak VRAM near 1.5 GB instead of about 2.5 GB, and it
+    /// costs a great deal: generating one terrain tile runs the latent model and the decoder, so
+    /// every tile pays for at least one session rebuild of a graph that is most of a gigabyte.
+    /// Measured on a 6 GB laptop card, turning this on triples the average tile time (66 ms to
+    /// 197 ms). Off by default; turn it on only if the models will not fit alongside everything
+    /// else on the card.
     /// </summary>
-    public bool OffloadModels { get; set; } = true;
+    public bool OffloadModels { get; set; }
 
     /// <summary>Verify SHA-256 of pre-existing model files on startup.</summary>
     public bool ValidateModelHashes { get; set; } = true;

@@ -10,17 +10,14 @@ using Microsoft.ML.OnnxRuntime;
 namespace VSTerrainDiffusion.Native;
 
 /// <summary>
-/// Installs each native resolver at most once. ONNX Runtime's imports live in its managed assembly,
-/// while the standalone OpenVINO imports live in the mod assembly, so each assembly needs its own
-/// resolver and each registration has to survive a failed-and-retried initialisation.
+/// Installs the ONNX Runtime native resolver at most once. Its imports live in the managed ONNX
+/// Runtime assembly rather than the mod assembly, so that assembly needs its own resolver.
 /// </summary>
 internal static class NativeLibraryResolver
 {
     private static readonly object Gate = new();
     private static bool _onnxInstalled;
-    private static bool _openVinoInstalled;
     private static string? _onnxDirectory;
-    private static string? _openVinoDirectory;
 
     internal static void ConfigureOnnxRuntime(string directory)
     {
@@ -48,19 +45,6 @@ internal static class NativeLibraryResolver
         }
     }
 
-    internal static void ConfigureOpenVino(string directory)
-    {
-        string fullPath = Path.GetFullPath(directory);
-        lock (Gate)
-        {
-            EnsureSameDirectory(_openVinoDirectory, fullPath, "OpenVINO");
-            _openVinoDirectory = fullPath;
-            if (_openVinoInstalled) return;
-            NativeLibrary.SetDllImportResolver(typeof(NativeLibraryResolver).Assembly, ResolveOpenVino);
-            _openVinoInstalled = true;
-        }
-    }
-
     private static void EnsureSameDirectory(string? configuredDirectory, string requestedDirectory, string runtimeName)
     {
         if (configuredDirectory != null &&
@@ -78,20 +62,6 @@ internal static class NativeLibraryResolver
         string? directory = _onnxDirectory;
         if (directory == null) return IntPtr.Zero;
         foreach (string candidate in CandidateFileNames(libraryName))
-        {
-            string path = Path.Combine(directory, candidate);
-            if (File.Exists(path) && NativeLibrary.TryLoad(path, out IntPtr handle)) return handle;
-        }
-        return IntPtr.Zero;
-    }
-
-    private static IntPtr ResolveOpenVino(
-        string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
-    {
-        if (!string.Equals(libraryName, "openvino_c", StringComparison.Ordinal)) return IntPtr.Zero;
-        string? directory = _openVinoDirectory;
-        if (directory == null) return IntPtr.Zero;
-        foreach (string candidate in new[] { "libopenvino_c.so.2232", "libopenvino_c.so" })
         {
             string path = Path.Combine(directory, candidate);
             if (File.Exists(path) && NativeLibrary.TryLoad(path, out IntPtr handle)) return handle;

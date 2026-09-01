@@ -142,6 +142,11 @@ public sealed class LatitudeBands : ILatitudeSource
     private readonly float[] _offsetC;
     private readonly float[] _rainfall;
 
+    /// <summary>What each band is aiming for, kept only so the diagnostic commands can say so.</summary>
+    private readonly float[] _wantedC;
+
+    private readonly float[] _wantedMm;
+
     /// <summary>Why the bands are or are not in play, for the log and the /terraindiffusion command.</summary>
     public string Status { get; }
 
@@ -154,7 +159,7 @@ public sealed class LatitudeBands : ILatitudeSource
 
     private LatitudeBands(System.Func<double, double> latitude, double blocksPerCoarsePixel, double originBlockZ,
                           float[] conditioningC, float[] conditioningMm, float[] offsetC, float[] rainfall,
-                          string status)
+                          float[] wantedC, float[] wantedMm, string status)
     {
         _latitude = latitude;
         _blocksPerCoarsePixel = blocksPerCoarsePixel;
@@ -163,6 +168,8 @@ public sealed class LatitudeBands : ILatitudeSource
         _conditioningMm = conditioningMm;
         _offsetC = offsetC;
         _rainfall = rainfall;
+        _wantedC = wantedC;
+        _wantedMm = wantedMm;
         Status = status;
     }
 
@@ -238,6 +245,8 @@ public sealed class LatitudeBands : ILatitudeSource
         var conditioningMm = new float[Samples];
         var offsetC = new float[Samples];
         var rainfall = new float[Samples];
+        var targetC = new float[Samples];
+        var targetMm = new float[Samples];
 
         for (int i = 0; i < Samples; i++)
         {
@@ -260,10 +269,12 @@ public sealed class LatitudeBands : ILatitudeSource
             conditioningMm[i] = plan.ConditioningPrecipitationMm;
             offsetC[i] = plan.TemperatureOffsetC;
             rainfall[i] = plan.RainfallFactor;
+            targetC[i] = wantedC;
+            targetMm[i] = wantedMm;
         }
 
         return new LatitudeBands(latitude, blocksPerCoarsePixel, originBlockZ,
-                                 conditioningC, conditioningMm, offsetC, rainfall, status);
+                                 conditioningC, conditioningMm, offsetC, rainfall, targetC, targetMm, status);
     }
 
     /// <summary>
@@ -303,6 +314,18 @@ public sealed class LatitudeBands : ILatitudeSource
         temperatureC = Lookup(_conditioningC, pole01);
         precipitationMm = Lookup(_conditioningMm, pole01);
     }
+
+    /// <summary>
+    /// The mean annual temperature this latitude's band is aiming for, in Celsius: the zonal mean
+    /// over land, after the world's global temperature setting and the band strength. What the
+    /// ground actually reads should scatter around it, colder on high land and warmer on a coast.
+    /// </summary>
+    public float BandTemperatureC(double blockZ)
+        => _latitude == null ? float.NaN : Lookup(_wantedC, Pole01(blockZ));
+
+    /// <summary>The annual rainfall the band is aiming for, in millimetres.</summary>
+    public float BandPrecipitationMm(double blockZ)
+        => _latitude == null ? float.NaN : Lookup(_wantedMm, Pole01(blockZ));
 
     /// <summary>Degrees to add to a modelled temperature for the latitude it was drawn at.</summary>
     public float TemperatureOffsetC(double blockZ)
