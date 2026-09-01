@@ -433,6 +433,7 @@ vanilla's seasons for display.
 | Subcommand           | What it shows                                                          |
 | -------------------- | ---------------------------------------------------------------------- |
 | `status`             | Device, world scaling, tiles generated, average tile time, and where that time went: total model inference, its share of tile time, and a per-stage breakdown. A low inference share means something other than the GPU is the bottleneck. |
+| `gpulimit [percent]` | The share of the time inference is allowed to keep the device busy, and how much has been given up to the limit so far. With a percentage, sets it there and now, and saves it. |
 | `here`               | Elevation, slope, full bioclimate and derived cover where you stand, plus the latitude diagnostics below. |
 | `season <x> <z>`     | The same diagnostics at a position, and the year's temperature and rainfall cycle there. Usable from a server console, where `here` is not. |
 | `column <x> <z>`     | What actually got generated in a column, next to what the model said.   |
@@ -459,6 +460,16 @@ the model's business. Consistent drift over many columns is what would indicate 
 `ModConfig/vsterraindiffusion.json`, written on first start. [CONFIG.md](CONFIG.md) is the whole
 default file with a comment on every field; the tables below are the short version.
 
+Install [ConfigLib](https://mods.vintagestory.at/configlib) and the same settings get an in-game
+screen, every field below on it with its explanation. Nothing else changes: ConfigLib edits this
+mod's own config file in place rather than keeping a copy, so the file and the screen are two views
+of one thing and you can go on editing the file if you would rather. It is not a dependency — with
+ConfigLib absent the mod neither needs nor notices it.
+
+`gpuUtilizationPercent` and `verboseInference` take effect the moment they are saved. Everything
+else is read when the world generator starts, so it takes a server restart, which is what the
+screen's hover text says for each one.
+
 **Useful range** is where the setting does something sensible, not where it is legal. Everything is
 clamped to a wider range than this (CONFIG.md lists the hard limits) and nothing outside the useful
 range is *forbidden* — it is just where the results stop being worth having.
@@ -471,12 +482,38 @@ Machine settings. Safe to change at any time.
 | ---------------------------- | ------- | ------------ | ---------------------------------------- |
 | `inferenceDevice`            | `auto`  | `auto` `cpu` `cuda` `directml` `coreml` | Leave on `auto` unless it picks wrong. |
 | `offloadModels`              | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
+| `gpuUtilizationPercent`      | 100     | 40 – 100     | Share of the time world generation may keep the device busy. Lower it if generating chunks makes the game stutter; see [Stuttering](#stuttering) below. World generation slows by the reciprocal. |
 | `validateModelHashes`        | true    | on / off     | Verify SHA-256 of existing model files on startup. Off saves a few seconds of disk read. |
 | `downloadRuntime`            | true    | on / off     | Fetch the ONNX Runtime native library automatically. |
 | `tileCacheMegabytes`         | 256     | 128 – 1024   | Decoded tensor windows per pipeline stage. |
 | `terrainTileCacheMegabytes`  | 256     | 128 – 1024   | Finished terrain tiles. Raise if you see thrash warnings. |
 | `terrainTileSizeBlocks`      | 256     | 128 – 512    | Blocks generated per model invocation, a multiple of 32. Larger amortises the model better but wastes more work at the edges of what is being generated. |
-| `verboseInference`           | false   | on / off     | Log every model window. Noisy; for diagnosing slowness. |
+| `verboseInference`           | false   | on / off     | Log every terrain tile at notification level. Noisy; for diagnosing slowness. Off, those lines still go to the debug log and only a tile that stalls — a second or more, and four times the session average — reaches the main one. |
+
+#### Stuttering
+
+In single player the model runs on the same GPU the game renders with, and world generation submits
+work to it in long unbroken stretches. A graph that has been submitted runs to completion — nothing
+can preempt it — so the renderer's own work queues behind it and a burst of chunk generation reads
+as a freeze, even though the game thread is not blocked at all. It is worst on a card that is only
+just fast enough for both jobs.
+
+`gpuUtilizationPercent` is the lever. Below 100 the generator idles after each model run for long
+enough to hold the device to that share, so the pattern becomes run, wait, run, wait instead of one
+solid block of compute, and the renderer gets regular windows to put a frame out. It cannot make an
+individual model run shorter, so it reduces stutter rather than removing it, and world generation
+slows by the reciprocal: at 50% a terrain tile takes about twice as long, at 25% about four times.
+
+Measured on a 6 GB laptop card at 40%: the device came out at exactly 40% busy and a terrain tile
+went from 142 ms to 323 ms. Total inference time in `/tdiff status` also rises — 14.7 s to 16.5 s
+here, almost all of it on the shortest of the three models — because a card that keeps going idle
+drops its clocks between runs. That is the cost of the idle windows, not a sign of anything wrong.
+
+Start at 50 and go down only as far as the stutter actually needs — a value too low leaves world
+generation unable to keep up with a walking player, which is its own kind of stutter. `/tdiff
+gpulimit <percent>` changes it without a restart, so you can watch your frame rate and tune it in
+place. On a dedicated server there are no frames to protect and the setting is only a way of leaving
+the card to something else; leave it at 100 unless you have a reason.
 
 ### World generation
 

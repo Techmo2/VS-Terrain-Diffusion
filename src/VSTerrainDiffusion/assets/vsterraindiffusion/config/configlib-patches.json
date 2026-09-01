@@ -1,0 +1,558 @@
+{
+  "file": "vsterraindiffusion.json",
+  "settings": [
+    {
+      "type": "separator",
+      "title": "configsep-inference",
+      "text": "configsep-inference-text"
+    },
+    {
+      "code": "InferenceDevice",
+      "type": "string",
+      "default": "auto",
+      "ingui": "setting-InferenceDevice",
+      "comment": "setting-InferenceDevice-hover",
+      "values": [
+        "auto",
+        "cpu",
+        "cuda",
+        "directml",
+        "coreml"
+      ]
+    },
+    {
+      "code": "GpuUtilizationPercent",
+      "type": "integer",
+      "default": 100,
+      "ingui": "setting-GpuUtilizationPercent",
+      "comment": "setting-GpuUtilizationPercent-hover",
+      "range": {
+        "min": 5,
+        "max": 100,
+        "step": 5
+      }
+    },
+    {
+      "code": "OffloadModels",
+      "type": "boolean",
+      "default": false,
+      "ingui": "setting-OffloadModels",
+      "comment": "setting-OffloadModels-hover"
+    },
+    {
+      "code": "TerrainTileSizeBlocks",
+      "type": "integer",
+      "default": 256,
+      "ingui": "setting-TerrainTileSizeBlocks",
+      "comment": "setting-TerrainTileSizeBlocks-hover",
+      "range": {
+        "min": 64,
+        "max": 1024,
+        "step": 32
+      }
+    },
+    {
+      "code": "TerrainTileCacheMegabytes",
+      "type": "integer",
+      "default": 256,
+      "ingui": "setting-TerrainTileCacheMegabytes",
+      "comment": "setting-TerrainTileCacheMegabytes-hover",
+      "range": {
+        "min": 32,
+        "max": 4096
+      }
+    },
+    {
+      "code": "TileCacheMegabytes",
+      "type": "integer",
+      "default": 256,
+      "ingui": "setting-TileCacheMegabytes",
+      "comment": "setting-TileCacheMegabytes-hover",
+      "range": {
+        "min": 32,
+        "max": 4096
+      }
+    },
+    {
+      "code": "ValidateModelHashes",
+      "type": "boolean",
+      "default": true,
+      "ingui": "setting-ValidateModelHashes",
+      "comment": "setting-ValidateModelHashes-hover"
+    },
+    {
+      "code": "DownloadRuntime",
+      "type": "boolean",
+      "default": true,
+      "ingui": "setting-DownloadRuntime",
+      "comment": "setting-DownloadRuntime-hover"
+    },
+    {
+      "code": "VerboseInference",
+      "type": "boolean",
+      "default": false,
+      "ingui": "setting-VerboseInference",
+      "comment": "setting-VerboseInference-hover"
+    },
+    {
+      "type": "separator",
+      "title": "configsep-heightandscale",
+      "text": "configsep-heightandscale-text"
+    },
+    {
+      "code": "WorldGen/HeightMode",
+      "type": "string",
+      "default": "isotropic",
+      "ingui": "setting-WorldGenHeightMode",
+      "comment": "setting-WorldGenHeightMode-hover",
+      "values": [
+        "isotropic",
+        "manual",
+        "auto"
+      ]
+    },
+    {
+      "code": "WorldGen/MetersPerBlockVertical",
+      "type": "number",
+      "default": 0.0,
+      "ingui": "setting-WorldGenMetersPerBlockVertical",
+      "comment": "setting-WorldGenMetersPerBlockVertical-hover",
+      "range": {
+        "min": 0,
+        "max": 64
+      }
+    },
+    {
+      "code": "WorldGen/ScaleOverride",
+      "type": "integer",
+      "default": 0,
+      "ingui": "setting-WorldGenScaleOverride",
+      "comment": "setting-WorldGenScaleOverride-hover",
+      "range": {
+        "min": 0,
+        "max": 16
+      }
+    },
+    {
+      "code": "WorldGen/VerticalExaggerationOverride",
+      "type": "number",
+      "default": 0.0,
+      "ingui": "setting-WorldGenVerticalExaggerationOverride",
+      "comment": "setting-WorldGenVerticalExaggerationOverride-hover",
+      "range": {
+        "min": 0,
+        "max": 20
+      }
+    },
+    {
+      "code": "WorldGen/LinearKneeFraction",
+      "type": "number",
+      "default": 0.85,
+      "ingui": "setting-WorldGenLinearKneeFraction",
+      "comment": "setting-WorldGenLinearKneeFraction-hover",
+      "range": {
+        "min": 0.1,
+        "max": 0.99
+      }
+    },
+    {
+      "code": "WorldGen/OceanDepthFraction",
+      "type": "number",
+      "default": 0.9,
+      "ingui": "setting-WorldGenOceanDepthFraction",
+      "comment": "setting-WorldGenOceanDepthFraction-hover",
+      "range": {
+        "min": 0.05,
+        "max": 1.0
+      }
+    },
+    {
+      "code": "WorldGen/SlopeDetailStrength",
+      "type": "number",
+      "default": 1.0,
+      "ingui": "setting-WorldGenSlopeDetailStrength",
+      "comment": "setting-WorldGenSlopeDetailStrength-hover",
+      "range": {
+        "min": 0,
+        "max": 8
+      }
+    },
+    {
+      "type": "separator",
+      "title": "configsep-heightcalibration",
+      "text": "configsep-heightcalibration-text"
+    },
+    {
+      "code": "WorldGen/TargetPeakFillFraction",
+      "type": "number",
+      "default": 0.92,
+      "ingui": "setting-WorldGenTargetPeakFillFraction",
+      "comment": "setting-WorldGenTargetPeakFillFraction-hover",
+      "range": {
+        "min": 0.2,
+        "max": 1.0
+      }
+    },
+    {
+      "code": "WorldGen/PeakQuantile",
+      "type": "number",
+      "default": 0.995,
+      "ingui": "setting-WorldGenPeakQuantile",
+      "comment": "setting-WorldGenPeakQuantile-hover",
+      "range": {
+        "min": 0.5,
+        "max": 1.0
+      }
+    },
+    {
+      "code": "WorldGen/CalibrationRadiusBlocks",
+      "type": "integer",
+      "default": 4096,
+      "ingui": "setting-WorldGenCalibrationRadiusBlocks",
+      "comment": "setting-WorldGenCalibrationRadiusBlocks-hover",
+      "range": {
+        "min": 512,
+        "max": 131072
+      }
+    },
+    {
+      "code": "WorldGen/CalibrationProbes",
+      "type": "integer",
+      "default": 8,
+      "ingui": "setting-WorldGenCalibrationProbes",
+      "comment": "setting-WorldGenCalibrationProbes-hover",
+      "range": {
+        "min": 0,
+        "max": 64
+      }
+    },
+    {
+      "code": "WorldGen/ReliefFactor",
+      "type": "number",
+      "default": 1.6,
+      "ingui": "setting-WorldGenReliefFactor",
+      "comment": "setting-WorldGenReliefFactor-hover",
+      "range": {
+        "min": 1.0,
+        "max": 5.0
+      }
+    },
+    {
+      "code": "WorldGen/MinAutoExaggeration",
+      "type": "number",
+      "default": 1.0,
+      "ingui": "setting-WorldGenMinAutoExaggeration",
+      "comment": "setting-WorldGenMinAutoExaggeration-hover",
+      "range": {
+        "min": 0.05,
+        "max": 100.0
+      }
+    },
+    {
+      "code": "WorldGen/MaxAutoExaggeration",
+      "type": "number",
+      "default": 20.0,
+      "ingui": "setting-WorldGenMaxAutoExaggeration",
+      "comment": "setting-WorldGenMaxAutoExaggeration-hover",
+      "range": {
+        "min": 0.05,
+        "max": 100.0
+      }
+    },
+    {
+      "type": "separator",
+      "title": "configsep-climate",
+      "text": "configsep-climate-text"
+    },
+    {
+      "code": "WorldGen/ClimateMode",
+      "type": "string",
+      "default": "",
+      "ingui": "setting-WorldGenClimateMode",
+      "comment": "setting-WorldGenClimateMode-hover",
+      "values": [
+        "",
+        "full",
+        "off"
+      ]
+    },
+    {
+      "code": "WorldGen/RainfallBasis",
+      "type": "string",
+      "default": "moisture",
+      "ingui": "setting-WorldGenRainfallBasis",
+      "comment": "setting-WorldGenRainfallBasis-hover",
+      "values": [
+        "moisture",
+        "precipitation"
+      ]
+    },
+    {
+      "code": "WorldGen/MoistureMedian",
+      "type": "number",
+      "default": 0.62,
+      "ingui": "setting-WorldGenMoistureMedian",
+      "comment": "setting-WorldGenMoistureMedian-hover",
+      "range": {
+        "min": 0.01,
+        "max": 4.0
+      }
+    },
+    {
+      "code": "WorldGen/MoistureSpread",
+      "type": "number",
+      "default": 1.0,
+      "ingui": "setting-WorldGenMoistureSpread",
+      "comment": "setting-WorldGenMoistureSpread-hover",
+      "range": {
+        "min": 0.1,
+        "max": 4.0
+      }
+    },
+    {
+      "code": "WorldGen/RainfallMedianMm",
+      "type": "number",
+      "default": 540.0,
+      "ingui": "setting-WorldGenRainfallMedianMm",
+      "comment": "setting-WorldGenRainfallMedianMm-hover",
+      "range": {
+        "min": 10,
+        "max": 10000
+      }
+    },
+    {
+      "code": "WorldGen/RainfallSpread",
+      "type": "number",
+      "default": 0.8,
+      "ingui": "setting-WorldGenRainfallSpread",
+      "comment": "setting-WorldGenRainfallSpread-hover",
+      "range": {
+        "min": 0.1,
+        "max": 4.0
+      }
+    },
+    {
+      "code": "WorldGen/RainfallBias",
+      "type": "number",
+      "default": 0.05,
+      "ingui": "setting-WorldGenRainfallBias",
+      "comment": "setting-WorldGenRainfallBias-hover",
+      "range": {
+        "min": -1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "code": "WorldGen/TemperatureOffsetC",
+      "type": "number",
+      "default": 0.0,
+      "ingui": "setting-WorldGenTemperatureOffsetC",
+      "comment": "setting-WorldGenTemperatureOffsetC-hover",
+      "range": {
+        "min": -40.0,
+        "max": 40.0
+      }
+    },
+    {
+      "code": "WorldGen/GlobalClimateStrength",
+      "type": "number",
+      "default": 1.0,
+      "ingui": "setting-WorldGenGlobalClimateStrength",
+      "comment": "setting-WorldGenGlobalClimateStrength-hover",
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    {
+      "code": "WorldGen/ClimateNoiseLevel",
+      "type": "number",
+      "default": 0.0,
+      "ingui": "setting-WorldGenClimateNoiseLevel",
+      "comment": "setting-WorldGenClimateNoiseLevel-hover",
+      "range": {
+        "min": 0.0,
+        "max": 8.0
+      }
+    },
+    {
+      "code": "WorldGen/LatitudeStrength",
+      "type": "number",
+      "default": 1.0,
+      "ingui": "setting-WorldGenLatitudeStrength",
+      "comment": "setting-WorldGenLatitudeStrength-hover",
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    {
+      "type": "separator",
+      "title": "configsep-seasons",
+      "text": "configsep-seasons-text"
+    },
+    {
+      "code": "WorldGen/SeasonalTemperature",
+      "type": "boolean",
+      "default": true,
+      "ingui": "setting-WorldGenSeasonalTemperature",
+      "comment": "setting-WorldGenSeasonalTemperature-hover"
+    },
+    {
+      "code": "WorldGen/SeasonalTemperatureStrength",
+      "type": "number",
+      "default": 1.0,
+      "ingui": "setting-WorldGenSeasonalTemperatureStrength",
+      "comment": "setting-WorldGenSeasonalTemperatureStrength-hover",
+      "range": {
+        "min": 0.0,
+        "max": 4.0
+      }
+    },
+    {
+      "code": "WorldGen/SeasonalPrecipitation",
+      "type": "boolean",
+      "default": true,
+      "ingui": "setting-WorldGenSeasonalPrecipitation",
+      "comment": "setting-WorldGenSeasonalPrecipitation-hover"
+    },
+    {
+      "code": "WorldGen/SeasonalPrecipitationStrength",
+      "type": "number",
+      "default": 1.0,
+      "ingui": "setting-WorldGenSeasonalPrecipitationStrength",
+      "comment": "setting-WorldGenSeasonalPrecipitationStrength-hover",
+      "range": {
+        "min": 0.0,
+        "max": 4.0
+      }
+    },
+    {
+      "code": "WorldGen/SeasonHemispheres",
+      "type": "boolean",
+      "default": true,
+      "ingui": "setting-WorldGenSeasonHemispheres",
+      "comment": "setting-WorldGenSeasonHemispheres-hover"
+    },
+    {
+      "type": "separator",
+      "title": "configsep-vegetationandsurface",
+      "text": "configsep-vegetationandsurface-text"
+    },
+    {
+      "code": "WorldGen/ForestDensityMultiplier",
+      "type": "number",
+      "default": 1.0,
+      "ingui": "setting-WorldGenForestDensityMultiplier",
+      "comment": "setting-WorldGenForestDensityMultiplier-hover",
+      "range": {
+        "min": 0.0,
+        "max": 4.0
+      }
+    },
+    {
+      "code": "WorldGen/ShrubDensityMultiplier",
+      "type": "number",
+      "default": 1.0,
+      "ingui": "setting-WorldGenShrubDensityMultiplier",
+      "comment": "setting-WorldGenShrubDensityMultiplier-hover",
+      "range": {
+        "min": 0.0,
+        "max": 4.0
+      }
+    },
+    {
+      "code": "WorldGen/RescaleBlockLayerAltitudes",
+      "type": "boolean",
+      "default": true,
+      "ingui": "setting-WorldGenRescaleBlockLayerAltitudes",
+      "comment": "setting-WorldGenRescaleBlockLayerAltitudes-hover"
+    },
+    {
+      "code": "WorldGen/BareSlopeRock",
+      "type": "boolean",
+      "default": true,
+      "ingui": "setting-WorldGenBareSlopeRock",
+      "comment": "setting-WorldGenBareSlopeRock-hover"
+    },
+    {
+      "code": "WorldGen/GlacierIce",
+      "type": "boolean",
+      "default": true,
+      "ingui": "setting-WorldGenGlacierIce",
+      "comment": "setting-WorldGenGlacierIce-hover"
+    },
+    {
+      "type": "separator",
+      "title": "configsep-coastlines",
+      "text": "configsep-coastlines-text"
+    },
+    {
+      "code": "WorldGen/OceanMap",
+      "type": "string",
+      "default": "input",
+      "ingui": "setting-WorldGenOceanMap",
+      "comment": "setting-WorldGenOceanMap-hover",
+      "values": [
+        "input",
+        "output"
+      ]
+    },
+    {
+      "code": "WorldGen/LandmaskStrength",
+      "type": "number",
+      "default": 1.0,
+      "ingui": "setting-WorldGenLandmaskStrength",
+      "comment": "setting-WorldGenLandmaskStrength-hover",
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    {
+      "code": "WorldGen/LandmaskNoiseLevel",
+      "type": "number",
+      "default": 0.1,
+      "ingui": "setting-WorldGenLandmaskNoiseLevel",
+      "comment": "setting-WorldGenLandmaskNoiseLevel-hover",
+      "range": {
+        "min": 0.0,
+        "max": 8.0
+      }
+    },
+    {
+      "type": "separator",
+      "title": "configsep-spawn",
+      "text": "configsep-spawn-text"
+    },
+    {
+      "code": "WorldGen/StartingClimateSearch",
+      "type": "boolean",
+      "default": true,
+      "ingui": "setting-WorldGenStartingClimateSearch",
+      "comment": "setting-WorldGenStartingClimateSearch-hover"
+    },
+    {
+      "code": "WorldGen/StartingClimateSearchRadiusBlocks",
+      "type": "integer",
+      "default": 65536,
+      "ingui": "setting-WorldGenStartingClimateSearchRadiusBlocks",
+      "comment": "setting-WorldGenStartingClimateSearchRadiusBlocks-hover",
+      "range": {
+        "min": 512,
+        "max": 1000000
+      }
+    },
+    {
+      "code": "WorldGen/StartingClimateNorthSouthCost",
+      "type": "number",
+      "default": 2.0,
+      "ingui": "setting-WorldGenStartingClimateNorthSouthCost",
+      "comment": "setting-WorldGenStartingClimateNorthSouthCost-hover",
+      "range": {
+        "min": 1.0,
+        "max": 100.0
+      }
+    }
+  ]
+}

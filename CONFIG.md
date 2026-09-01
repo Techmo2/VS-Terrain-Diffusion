@@ -2,9 +2,14 @@
 
 The mod writes `ModConfig/vsterraindiffusion.json` inside your Vintage Story data folder the first
 time it runs, and rewrites it on every start with any missing keys filled in and any out-of-range
-values pulled back into range. Editing the file is the only way to reach these settings on a
-dedicated server; a single player world exposes the four world settings on the creation screen as
-well.
+values pulled back into range. A single player world exposes the four world settings on the creation
+screen as well; everything else lives in this file.
+
+With [ConfigLib](https://mods.vintagestory.at/configlib) installed the same file gets an in-game
+settings screen, with every field below on it. ConfigLib edits this file in place rather than
+keeping one of its own, so the two ways of setting things stay the same thing. Only
+`GpuUtilizationPercent` and `VerboseInference` take effect the moment they are saved; the rest are
+read when the world generator starts.
 
 The listing below is the file exactly as the mod generates it, with a comment on every field. **JSON
 does not allow comments** — copy values out of it, do not paste the whole thing over your config.
@@ -28,6 +33,15 @@ explored makes new chunks disagree with the ones already on disk.
   // on only if the models will not fit on the card alongside everything else.
   "OffloadModels": false,
 
+  // Share of the time, as a percentage, that world generation may keep the inference device busy.
+  // 100 is unlimited. Lower this if generating chunks makes the game stutter: the model runs on the
+  // same GPU the game renders with, and a graph that has been submitted runs to completion, so the
+  // only lever is how often one is submitted. After each model run the generator idles for long
+  // enough to hold the device to this share, which leaves the renderer regular windows to get a
+  // frame out. World generation slows by the reciprocal - at 50% a terrain tile takes about twice
+  // as long. Changeable while the server runs, with /tdiff gpulimit.
+  "GpuUtilizationPercent": 100,
+
   // Check the SHA-256 of model files that are already on disk at every startup. Turning this off
   // saves a few seconds of hashing per start and gives up detection of a truncated download.
   "ValidateModelHashes": true,
@@ -49,7 +63,10 @@ explored makes new chunks disagree with the ones already on disk.
   // to a multiple of 32, and clamped to 64-1024.
   "TerrainTileSizeBlocks": 256,
 
-  // Log a line for every window the model computes. Very noisy; useful when profiling.
+  // Log a line at notification level for every terrain tile generated. Very noisy; useful when
+  // profiling. With this off those lines still go to the debug log, and the main log gets one only
+  // when a tile takes at least a second and at least four times the session's average - a stall
+  // worth explaining, rather than the model doing its job.
   "VerboseInference": false,
 
   "WorldGen": {
@@ -320,6 +337,7 @@ only has to stop the mod breaking, not stop the world looking silly.
 
 | Field | Clamped to | Useful | Default |
 | --- | --- | --- | --- |
+| `GpuUtilizationPercent` | 5 – 100 | 40 – 100 | 100 |
 | `TileCacheMegabytes`, `TerrainTileCacheMegabytes` | 32 – 4096 | 128 – 1024 | 256 |
 | `TerrainTileSizeBlocks` | 64 – 1024, rounded down to a multiple of 32 | 128 – 512 | 256 |
 | `TargetPeakFillFraction` | 0.2 – 1 | 0.8 – 0.95 | 0.92 |

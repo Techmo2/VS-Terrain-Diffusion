@@ -22,6 +22,20 @@ public class DiffusionConfig
     /// </summary>
     public bool OffloadModels { get; set; }
 
+    /// <summary>
+    /// Share of the time, as a percentage, that world generation may keep the inference device
+    /// busy. 100 is unlimited and is the default.
+    ///
+    /// This exists for frame stuttering in single player, where the model runs on the same GPU the
+    /// game renders with. A graph that is already running cannot be interrupted, so the only lever
+    /// is how often one is started: after each one the generator idles for long enough to hold the
+    /// device to this share, which leaves the renderer regular windows to get a frame out. It
+    /// cannot make an individual model run shorter, so it reduces stutter rather than removing it.
+    /// World generation slows down by the reciprocal - at 50% a terrain tile takes about twice as
+    /// long - so lower this only as far as the stutter actually requires.
+    /// </summary>
+    public int GpuUtilizationPercent { get; set; } = 100;
+
     /// <summary>Verify SHA-256 of pre-existing model files on startup.</summary>
     public bool ValidateModelHashes { get; set; } = true;
 
@@ -48,7 +62,11 @@ public class DiffusionConfig
     /// </summary>
     public int TerrainTileSizeBlocks { get; set; } = 256;
 
-    /// <summary>Log a line for every window the model computes. Very noisy; useful when profiling.</summary>
+    /// <summary>
+    /// Log a line at notification level for every terrain tile generated. Very noisy; useful when
+    /// profiling. With this off the same lines are still written to the debug log, and only a tile
+    /// far out of step with the rest of the session reaches the main one.
+    /// </summary>
     public bool VerboseInference { get; set; }
 
     /// <summary>
@@ -84,6 +102,11 @@ public class DiffusionConfig
     private void Sanitize()
     {
         (WorldGen ??= new WorldGenConfig()).Sanitize();
+
+        // Below about a twentieth the idle windows are longer than the pauses they are meant to
+        // prevent, and world generation stops keeping up with a walking player.
+        if (GpuUtilizationPercent < 5) GpuUtilizationPercent = 5;
+        if (GpuUtilizationPercent > 100) GpuUtilizationPercent = 100;
 
         if (TileCacheMegabytes < 32) TileCacheMegabytes = 32;
         if (TileCacheMegabytes > 4096) TileCacheMegabytes = 4096;
