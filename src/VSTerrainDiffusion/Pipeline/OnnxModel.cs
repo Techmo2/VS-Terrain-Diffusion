@@ -337,6 +337,8 @@ public sealed class OnnxModel : IModelRunner
         // copy on the way in is the one the execution provider makes onto the device.
         List<OrtValue> values = _inputValues;
         values.Clear();
+        long elapsed = 0;
+        float[] output;
         try
         {
             foreach ((float[] data, long[] shape) in inputs)
@@ -348,19 +350,24 @@ public sealed class OnnxModel : IModelRunner
             long started = Stopwatch.GetTimestamp();
             using IDisposableReadOnlyCollection<OrtValue> results =
                 session.Run(_runOptions, _inputNames, values, _outputNames);
-            long elapsed = Stopwatch.GetTimestamp() - started;
+            elapsed = Stopwatch.GetTimestamp() - started;
 
             Interlocked.Add(ref _runStopwatchTicks, elapsed);
             Interlocked.Increment(ref _runCount);
             Interlocked.Add(ref _runItems, inputs.Count > 0 ? inputs[0].Shape[0] : 0);
 
-            return results[0].GetTensorDataAsSpan<float>().ToArray();
+            output = results[0].GetTensorDataAsSpan<float>().ToArray();
         }
         finally
         {
             foreach (OrtValue value in values) value.Dispose();
             values.Clear();
         }
+
+        // After the inputs are unpinned and the output copied out, so the idle window really is
+        // idle rather than holding the caller's buffers pinned for the GPU.
+        InferenceThrottle.AfterRun(elapsed);
+        return output;
     }
 
     /// <summary>

@@ -70,6 +70,7 @@ public sealed class OpenVinoModel : IModelRunner
         for (int i = 0; i < condCount; i++) inputs.Add((condInputs[i], condShapes[i]));
 
         long started = Stopwatch.GetTimestamp();
+        long throttleTicks = 0;
         try
         {
             lock (_gate)
@@ -82,7 +83,10 @@ public sealed class OpenVinoModel : IModelRunner
 
                 try
                 {
-                    return _runtime.Run(inputs);
+                    long inferenceStarted = Stopwatch.GetTimestamp();
+                    float[] output = _runtime.Run(inputs);
+                    throttleTicks = Stopwatch.GetTimestamp() - inferenceStarted;
+                    return output;
                 }
                 catch (OpenVinoWorkerException openVinoFailure)
                 {
@@ -97,6 +101,10 @@ public sealed class OpenVinoModel : IModelRunner
             Interlocked.Add(ref _runItems,
                 xShape != null && xShape.Length > 0 ? xShape[0] : 0);
             Interlocked.Add(ref _runStopwatchTicks, Stopwatch.GetTimestamp() - started);
+
+            // A fallback OnnxModel applies the limiter itself. Only the successful worker path
+            // reaches here with throttleTicks set, so provider fallback is not throttled twice.
+            if (throttleTicks > 0) InferenceThrottle.AfterRun(throttleTicks);
         }
     }
 

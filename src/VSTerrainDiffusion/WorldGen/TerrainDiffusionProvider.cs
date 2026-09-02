@@ -318,23 +318,33 @@ public sealed class TerrainDiffusionProvider : IDisposable
             TerrainTile tile = GenerateTileUnsynchronized(tileX, tileZ);
             stopwatch.Stop();
 
-            Interlocked.Increment(ref _tilesGenerated);
-            Interlocked.Add(ref _totalInferenceMillis, stopwatch.ElapsedMilliseconds);
+            long elapsed = stopwatch.ElapsedMilliseconds;
 
-            // A tile that takes real model time is worth a log line; a fast one means a cache
-            // absorbed it, and logging every one of those buries the interesting entries.
-            bool interesting = stopwatch.ElapsedMilliseconds >= 100 || DiffusionConfig.Instance.VerboseInference;
+            // Read the running totals before this tile joins them, so a tile is never compared
+            // against a mean it is itself part of.
+            long priorTiles = Interlocked.Read(ref _tilesGenerated);
+            long priorMillis = Interlocked.Read(ref _totalInferenceMillis);
+
+            Interlocked.Increment(ref _tilesGenerated);
+            Interlocked.Add(ref _totalInferenceMillis, elapsed);
+
             string message = "[{0}] Generated terrain tile ({1}, {2}) covering blocks ({3}, {4})-({5}, {6}) in {7} ms";
             object[] fields =
             {
                 DiffusionPaths.ModId, tileX, tileZ,
                 tileX * _tileSize, tileZ * _tileSize,
                 (tileX + 1) * _tileSize, (tileZ + 1) * _tileSize,
-                stopwatch.ElapsedMilliseconds
+                elapsed
             };
 
-            if (interesting) _logger.Notification(message, fields);
-            else _logger.VerboseDebug(message, fields);
+            if (DiffusionConfig.Instance.VerboseInference || IsWorthReporting(elapsed, priorTiles, priorMillis))
+            {
+                _logger.Notification(message, fields);
+            }
+            else
+            {
+                _logger.VerboseDebug(message, fields);
+            }
 
             WarnIfThrashing(tileX, tileZ);
             return tile;
@@ -343,6 +353,41 @@ public sealed class TerrainDiffusionProvider : IDisposable
         {
             _inferenceGate.Release();
         }
+    }
+
+    /// <summary>A tile below this is never worth a line, however far out of step it is.</summary>
+    private const long ReportFloorMillis = 1000;
+
+    /// <summary>How many times the running mean a tile has to cost before it counts as a stall.</summary>
+    private const long ReportRatio = 4;
+
+    /// <summary>Tiles needed before the mean means anything.</summary>
+    private const long ReportMinSamples = 8;
+
+    /// <summary>
+    /// Whether one tile's time is worth interrupting the log for when verbose logging is off.
+    ///
+    /// This used to be a flat 100 ms, on the reasoning that a fast tile had been absorbed by a
+    /// cache and a slow one had really run the model. That bar stopped separating anything: a tile
+    /// that runs the model costs 140-180 ms on the hardware this has been measured on, so every
+    /// real tile cleared it and exploring a world wrote a line per tile no matter how the mod was
+    /// configured. Doing the work it exists to do is not news.
+    ///
+    /// What is worth a line is a tile far out of step with the rest of this session's - a stall
+    /// that wants explaining rather than the model doing its job. Measuring that against the
+    /// running mean also makes it self-damping: if generation degrades across the board the mean
+    /// follows it up and this goes quiet again, leaving the thrash warning to say so once, in
+    /// terms that are actually actionable.
+    /// </summary>
+    private static bool IsWorthReporting(long millis, long priorTiles, long priorMillis)
+    {
+        if (millis < ReportFloorMillis) return false;
+
+        // No baseline yet. The first tiles of a session pay for cold caches and first-touch
+        // allocation, and one line saying how much is worth having.
+        if (priorTiles < ReportMinSamples) return true;
+
+        return millis * priorTiles >= ReportRatio * priorMillis;
     }
 
     /// <summary>

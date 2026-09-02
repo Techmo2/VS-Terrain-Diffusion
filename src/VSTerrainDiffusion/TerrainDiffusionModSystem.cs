@@ -35,10 +35,22 @@ public class TerrainDiffusionModSystem : ModSystem
 
     public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Server;
 
+    /// <summary>
+    /// Reads the config here rather than in <see cref="StartServerSide"/> because ConfigLib takes
+    /// the file over when assets load, which on a server is several phases earlier. If the file did
+    /// not exist yet at that point ConfigLib would create one in its own shape - every setting flat,
+    /// including the ones that belong under <c>WorldGen</c> - and the mod's own write would then
+    /// throw that away, leaving ConfigLib editing a file it no longer matches.
+    /// </summary>
+    public override void StartPre(ICoreAPI api)
+    {
+        InferenceThrottle.UtilizationPercent = DiffusionConfig.Load(api).GpuUtilizationPercent;
+    }
+
     public override void StartServerSide(ICoreServerAPI api)
     {
         _api = api;
-        DiffusionConfig.Load(api);
+        ConfigLibCompat.Install(api);
 
         api.Event.InitWorldGenerator(OnInitWorldGenerator, "standard");
         api.Event.MapRegionGeneration(OnMapRegionGeneration, "standard");
@@ -596,6 +608,11 @@ public class TerrainDiffusionModSystem : ModSystem
                 .WithDescription("Show the model, device and world scaling in use")
                 .HandleWith(OnStatusCommand)
             .EndSubCommand()
+            .BeginSubCommand("gpulimit")
+                .WithDescription("Show or set the share of the time inference may keep the device busy")
+                .WithArgs(api.ChatCommands.Parsers.OptionalInt("percent"))
+                .HandleWith(OnGpuLimitCommand)
+            .EndSubCommand()
             .BeginSubCommand("here")
                 .WithDescription("Show the model's elevation and climate at your position")
                 .RequiresPlayer()
@@ -643,6 +660,8 @@ public class TerrainDiffusionModSystem : ModSystem
             $"Pipeline cache: {_provider.PipelineCachedBytes / 1048576.0:0.#} / " +
             $"{DiffusionConfig.Instance.TileCacheMegabytes} MB",
             $"Pipeline windows computed: {_provider.PipelineComputedWindows}",
+            $"Device limit: {InferenceThrottle.Describe()}",
+            $"Settings screen: {(ConfigLibCompat.IsPresent(_api) ? "ConfigLib" : "not installed")}",
             $"Tiles generated: {_provider.TilesGenerated}",
             $"Tile size: {_provider.TileSize}x{_provider.TileSize} blocks",
             $"Average tile time: {_provider.AverageTileMillis} ms",
@@ -662,6 +681,65 @@ public class TerrainDiffusionModSystem : ModSystem
         lines.Add($"Latitude bands: {_settings.Latitude.Status}");
 
         return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
+    }
+
+    private Vintagestory.API.Common.TextCommandResult OnGpuLimitCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
+    {
+        // An omitted OptionalInt reads back as 0 rather than null, which would clamp to the lowest
+        // setting instead of printing the current one. ArgCount is no help either: it is how many
+        // tokens the parsers consume, not how many were given.
+        if (args.Parsers[0].IsMissing)
+        {
+            return Vintagestory.API.Common.TextCommandResult.Success(
+                $"Inference is limited to {InferenceThrottle.Describe()}. " +
+                "Pass a percentage from 5 to 100 to change it.");
+        }
+
+        int requested = (int)args[0];
+        InferenceThrottle.UtilizationPercent = requested;
+        int applied = InferenceThrottle.UtilizationPercent;
+        DiffusionConfig.Instance.GpuUtilizationPercent = applied;
+
+        string persisted = PersistGpuLimit(applied)
+            ? $"Saved to {DiffusionPaths.ModId}.json."
+            : $"Could not write {DiffusionPaths.ModId}.json, so this lasts until the server restarts.";
+
+        string effect = applied >= 100
+            ? "World generation runs at full speed."
+            : $"World generation will take roughly {100f / applied:0.#} times as long, " +
+              "in exchange for the device being free between model runs.";
+
+        return Vintagestory.API.Common.TextCommandResult.Success(
+            $"Inference is now limited to {applied}% of the time. {effect} {persisted}");
+    }
+
+    /// <summary>
+    /// Writes just this one key back, rather than serialising the whole config. ConfigLib edits the
+    /// same file when it is installed, and the in-memory config is not kept in step with its
+    /// changes on purpose (see <see cref="ConfigLibCompat"/>), so rewriting the file wholesale here
+    /// would quietly revert them.
+    /// </summary>
+    private bool PersistGpuLimit(int percent)
+    {
+        try
+        {
+            string path = DiffusionPaths.ConfigFile;
+            if (!System.IO.File.Exists(path))
+            {
+                _api.StoreModConfig(DiffusionConfig.Instance, DiffusionPaths.ModId + ".json");
+                return true;
+            }
+
+            var root = Newtonsoft.Json.Linq.JObject.Parse(System.IO.File.ReadAllText(path));
+            root[nameof(DiffusionConfig.GpuUtilizationPercent)] = percent;
+            System.IO.File.WriteAllText(path, root.ToString(Newtonsoft.Json.Formatting.Indented));
+            return true;
+        }
+        catch (Exception e)
+        {
+            _api.Logger.Warning("[{0}] Could not save the GPU limit: {1}", DiffusionPaths.ModId, e.Message);
+            return false;
+        }
     }
 
     private Vintagestory.API.Common.TextCommandResult OnHereCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
@@ -915,6 +993,7 @@ public class TerrainDiffusionModSystem : ModSystem
     private void OnShutdown()
     {
         WatershedsCompat.Uninstall();
+        ConfigLibCompat.Uninstall();
         _provider?.Dispose();
         _provider = null;
         PipelineModels.Shutdown();
