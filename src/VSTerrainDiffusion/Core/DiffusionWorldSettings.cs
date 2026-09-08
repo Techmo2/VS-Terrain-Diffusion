@@ -158,6 +158,18 @@ public sealed class DiffusionWorldSettings
     private float _blocksPerMeter;
     private float _oceanScale;
 
+    /// <summary>
+    /// Whether this world wants the mod at all. Deliberately the only thing that can be asked
+    /// before the models are on disk: <see cref="FromWorld"/> reads the model's own config and its
+    /// climate tables, so it cannot answer until the download has finished.
+    /// </summary>
+    public static bool EnabledForWorld(ICoreServerAPI api) =>
+        ReadWorldConfig(api.WorldManager.SaveGame.WorldConfiguration, "diffusionTerrain", "true").ToBool(true);
+
+    /// <summary>
+    /// Reads the world's settings. Requires the model assets, so call it only once
+    /// <see cref="Pipeline.PipelineModels.Await"/> has returned.
+    /// </summary>
     public static DiffusionWorldSettings FromWorld(ICoreServerAPI api, float nativeResolution)
     {
         ITreeAttribute worldConfig = api.WorldManager.SaveGame.WorldConfiguration;
@@ -183,7 +195,7 @@ public sealed class DiffusionWorldSettings
         {
             _shaping = shaping,
             NativeResolution = nativeResolution,
-            Enabled = ReadWorldConfig(worldConfig, "diffusionTerrain", "true").ToBool(true),
+            Enabled = EnabledForWorld(api),
             ClimateMode = ParseClimateMode(shaping.ClimateMode.Length > 0
                 ? shaping.ClimateMode
                 : ReadWorldConfig(worldConfig, "diffusionClimate", "full")),

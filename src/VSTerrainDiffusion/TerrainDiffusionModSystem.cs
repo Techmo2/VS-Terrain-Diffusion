@@ -6,6 +6,7 @@ using Vintagestory.API.Server;
 using Vintagestory.API.Util;
 using Vintagestory.ServerMods;
 using VSTerrainDiffusion.Core;
+using VSTerrainDiffusion.Debug;
 using VSTerrainDiffusion.Native;
 using VSTerrainDiffusion.Pipeline;
 using VSTerrainDiffusion.WorldGen;
@@ -25,6 +26,7 @@ public class TerrainDiffusionModSystem : ModSystem
     private TerrainDiffusionProvider _provider;
     private GenDiffusionTerra _generator;
     private DiffusionSurface _surface;
+    private DebugMapServer _debugMap;
     private ChunkColumnGenerationDelegate _installedHandler;
 
     /// <summary>
@@ -50,6 +52,7 @@ public class TerrainDiffusionModSystem : ModSystem
     public override void StartServerSide(ICoreServerAPI api)
     {
         _api = api;
+        DiffusionFailure.UseLogger(api.Logger);
         ConfigLibCompat.Install(api);
 
         api.Event.InitWorldGenerator(OnInitWorldGenerator, "standard");
@@ -68,34 +71,50 @@ public class TerrainDiffusionModSystem : ModSystem
         PipelineModels.BeginLoad(api.Logger);
     }
 
+    /// <summary>
+    /// The server catches whatever an InitWorldGenerator handler throws, logs it, and then goes on
+    /// to generate the world without us - so nothing may escape this method. Anything that gets
+    /// past the specific handling inside stops the game here instead.
+    /// </summary>
     private void OnInitWorldGenerator()
     {
         try
         {
-            // The model config lives with the model files, which may not have been downloaded yet.
-            // This first read only decides whether the world wants the mod at all, so the shipped
-            // model's pixel size will do; the real one is read back once the models are loaded.
-            _settings = DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.DefaultNativeResolution);
+            InitWorldGenerator();
         }
         catch (Exception e)
         {
-            _api.Logger.Error("[{0}] Could not read world settings: {1}", DiffusionPaths.ModId, e);
-            return;
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "World generation could not be initialised.", e);
         }
+    }
 
-        if (!_settings.Enabled)
+    private void InitWorldGenerator()
+    {
+        // Only the world's own on/off flag can be read before the models are: everything else in
+        // the settings is derived from the model's config and its climate tables, which live with
+        // the model files and may still be downloading.
+        if (!DiffusionWorldSettings.EnabledForWorld(_api))
         {
             _api.Logger.Notification("[{0}] Disabled for this world; vanilla terrain generation is unchanged.",
                 DiffusionPaths.ModId);
             return;
         }
 
+        // Blocks until the assets are on disk, downloading them if the directory was emptied or
+        // never populated. The metre-to-block mapping hangs off the native resolution it brings.
         PipelineModels models = LoadModels();
-        if (models == null) return;
 
-        // Re-read the native resolution now that the model config is on disk: the whole
-        // metre-to-block mapping hangs off it.
-        _settings = DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.Instance.NativeResolution);
+        try
+        {
+            _settings = DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.Instance.NativeResolution);
+        }
+        catch (Exception e)
+        {
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "This world's Terrain Diffusion settings could not be read, so there is no way to tell " +
+                "what terrain it is supposed to have.", e);
+        }
 
         _provider?.Dispose();
         _provider = new TerrainDiffusionProvider(WorldSeed(), models, _settings, _api.Logger, BuildLandmask());
@@ -108,10 +127,12 @@ public class TerrainDiffusionModSystem : ModSystem
         // surface height is computed from.
         CalibrateTerrainHeight(spawn);
 
+        StartDebugMap();
+
         _generator = new GenDiffusionTerra(_api, _provider, _settings);
         _surface = new DiffusionSurface(_api, _provider);
 
-        if (!InstallTerrain()) return;
+        InstallTerrain();
         InstallMapLayers();
 
         if (DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic)
@@ -122,8 +143,10 @@ public class TerrainDiffusionModSystem : ModSystem
             }
             catch (Exception e)
             {
-                _api.Logger.Warning("[{0}] Could not adjust the surface block layer altitudes: {1}",
-                    DiffusionPaths.ModId, e.Message);
+                throw DiffusionFailure.Fatal(_api.Logger,
+                    "The surface block layer altitudes could not be rescaled for this world's vertical " +
+                    "exaggeration. Leaving them alone would put the soil, gravel and snow lines at the " +
+                    "wrong heights for every chunk generated from here on.", e);
             }
         }
 
@@ -131,6 +154,25 @@ public class TerrainDiffusionModSystem : ModSystem
 
         _api.Logger.Notification("[{0}] Active: {1}", DiffusionPaths.ModId, _settings.Describe());
         WarnAboutWorldHeight();
+    }
+
+    /// <summary>
+    /// Brings up the debug map if a port is configured. Deliberately after height calibration: the
+    /// probes it runs are generated against a vertical scale that calibration is still in the
+    /// middle of choosing, so recording them would put tiles on the map whose surface heights do
+    /// not mean the same thing as every tile after them.
+    /// </summary>
+    private void StartDebugMap()
+    {
+        _debugMap?.Dispose();
+        _debugMap = null;
+
+        int port = DiffusionConfig.Instance.DebugMapPort;
+        if (port == 0) return;
+
+        var server = new DebugMapServer(_api.Logger, _provider, _settings);
+        if (server.Start(DiffusionConfig.Instance.DebugMapBindAddress, port)) _debugMap = server;
+        else server.Dispose();
     }
 
     /// <summary>
@@ -144,7 +186,7 @@ public class TerrainDiffusionModSystem : ModSystem
             () => WorldMapLayers.Resolve(_api)?.Ocean, _settings, _api.Logger);
     }
 
-    /// <summary>Loads the ONNX models, or null if they could not be had.</summary>
+    /// <summary>Loads the ONNX models. Stops the game rather than returning without them.</summary>
     private PipelineModels LoadModels()
     {
         try
@@ -160,10 +202,10 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            _api.Logger.Error(
-                "[{0}] Terrain Diffusion is enabled for this world but the models could not be loaded, so vanilla terrain will be generated instead. {1}",
-                DiffusionPaths.ModId, e.InnerException?.Message ?? e.Message);
-            return null;
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "Terrain Diffusion is enabled for this world but its models could not be loaded. " +
+                "Check that the model files downloaded completely and that the ONNX runtime for the " +
+                "configured execution provider is present.", e);
         }
     }
 
@@ -216,8 +258,8 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            _api.Logger.Warning("[{0}] Could not write the seasonality map for region ({1}, {2}): {3}",
-                DiffusionPaths.ModId, regionX, regionZ, e.Message);
+            throw DiffusionFailure.Fatal(_api.Logger,
+                $"The seasonality map for region ({regionX}, {regionZ}) could not be written.", e);
         }
     }
 
@@ -231,8 +273,8 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            _api.Logger.Warning("[{0}] Surface pass failed for chunk ({1}, {2}): {3}",
-                DiffusionPaths.ModId, request.ChunkX, request.ChunkZ, e.Message);
+            throw DiffusionFailure.Fatal(_api.Logger,
+                $"The surface pass failed for chunk ({request.ChunkX}, {request.ChunkZ}).", e);
         }
     }
 
@@ -259,8 +301,9 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            _api.Logger.VerboseDebug("[{0}] Could not read the stored terrain height calibration: {1}",
-                DiffusionPaths.ModId, e.Message);
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "This world's stored terrain height calibration could not be read. Measuring a new one " +
+                "would risk a different metre-to-block mapping than the chunks already generated use.", e);
         }
 
         if (stored is { Length: sizeof(float) })
@@ -285,9 +328,10 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            _api.Logger.Warning("[{0}] Terrain height calibration failed, falling back to true real-world scale: {1}",
-                DiffusionPaths.ModId, e.Message);
-            return;
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "Terrain height calibration failed. Carrying on at true real-world scale instead would " +
+                "give this world a different vertical mapping every time the measurement succeeds or " +
+                "fails, and the chunks would not line up.", e);
         }
 
         if (peak == null) return;
@@ -300,8 +344,10 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            _api.Logger.Warning("[{0}] Could not store the terrain height calibration; it will be measured again next start: {1}",
-                DiffusionPaths.ModId, e.Message);
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "The terrain height calibration could not be saved to the world. Without it on disk the " +
+                "next start would measure again, and any difference in the answer would move every " +
+                "surface in the world.", e);
         }
     }
 
@@ -316,22 +362,20 @@ public class TerrainDiffusionModSystem : ModSystem
     /// the surface block layers buried under the other mod's rock. So the only supported
     /// arrangement with such a mod is to hand it our heights and let it do the filling.
     ///
-    /// Returns false when that could not be arranged, in which case this mod must stay out of the
-    /// world entirely rather than fight over it.
+    /// Stops the game when that could not be arranged. Standing aside would leave the world's
+    /// existing chunks modelled and everything after them not.
     /// </summary>
-    private bool InstallTerrain()
+    private void InstallTerrain()
     {
-        if (WatershedsCompat.IsPresent(_api)) return InstallWatershedsHandover();
-
-        InstallTerrainHandler();
-        return true;
+        if (WatershedsCompat.IsPresent(_api)) InstallWatershedsHandover();
+        else InstallTerrainHandler();
     }
 
     /// <summary>
     /// Hands the diffusion heightmap to Algernon's Watersheds and leaves the filling, the rivers
     /// and everything downstream of them to it. See <see cref="WatershedsCompat"/> for how.
     /// </summary>
-    private bool InstallWatershedsHandover()
+    private void InstallWatershedsHandover()
     {
         if (WatershedsCompat.TryInstall(_api, _provider, out string failure))
         {
@@ -339,23 +383,14 @@ public class TerrainDiffusionModSystem : ModSystem
                 "[{0}] Algernon's Watersheds is generating this world's terrain, so the model is " +
                 "supplying its heights instead of filling chunks itself. Its rivers and streams are " +
                 "routed over the modelled landscape.", DiffusionPaths.ModId);
-            return true;
+            return;
         }
 
-        _api.Logger.Error(
-            "[{0}] Algernon's Watersheds also replaces terrain generation, and {1}. Both mods " +
-            "cannot generate the same world, so terrain is being left entirely to Watersheds and " +
-            "this mod is doing nothing. Remove one of the two, or update them.",
-            DiffusionPaths.ModId, failure);
-        LoadingNotice.Post(_api.Logger,
-            "disabled for this world. Algernon's Watersheds is generating the terrain and could not " +
-            "be handed the model's heights.");
-
-        _provider?.Dispose();
-        _provider = null;
-        _generator = null;
-        _surface = null;
-        return false;
+        throw DiffusionFailure.Fatal(_api.Logger,
+            "Algernon's Watersheds also replaces terrain generation, and " + failure + ". Both mods " +
+            "cannot generate the same world, and leaving the terrain to Watersheds would make every " +
+            "chunk from here on disagree with the modelled ones already on disk. Remove one of the " +
+            "two mods, or update them.");
     }
 
     /// <summary>
@@ -367,7 +402,7 @@ public class TerrainDiffusionModSystem : ModSystem
         IWorldGenHandler handlers = _api.Event.GetRegisteredWorldGenHandlers("standard");
         List<ChunkColumnGenerationDelegate> terrainPass = handlers.OnChunkColumnGen[(int)EnumWorldGenPass.Terrain];
 
-        ChunkColumnGenerationDelegate replacement = _generator.OnChunkColumnGen;
+        ChunkColumnGenerationDelegate replacement = OnTerrainPass;
 
         // Re-initialisation (for example /wgen regen) hits this a second time.
         if (_installedHandler != null)
@@ -390,14 +425,33 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         else
         {
-            // Vanilla GenTerra is missing (another mod may already have removed it); run first.
-            terrainPass.Insert(0, replacement);
-            _api.Logger.Warning("[{0}] Vanilla GenTerra was not found in the terrain pass; " +
-                                "inserting the diffusion generator first. Another terrain mod may conflict.",
-                DiffusionPaths.ModId);
+            // Something else already took vanilla GenTerra's place. Running as well as it would fill
+            // every column twice, with the union of two landscapes and only one set of heightmaps.
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "Vanilla GenTerra is not in the terrain pass, so another mod has already replaced " +
+                "terrain generation. Two generators filling the same columns produce terrain that " +
+                "matches neither. Remove the other terrain mod, or turn this one off for this world.");
         }
 
         _installedHandler = replacement;
+    }
+
+    /// <summary>
+    /// The Terrain pass itself. Wrapped because the server catches whatever a generation handler
+    /// throws and simply moves on to the next one, which would leave this column part filled by the
+    /// model and part filled by whatever comes after it.
+    /// </summary>
+    private void OnTerrainPass(IChunkColumnGenerateRequest request)
+    {
+        try
+        {
+            _generator.OnChunkColumnGen(request);
+        }
+        catch (Exception e)
+        {
+            throw DiffusionFailure.Fatal(_api.Logger,
+                $"Chunk column ({request.ChunkX}, {request.ChunkZ}) could not be generated.", e);
+        }
     }
 
     /// <summary>
@@ -409,8 +463,9 @@ public class TerrainDiffusionModSystem : ModSystem
         WorldMapLayers genMaps = WorldMapLayers.Resolve(_api);
         if (genMaps == null)
         {
-            _api.Logger.Warning("[{0}] GenMaps is not loaded; climate and ocean maps stay vanilla.", DiffusionPaths.ModId);
-            return;
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "GenMaps is not loaded, so the model's climate and ocean maps cannot be installed. " +
+                "Vanilla climate over modelled terrain would put the wrong biomes on every chunk.");
         }
 
         if (!genMaps.IsVanilla)
@@ -447,9 +502,9 @@ public class TerrainDiffusionModSystem : ModSystem
 
         if (vanillaClimate == null)
         {
-            _api.Logger.Warning("[{0}] Vanilla climate layer is missing; leaving the climate map alone.",
-                DiffusionPaths.ModId);
-            return;
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "The world has no climate map layer to build on, so the model's climate cannot be " +
+                "installed. Leaving the climate vanilla would put the wrong biomes on modelled terrain.");
         }
 
         genMaps.Climate = new DiffusionClimateMapLayer(
@@ -517,9 +572,10 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            _api.Logger.Warning("[{0}] Spawn search failed, keeping the default spawn: {1}",
-                DiffusionPaths.ModId, e.Message);
-            return null;
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "The spawn search failed. It is not only where the player wakes up: the terrain height " +
+                "calibration is measured around it, so a world generated without it is not the same " +
+                "world as one generated with it.", e);
         }
     }
 
@@ -572,7 +628,7 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            _api.Logger.Warning("[{0}] Could not place the spawn on land: {1}", DiffusionPaths.ModId, e.Message);
+            throw DiffusionFailure.Fatal(_api.Logger, "The world spawn could not be placed on land.", e);
         }
     }
 
@@ -593,7 +649,7 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            _api.Logger.Warning("[{0}] Could not move the world spawn to land: {1}", DiffusionPaths.ModId, e.Message);
+            throw DiffusionFailure.Fatal(_api.Logger, "The world spawn could not be moved to land.", e);
         }
     }
 
@@ -612,6 +668,10 @@ public class TerrainDiffusionModSystem : ModSystem
                 .WithDescription("Show or set the share of the time inference may keep the device busy")
                 .WithArgs(api.ChatCommands.Parsers.OptionalInt("percent"))
                 .HandleWith(OnGpuLimitCommand)
+            .EndSubCommand()
+            .BeginSubCommand("map")
+                .WithDescription("Show the address of the debug map, if it is running")
+                .HandleWith(OnMapCommand)
             .EndSubCommand()
             .BeginSubCommand("here")
                 .WithDescription("Show the model's elevation and climate at your position")
@@ -655,6 +715,7 @@ public class TerrainDiffusionModSystem : ModSystem
             $"Models resident: {(DiffusionConfig.Instance.OffloadModels ? "no, one at a time (offloadModels)" : "yes")}",
             $"Device limit: {InferenceThrottle.Describe()}",
             $"Settings screen: {(ConfigLibCompat.IsPresent(_api) ? "ConfigLib" : "not installed")}",
+            $"Debug map: {(_debugMap?.IsRunning == true ? _debugMap.Url : "off")}",
             $"Tiles generated: {_provider.TilesGenerated}",
             $"Tile size: {_provider.TileSize}x{_provider.TileSize} blocks",
             $"Average tile time: {_provider.AverageTileMillis} ms",
@@ -705,6 +766,20 @@ public class TerrainDiffusionModSystem : ModSystem
 
         return Vintagestory.API.Common.TextCommandResult.Success(
             $"Inference is now limited to {applied}% of the time. {effect} {persisted}");
+    }
+
+    private Vintagestory.API.Common.TextCommandResult OnMapCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
+    {
+        if (_debugMap == null || !_debugMap.IsRunning)
+        {
+            return Vintagestory.API.Common.TextCommandResult.Success(
+                $"The debug map is off. Set debugMapPort in {DiffusionPaths.ModId}.json (8088 is a reasonable " +
+                "choice) and restart the server.");
+        }
+
+        return Vintagestory.API.Common.TextCommandResult.Success(
+            $"Debug map: {_debugMap.Url}\n" +
+            $"Remembering {_debugMap.TileCount} of the last {DiffusionConfig.Instance.DebugMapHistoryTiles} tiles.");
     }
 
     /// <summary>
@@ -999,6 +1074,8 @@ public class TerrainDiffusionModSystem : ModSystem
 
     private void OnShutdown()
     {
+        _debugMap?.Dispose();
+        _debugMap = null;
         WatershedsCompat.Uninstall();
         ConfigLibCompat.Uninstall();
         _provider?.Dispose();
@@ -1008,7 +1085,13 @@ public class TerrainDiffusionModSystem : ModSystem
 
     public override void Dispose()
     {
+        _debugMap?.Dispose();
+        _debugMap = null;
         _provider?.Dispose();
         _provider = null;
+
+        // Normally OnShutdown got here first. This is the backstop for a server that never reached
+        // the shutdown run phase, where otherwise the models would stay resident with no owner.
+        PipelineModels.Shutdown();
     }
 }

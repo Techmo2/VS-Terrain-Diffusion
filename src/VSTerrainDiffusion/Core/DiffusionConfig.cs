@@ -70,6 +70,26 @@ public class DiffusionConfig
     public bool VerboseInference { get; set; }
 
     /// <summary>
+    /// Port for the debug map, a small read-only web page showing the model's heightmap and
+    /// climate maps as tiles are generated. Zero, the default, does not open a port at all.
+    /// </summary>
+    public int DebugMapPort { get; set; }
+
+    /// <summary>
+    /// Address the debug map listens on. Loopback by default, so only this machine can reach it;
+    /// set to <c>0.0.0.0</c> to expose it to the network, which publishes the world's terrain and
+    /// climate to anything that can reach the port.
+    /// </summary>
+    public string DebugMapBindAddress { get; set; } = "127.0.0.1";
+
+    /// <summary>
+    /// How many generated tiles the debug map remembers. Each costs about eight kilobytes, and the
+    /// oldest are dropped past this. The provider's own tile cache is no use here: it is sized for
+    /// world generation and drops a tile as soon as the generator has moved on.
+    /// </summary>
+    public int DebugMapHistoryTiles { get; set; } = 2048;
+
+    /// <summary>
     /// World shaping and climate. Unlike the rest of this file these change what the world looks
     /// like, so editing them after a world has been explored will make new chunks disagree with old
     /// ones.
@@ -82,14 +102,19 @@ public class DiffusionConfig
 
     public static DiffusionConfig Load(ICoreAPI api)
     {
-        DiffusionConfig config = null;
+        DiffusionConfig config;
         try
         {
             config = api.LoadModConfig<DiffusionConfig>(DiffusionPaths.ModId + ".json");
         }
         catch (System.Exception e)
         {
-            api.Logger.Error("[{0}] Could not read config, falling back to defaults: {1}", DiffusionPaths.ModId, e.Message);
+            // Carrying on with defaults would generate terrain to settings the player never chose,
+            // and would not match whatever this world was generated with before.
+            throw DiffusionFailure.Fatal(api.Logger,
+                $"The mod config ({DiffusionPaths.ModId}.json) could not be read. Fix or delete the " +
+                "file; generating with the built-in defaults instead would silently change this " +
+                "world's terrain.", e);
         }
 
         config ??= new DiffusionConfig();
@@ -107,6 +132,12 @@ public class DiffusionConfig
         // prevent, and world generation stops keeping up with a walking player.
         if (GpuUtilizationPercent < 5) GpuUtilizationPercent = 5;
         if (GpuUtilizationPercent > 100) GpuUtilizationPercent = 100;
+
+        if (DebugMapPort != 0 && (DebugMapPort < 1024 || DebugMapPort > 65535)) DebugMapPort = 0;
+        DebugMapBindAddress = (DebugMapBindAddress ?? "127.0.0.1").Trim();
+        if (DebugMapBindAddress.Length == 0) DebugMapBindAddress = "127.0.0.1";
+        if (DebugMapHistoryTiles < 64) DebugMapHistoryTiles = 64;
+        if (DebugMapHistoryTiles > 65536) DebugMapHistoryTiles = 65536;
 
         if (TileCacheMegabytes < 32) TileCacheMegabytes = 32;
         if (TileCacheMegabytes > 4096) TileCacheMegabytes = 4096;

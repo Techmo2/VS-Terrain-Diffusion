@@ -28,7 +28,17 @@ public sealed class OnnxModel : IDisposable
 
     private readonly string _name;
     private readonly ILogger _logger;
-    private readonly byte[] _graphBytes;
+
+    /// <summary>
+    /// The serialised graph. Only needed to build a session, so it is dropped as soon as the one
+    /// session this model will ever have exists - it is around a gigabyte for the base model, and
+    /// holding it for the life of the world costs that much managed heap for nothing. Offloading
+    /// is the exception: there the session is rebuilt every time the model reclaims the GPU.
+    /// </summary>
+    private byte[] _graphBytes;
+
+    /// <summary>Length of <see cref="_graphBytes"/>, kept for reporting after it is released.</summary>
+    private readonly long _graphLength;
 
     private InferenceSession _residentSession;
     private bool _disposed;
@@ -71,8 +81,8 @@ public sealed class OnnxModel : IDisposable
         _logger = logger;
 
         var stopwatch = Stopwatch.StartNew();
-        byte[] sourceBytes = File.ReadAllBytes(modelFilePath);
-        _graphBytes = OptimizeAtRuntime(sourceBytes, name, logger);
+        _graphBytes = OptimizeAtRuntime(modelFilePath, name, logger);
+        _graphLength = _graphBytes.Length;
 
         // Always create one session up front: it validates the graph and, for the CPU/no-offload
         // paths, is the session used for every run.
@@ -88,28 +98,25 @@ public sealed class OnnxModel : IDisposable
             // Only the metadata was needed; sessions are created per GPU slot claim.
             probe.Dispose();
             logger.Notification("[{0}] Model '{1}' prepared ({2}) in {3} ms",
-                DiffusionPaths.ModId, name, ModelAssetManager.HumanBytes(_graphBytes.Length), stopwatch.ElapsedMilliseconds);
+                DiffusionPaths.ModId, name, ModelAssetManager.HumanBytes(_graphLength), stopwatch.ElapsedMilliseconds);
         }
         else
         {
             _residentSession = probe;
+
+            // This session lasts as long as the model does, so nothing will ask for the graph again.
+            _graphBytes = null;
+
             logger.Notification("[{0}] Model '{1}' loaded on {2} ({3}) in {4} ms",
                 DiffusionPaths.ModId, name, ActiveProvider,
-                ModelAssetManager.HumanBytes(_graphBytes.Length), stopwatch.ElapsedMilliseconds);
+                ModelAssetManager.HumanBytes(_graphLength), stopwatch.ElapsedMilliseconds);
         }
     }
 
-    /// <summary>
-    /// Set the first time a GPU session cannot be created (a mismatched CUDA runtime, no DirectML
-    /// device, exhausted VRAM). Everything falls back to CPU rather than failing world generation.
-    /// </summary>
-    private static volatile bool _gpuUnavailable;
+    private static bool GpuEnabled => OnnxRuntimeBootstrap.Provider != InferenceProvider.Cpu;
 
-    private static bool GpuEnabled => OnnxRuntimeBootstrap.Provider != InferenceProvider.Cpu && !_gpuUnavailable;
-
-    /// <summary>The provider actually in use, which is CPU if the GPU turned out to be unusable.</summary>
-    public static InferenceProvider ActiveProvider =>
-        _gpuUnavailable ? InferenceProvider.Cpu : OnnxRuntimeBootstrap.Provider;
+    /// <summary>The execution provider in use. Fixed for the life of the process.</summary>
+    public static InferenceProvider ActiveProvider => OnnxRuntimeBootstrap.Provider;
 
     private enum SessionKind
     {
@@ -122,23 +129,23 @@ public sealed class OnnxModel : IDisposable
 
     private InferenceSession CreateSession(SessionKind kind)
     {
-        if (kind == SessionKind.Configured && GpuEnabled)
-        {
-            try
-            {
-                return CreateSessionCore(useGpu: true);
-            }
-            catch (Exception e)
-            {
-                _gpuUnavailable = true;
-                _logger.Warning(
-                    "[{0}] The {1} execution provider could not be initialised, so terrain generation will run on the CPU " +
-                    "(much slower). Cause: {2}",
-                    DiffusionPaths.ModId, OnnxRuntimeBootstrap.Provider, e.Message);
-            }
-        }
+        if (kind != SessionKind.Configured || !GpuEnabled) return CreateSessionCore(useGpu: false);
 
-        return CreateSessionCore(useGpu: false);
+        try
+        {
+            return CreateSessionCore(useGpu: true);
+        }
+        catch (Exception e)
+        {
+            // Quietly running on the CPU instead is the tempting answer and the wrong one: the two
+            // providers do not compute bit-identical results, so half a world drawn on the GPU and
+            // half on the CPU disagrees along the seam.
+            throw DiffusionFailure.Fatal(_logger,
+                $"The {OnnxRuntimeBootstrap.Provider} execution provider could not be initialised for " +
+                $"model '{_name}'. Set inferenceDevice to \"cpu\" in the mod config if you want to " +
+                "generate this world on the CPU, but do not mix the two: they do not produce " +
+                "identical terrain.", e);
+        }
     }
 
     private InferenceSession CreateSessionCore(bool useGpu)
@@ -190,7 +197,10 @@ public sealed class OnnxModel : IDisposable
 
         try
         {
-            return new InferenceSession(_graphBytes, options);
+            byte[] graph = _graphBytes
+                ?? throw new InvalidOperationException(
+                    $"Model '{_name}' released its graph after building a permanent session, so no further session can be created");
+            return new InferenceSession(graph, options);
         }
         finally
         {
@@ -302,29 +312,25 @@ public sealed class OnnxModel : IDisposable
 
         InferenceSession session = CreateSession(SessionKind.Configured);
 
-        if (!GpuEnabled)
-        {
-            // The GPU provider failed and we got a CPU session instead. Keep it resident: there is
-            // no reason to tear it down and rebuild it every time another model runs.
-            _residentSession = session;
-            return;
-        }
-
         _activeGpuSession = session;
         _gpuSlotHolder = this;
     }
 
     /// <summary>
     /// Runs the graph optimiser once and caches the result on disk, so later starts skip the
-    /// (slow) constant folding and fusion passes. Falls back to the raw graph on any failure.
+    /// (slow) constant folding and fusion passes.
     /// </summary>
-    private static byte[] OptimizeAtRuntime(byte[] sourceBytes, string name, ILogger logger)
+    private static byte[] OptimizeAtRuntime(string modelFilePath, string name, ILogger logger)
     {
-        string cachePath = ResolveOptimizedPath(sourceBytes, name);
+        // Hashed off the file rather than off its contents in memory: the raw base model is two
+        // gigabytes, and on the usual path - a cache that is already there - it is never needed.
+        string cachePath = ResolveOptimizedPath(modelFilePath, name);
+        byte[] sourceBytes = null;
         try
         {
             if (File.Exists(cachePath)) return File.ReadAllBytes(cachePath);
 
+            sourceBytes = File.ReadAllBytes(modelFilePath);
             Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
             string tempPath = cachePath + ".tmp";
             if (File.Exists(tempPath)) File.Delete(tempPath);
@@ -348,15 +354,19 @@ public sealed class OnnxModel : IDisposable
         }
         catch (Exception e)
         {
-            logger.Warning("[{0}] Graph optimisation failed for '{1}', using the unoptimised model: {2}",
-                DiffusionPaths.ModId, name, e.Message);
-            return sourceBytes;
+            // The optimised and unoptimised graphs are not guaranteed to agree to the last bit, so
+            // a world part generated from one and part from the other is not one world.
+            throw DiffusionFailure.Fatal(logger,
+                $"The graph for model '{name}' could not be optimised, and running the unoptimised " +
+                $"one instead risks terrain that does not match what this world already has. Check " +
+                $"that {DiffusionPaths.OptimizedModelDirectory} is writable and has room.", e);
         }
     }
 
-    private static string ResolveOptimizedPath(byte[] sourceBytes, string name)
+    private static string ResolveOptimizedPath(string modelFilePath, string name)
     {
-        string hash = Convert.ToHexString(SHA256.HashData(sourceBytes)).ToLowerInvariant()[..16];
+        using var stream = File.OpenRead(modelFilePath);
+        string hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant()[..16];
         string fileName = $"{name}-{OnnxRuntimeBootstrap.OnnxRuntimeVersion}-{OnnxRuntimeBootstrap.Provider}-{hash}.onnx"
             .ToLowerInvariant();
         return Path.Combine(DiffusionPaths.OptimizedModelDirectory, fileName);
@@ -381,5 +391,6 @@ public sealed class OnnxModel : IDisposable
         _residentSession = null;
         _runOptions?.Dispose();
         _runOptions = null;
+        _graphBytes = null;
     }
 }

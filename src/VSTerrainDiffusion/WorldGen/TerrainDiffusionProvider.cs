@@ -156,9 +156,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
         }
         catch (Exception e)
         {
-            _logger.VerboseDebug("[{0}] Could not read column detail at ({1}, {2}): {3}",
-                DiffusionPaths.ModId, worldBlockX, worldBlockZ, e.Message);
-            return null;
+            throw DiffusionFailure.Fatal(_logger,
+                $"The model failed while reading the column at ({worldBlockX}, {worldBlockZ}).", e);
         }
         finally
         {
@@ -176,6 +175,13 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
         return new ColumnDetail(elevation, surface, seaLevel, -lapse * 1000f);
     }
+
+    /// <summary>
+    /// Raised for each tile the moment it is generated, before it can be evicted. Nothing in world
+    /// generation subscribes; this is for the debug map, and a handler that throws is that
+    /// handler's problem to catch.
+    /// </summary>
+    public event Action<TerrainTile> TileGenerated;
 
     /// <summary>Serialises all pipeline work; the tile store is not thread safe.</summary>
     private readonly SemaphoreSlim _inferenceGate = new(1, 1);
@@ -333,6 +339,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
             }
 
             WarnIfThrashing(tileX, tileZ);
+            TileGenerated?.Invoke(tile);
             return tile;
         }
         finally
@@ -724,8 +731,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
         }
         catch (Exception e)
         {
-            _logger.Warning("[{0}] Terrain height survey failed: {1}", DiffusionPaths.ModId, e.Message);
-            return null;
+            throw DiffusionFailure.Fatal(_logger,
+                "The coarse stage failed during the terrain height survey, which is what fixes this " +
+                "world's metre-to-block mapping.", e);
         }
         finally
         {
@@ -765,9 +773,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
         }
         catch (Exception e)
         {
-            _logger.VerboseDebug("[{0}] Terrain probe at native ({1}, {2}) failed: {3}",
-                DiffusionPaths.ModId, centerJ, centerI, e.Message);
-            return null;
+            throw DiffusionFailure.Fatal(_logger,
+                $"The model failed on the terrain probe at native ({centerJ}, {centerI}).", e);
         }
         finally
         {
@@ -857,9 +864,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
             }
             catch (Exception e)
             {
-                _logger.Warning("[{0}] Coarse map query failed while looking for a spawn: {1}",
-                    DiffusionPaths.ModId, e.Message);
-                return null;
+                throw DiffusionFailure.Fatal(_logger,
+                    "The coarse stage failed while looking for a spawn.", e);
             }
             finally
             {
@@ -975,9 +981,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
             }
             catch (Exception e)
             {
-                _logger.VerboseDebug("[{0}] Could not check the climate at ({1}, {2}): {3}",
-                    DiffusionPaths.ModId, centre.BlockX, centre.BlockZ, e.Message);
-                continue;
+                throw DiffusionFailure.Fatal(_logger,
+                    $"The model failed while checking the climate at ({centre.BlockX}, {centre.BlockZ}) " +
+                    "during the spawn search.", e);
             }
 
             SpawnCandidate? best = BestColumnInTile(tile, band, northSouthCost);

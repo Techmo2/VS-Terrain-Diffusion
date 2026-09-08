@@ -434,6 +434,7 @@ vanilla's seasons for display.
 | -------------------- | ---------------------------------------------------------------------- |
 | `status`             | Device, world scaling, tiles generated, average tile time, and where that time went: total model inference, its share of tile time, and a per-stage breakdown. A low inference share means something other than the GPU is the bottleneck. |
 | `gpulimit [percent]` | The share of the time inference is allowed to keep the device busy, and how much has been given up to the limit so far. With a percentage, sets it there and now, and saves it. |
+| `map`                | The debug map's address, and how many tiles it is holding. |
 | `here`               | Elevation, slope, full bioclimate and derived cover where you stand, plus the latitude diagnostics below. |
 | `season <x> <z>`     | The same diagnostics at a position, and the year's temperature and rainfall cycle there. Usable from a server console, where `here` is not. |
 | `column <x> <z>`     | What actually got generated in a column, next to what the model said.   |
@@ -488,6 +489,9 @@ Machine settings. Safe to change at any time.
 | `tileCacheMegabytes`         | 256     | 128 – 1024   | Decoded tensor windows per pipeline stage. |
 | `terrainTileCacheMegabytes`  | 256     | 128 – 1024   | Finished terrain tiles. Raise if you see thrash warnings. |
 | `terrainTileSizeBlocks`      | 256     | 128 – 512    | Blocks generated per model invocation, a multiple of 32. Larger amortises the model better but wastes more work at the edges of what is being generated. |
+| `debugMapPort`               | 0 (off) | 8088         | Serves the [debug map](#debug-map) on this port. 0 opens no port. |
+| `debugMapBindAddress`        | `127.0.0.1` | loopback | Where the debug map listens. `0.0.0.0` publishes your world's terrain to the network. |
+| `debugMapHistoryTiles`       | 2048    | 512 – 8192   | Tiles the debug map remembers, about 8 KB each. |
 | `verboseInference`           | false   | on / off     | Log every terrain tile at notification level. Noisy; for diagnosing slowness. Off, those lines still go to the debug log and only a tile that stalls — a second or more, and four times the session average — reaches the main one. |
 
 #### Stuttering
@@ -514,6 +518,25 @@ generation unable to keep up with a walking player, which is its own kind of stu
 gpulimit <percent>` changes it without a restart, so you can watch your frame rate and tune it in
 place. On a dedicated server there are no frames to protect and the setting is only a way of leaving
 the card to something else; leave it at 100 unless you have a reason.
+
+#### Debug map
+
+Set `debugMapPort` and the mod serves a small read-only page showing what the model is actually
+producing, updating as tiles are generated. `/tdiff map` prints the address; the default binding is
+loopback, so only the machine running the server can reach it.
+
+Eight layers, switchable without refetching: surface height in blocks, model elevation in metres,
+slope, mean temperature, temperature seasonality, annual precipitation, precipitation seasonality,
+and the 0–255 rainfall byte the game itself reads. Drag to pan, wheel to zoom, and hover any column
+for all eight values at once. The colour scale fits whatever is loaded and is shown with its ends.
+
+It keeps its own record rather than reading the generator's tile cache, because that cache is an
+LRU sized for world generation and drops a tile as soon as the generator has moved on — which is
+exactly when you want to look at it. Each tile is stored as a 32×32 thumbnail quantised to a byte
+per column per layer, about 8 KB, so the default 2048-tile history costs some 17 MB.
+
+The port is off by default and nothing on it accepts input. Point it at `0.0.0.0` only if you mean
+to publish your world's terrain and climate to the network; the server logs a warning if you do.
 
 ### World generation
 

@@ -18,6 +18,12 @@ public sealed class PipelineModels : IDisposable
     private static readonly ManualResetEventSlim Loaded = new(false);
     private static Exception _loadFailure;
 
+    /// <summary>
+    /// Bumped by <see cref="Shutdown"/>. A load that was still running when its world went away
+    /// belongs to a generation nobody is waiting on any more, and publishes nothing.
+    /// </summary>
+    private static int _generation;
+
     public OnnxModel Coarse { get; private set; }
     public OnnxModel Base { get; private set; }
     public OnnxModel Decoder { get; private set; }
@@ -40,7 +46,8 @@ public sealed class PipelineModels : IDisposable
         {
             if (_loadThread != null || _instance != null) return;
 
-            _loadThread = new Thread(() => Load(logger))
+            int generation = _generation;
+            _loadThread = new Thread(() => Load(logger, generation))
             {
                 IsBackground = true,
                 Name = "terrain-diffusion-model-load"
@@ -49,7 +56,7 @@ public sealed class PipelineModels : IDisposable
         }
     }
 
-    private static void Load(ILogger logger)
+    private static void Load(ILogger logger, int generation)
     {
         try
         {
@@ -70,18 +77,39 @@ public sealed class PipelineModels : IDisposable
                 Decoder = new OnnxModel(ModelAssetManager.ResolveAssetPath("decoder_model.onnx"), "decoder", logger)
             };
 
-            _instance = models;
+            lock (Gate)
+            {
+                // The world these were being loaded for was abandoned partway through - the player
+                // backed out of world creation, or the server stopped. Publishing them now would
+                // leave a full set of sessions, well over a gigabyte of them, owned by nobody.
+                if (_generation != generation)
+                {
+                    models.Dispose();
+                    return;
+                }
+
+                _instance = models;
+            }
+
             logger.Notification("[{0}] Terrain Diffusion models ready ({1})",
                 DiffusionPaths.ModId, OnnxModel.ActiveProvider);
         }
         catch (Exception e)
         {
-            _loadFailure = e;
+            lock (Gate)
+            {
+                if (_generation != generation) return;
+                _loadFailure = e;
+            }
             logger.Error("[{0}] Failed to load the Terrain Diffusion models: {1}", DiffusionPaths.ModId, e);
         }
         finally
         {
-            Loaded.Set();
+            // Never for a stale generation: Shutdown cleared this so the next world can wait on it.
+            lock (Gate)
+            {
+                if (_generation == generation) Loaded.Set();
+            }
         }
     }
 
@@ -108,11 +136,17 @@ public sealed class PipelineModels : IDisposable
     {
         lock (Gate)
         {
+            _generation++;
             _instance?.Dispose();
             _instance = null;
             _loadThread = null;
             _loadFailure = null;
             Loaded.Reset();
+
+            // The sessions that just went away were most of a gigabyte of native memory. Without
+            // this the allocator keeps every byte of it mapped, and each world a player creates
+            // looks like it leaks the whole model set.
+            NativeHeap.ReleaseFreeArenas();
         }
     }
 }

@@ -88,6 +88,35 @@
       "comment": "setting-DownloadRuntime-hover"
     },
     {
+      "code": "DebugMapPort",
+      "type": "integer",
+      "default": 0,
+      "ingui": "setting-DebugMapPort",
+      "comment": "setting-DebugMapPort-hover",
+      "range": {
+        "min": 0,
+        "max": 65535
+      }
+    },
+    {
+      "code": "DebugMapBindAddress",
+      "type": "string",
+      "default": "127.0.0.1",
+      "ingui": "setting-DebugMapBindAddress",
+      "comment": "setting-DebugMapBindAddress-hover"
+    },
+    {
+      "code": "DebugMapHistoryTiles",
+      "type": "integer",
+      "default": 2048,
+      "ingui": "setting-DebugMapHistoryTiles",
+      "comment": "setting-DebugMapHistoryTiles-hover",
+      "range": {
+        "min": 64,
+        "max": 65536
+      }
+    },
+    {
       "code": "VerboseInference",
       "type": "boolean",
       "default": false,

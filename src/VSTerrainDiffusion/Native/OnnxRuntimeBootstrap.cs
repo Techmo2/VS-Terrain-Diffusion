@@ -69,10 +69,13 @@ public static class OnnxRuntimeBootstrap
             }
             catch (Exception e) when (provider != InferenceProvider.Cpu)
             {
-                logger.Warning("[{0}] Could not prepare the {1} runtime ({2}); falling back to CPU.",
-                    DiffusionPaths.ModId, provider, e.Message);
-                provider = InferenceProvider.Cpu;
-                directory = EnsureNativeFiles(provider, logger, cancellation);
+                // Downgrading to CPU here would change the numbers the model produces, and so the
+                // terrain, without the player ever choosing it.
+                throw DiffusionFailure.Fatal(logger,
+                    $"The {provider} runtime could not be prepared, so this world cannot be generated " +
+                    "on the device it was configured for. Check the network connection and the free " +
+                    "space in the mod's data directory, or set inferenceDevice to \"cpu\" in the mod " +
+                    "config - but note that CPU and GPU do not produce identical terrain.", e);
             }
 
             _nativeDirectory = directory;

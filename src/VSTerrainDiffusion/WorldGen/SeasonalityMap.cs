@@ -119,11 +119,13 @@ public static class SeasonalityMap
             byte[] raw = region.GetModdata(ModDataKey);
             if (raw != null) map = SerializerUtil.Deserialize<IntDataMap2D>(raw);
         }
-        catch (Exception)
+        catch (Exception e)
         {
-            // A region written by an older or newer version is not worth killing a climate lookup
-            // over; fall back to vanilla seasons for it.
-            map = null;
+            // Falling back to vanilla seasons for this region would give it different winters from
+            // the region next to it, which is exactly the kind of seam this mod refuses to create.
+            throw DiffusionFailure.Fatal(
+                "A region's stored seasonality map could not be read. It was written by a different " +
+                "version of this mod, or the save is damaged.", e);
         }
 
         // Cache the miss too, so a vanilla region is not deserialised on every temperature read.

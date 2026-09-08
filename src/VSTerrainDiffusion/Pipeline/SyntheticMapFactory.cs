@@ -218,9 +218,18 @@ public sealed class SyntheticMapFactory
         int plane = h * w;
         var raw = new float[Channels][];
 
-        // Null when there is no landmask, or none to be had for this window; the elevation channel
-        // then falls through to the same plain quantile lookup as the climate channels.
+        // Null only when this world has no landmask at all, in which case the elevation channel
+        // falls through to the same plain quantile lookup as the climate channels. A configured
+        // landmask that comes back empty is a fault, not a lighter kind of conditioning.
         float[] sea = _landmask?.SeaFraction(x1, y1, x2, y2);
+        if (_landmask != null && plane > 0 && (sea == null || sea.Length != plane))
+        {
+            throw DiffusionFailure.Fatal(
+                $"The landmask returned {(sea == null ? "nothing" : sea.Length + " values")} for the " +
+                $"{w}x{h} coarse window at ({x1}, {y1}), where {plane} were needed. Conditioning this " +
+                "window on anything else would put its coastline somewhere the neighbouring windows " +
+                "do not agree with.");
+        }
 
         // Rows run along Z, which is the axis latitude is measured on, so a band is one climate per
         // row. Resolved up front because the two banded channels want the same rows.
@@ -443,9 +452,12 @@ public sealed class SyntheticMapFactory
         {
             data = LoadData();
         }
-        catch (InvalidOperationException)
+        catch (Exception e)
         {
-            return ClimatePlan.Unconditioned(climate);
+            throw DiffusionFailure.Fatal(
+                "pipeline_data.json could not be read, so this world's climate settings cannot be " +
+                "turned into conditioning. Generating without them would ignore the climate the " +
+                "world was created with.", e);
         }
 
         (float exponent, float temperatureDelivered) = PlanTemperature(
