@@ -112,8 +112,7 @@ public class TerrainDiffusionModSystem : ModSystem
         catch (Exception e)
         {
             throw DiffusionFailure.Fatal(_api.Logger,
-                "This world's Terrain Diffusion settings could not be read, so there is no way to tell " +
-                "what terrain it is supposed to have.", e);
+                "This world's Terrain Diffusion settings could not be read.", e);
         }
 
         _provider?.Dispose();
@@ -144,9 +143,8 @@ public class TerrainDiffusionModSystem : ModSystem
             catch (Exception e)
             {
                 throw DiffusionFailure.Fatal(_api.Logger,
-                    "The surface block layer altitudes could not be rescaled for this world's vertical " +
-                    "exaggeration. Leaving them alone would put the soil, gravel and snow lines at the " +
-                    "wrong heights for every chunk generated from here on.", e);
+                    "The surface block layer altitudes could not be rescaled for this world's " +
+                    "vertical exaggeration.", e);
             }
         }
 
@@ -203,9 +201,7 @@ public class TerrainDiffusionModSystem : ModSystem
         catch (Exception e)
         {
             throw DiffusionFailure.Fatal(_api.Logger,
-                "Terrain Diffusion is enabled for this world but its models could not be loaded. " +
-                "Check that the model files downloaded completely and that the ONNX runtime for the " +
-                "configured execution provider is present.", e);
+                "The models could not be loaded.", e);
         }
     }
 
@@ -302,8 +298,7 @@ public class TerrainDiffusionModSystem : ModSystem
         catch (Exception e)
         {
             throw DiffusionFailure.Fatal(_api.Logger,
-                "This world's stored terrain height calibration could not be read. Measuring a new one " +
-                "would risk a different metre-to-block mapping than the chunks already generated use.", e);
+                "This world's stored terrain height calibration could not be read.", e);
         }
 
         if (stored is { Length: sizeof(float) })
@@ -329,9 +324,7 @@ public class TerrainDiffusionModSystem : ModSystem
         catch (Exception e)
         {
             throw DiffusionFailure.Fatal(_api.Logger,
-                "Terrain height calibration failed. Carrying on at true real-world scale instead would " +
-                "give this world a different vertical mapping every time the measurement succeeds or " +
-                "fails, and the chunks would not line up.", e);
+                "Terrain height calibration failed.", e);
         }
 
         if (peak == null) return;
@@ -345,9 +338,7 @@ public class TerrainDiffusionModSystem : ModSystem
         catch (Exception e)
         {
             throw DiffusionFailure.Fatal(_api.Logger,
-                "The terrain height calibration could not be saved to the world. Without it on disk the " +
-                "next start would measure again, and any difference in the answer would move every " +
-                "surface in the world.", e);
+                "The terrain height calibration could not be saved to this world.", e);
         }
     }
 
@@ -387,10 +378,8 @@ public class TerrainDiffusionModSystem : ModSystem
         }
 
         throw DiffusionFailure.Fatal(_api.Logger,
-            "Algernon's Watersheds also replaces terrain generation, and " + failure + ". Both mods " +
-            "cannot generate the same world, and leaving the terrain to Watersheds would make every " +
-            "chunk from here on disagree with the modelled ones already on disk. Remove one of the " +
-            "two mods, or update them.");
+            "Algernon's Watersheds also generates terrain, and " + failure +
+            ". Remove or update one of the two mods.");
     }
 
     /// <summary>
@@ -428,9 +417,8 @@ public class TerrainDiffusionModSystem : ModSystem
             // Something else already took vanilla GenTerra's place. Running as well as it would fill
             // every column twice, with the union of two landscapes and only one set of heightmaps.
             throw DiffusionFailure.Fatal(_api.Logger,
-                "Vanilla GenTerra is not in the terrain pass, so another mod has already replaced " +
-                "terrain generation. Two generators filling the same columns produce terrain that " +
-                "matches neither. Remove the other terrain mod, or turn this one off for this world.");
+                "Another mod has already replaced vanilla GenTerra, so two generators would fill " +
+                "the same columns. Remove one of them.");
         }
 
         _installedHandler = replacement;
@@ -464,8 +452,7 @@ public class TerrainDiffusionModSystem : ModSystem
         if (genMaps == null)
         {
             throw DiffusionFailure.Fatal(_api.Logger,
-                "GenMaps is not loaded, so the model's climate and ocean maps cannot be installed. " +
-                "Vanilla climate over modelled terrain would put the wrong biomes on every chunk.");
+                "GenMaps is not loaded, so the model's climate and ocean maps cannot be installed.");
         }
 
         if (!genMaps.IsVanilla)
@@ -503,8 +490,7 @@ public class TerrainDiffusionModSystem : ModSystem
         if (vanillaClimate == null)
         {
             throw DiffusionFailure.Fatal(_api.Logger,
-                "The world has no climate map layer to build on, so the model's climate cannot be " +
-                "installed. Leaving the climate vanilla would put the wrong biomes on modelled terrain.");
+                "The world has no climate map layer to build the model's climate on.");
         }
 
         genMaps.Climate = new DiffusionClimateMapLayer(
@@ -573,9 +559,7 @@ public class TerrainDiffusionModSystem : ModSystem
         catch (Exception e)
         {
             throw DiffusionFailure.Fatal(_api.Logger,
-                "The spawn search failed. It is not only where the player wakes up: the terrain height " +
-                "calibration is measured around it, so a world generated without it is not the same " +
-                "world as one generated with it.", e);
+                "The spawn search failed.", e);
         }
     }
 

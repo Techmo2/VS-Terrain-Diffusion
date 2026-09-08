@@ -141,10 +141,9 @@ public sealed class OnnxModel : IDisposable
             // providers do not compute bit-identical results, so half a world drawn on the GPU and
             // half on the CPU disagrees along the seam.
             throw DiffusionFailure.Fatal(_logger,
-                $"The {OnnxRuntimeBootstrap.Provider} execution provider could not be initialised for " +
-                $"model '{_name}'. Set inferenceDevice to \"cpu\" in the mod config if you want to " +
-                "generate this world on the CPU, but do not mix the two: they do not produce " +
-                "identical terrain.", e);
+                $"The {OnnxRuntimeBootstrap.Provider} execution provider could not be initialised " +
+                $"for model '{_name}'. Set inferenceDevice to \"cpu\" to generate on the CPU " +
+                "instead - but not partway through a world, as the two differ.", e);
         }
     }
 
@@ -357,9 +356,8 @@ public sealed class OnnxModel : IDisposable
             // The optimised and unoptimised graphs are not guaranteed to agree to the last bit, so
             // a world part generated from one and part from the other is not one world.
             throw DiffusionFailure.Fatal(logger,
-                $"The graph for model '{name}' could not be optimised, and running the unoptimised " +
-                $"one instead risks terrain that does not match what this world already has. Check " +
-                $"that {DiffusionPaths.OptimizedModelDirectory} is writable and has room.", e);
+                $"The graph for model '{name}' could not be optimised. Check that " +
+                $"{DiffusionPaths.OptimizedModelDirectory} is writable and has room.", e);
         }
     }
 

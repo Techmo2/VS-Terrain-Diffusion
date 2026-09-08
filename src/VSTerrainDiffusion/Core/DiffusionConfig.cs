@@ -112,9 +112,7 @@ public class DiffusionConfig
             // Carrying on with defaults would generate terrain to settings the player never chose,
             // and would not match whatever this world was generated with before.
             throw DiffusionFailure.Fatal(api.Logger,
-                $"The mod config ({DiffusionPaths.ModId}.json) could not be read. Fix or delete the " +
-                "file; generating with the built-in defaults instead would silently change this " +
-                "world's terrain.", e);
+                $"The mod config ({DiffusionPaths.ModId}.json) could not be read. Fix or delete it.", e);
         }
 
         config ??= new DiffusionConfig();

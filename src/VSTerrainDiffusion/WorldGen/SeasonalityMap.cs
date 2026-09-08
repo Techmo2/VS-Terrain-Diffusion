@@ -124,8 +124,7 @@ public static class SeasonalityMap
             // Falling back to vanilla seasons for this region would give it different winters from
             // the region next to it, which is exactly the kind of seam this mod refuses to create.
             throw DiffusionFailure.Fatal(
-                "A region's stored seasonality map could not be read. It was written by a different " +
-                "version of this mod, or the save is damaged.", e);
+                "A region's stored seasonality map could not be read.", e);
         }
 
         // Cache the miss too, so a vanilla region is not deserialised on every temperature read.

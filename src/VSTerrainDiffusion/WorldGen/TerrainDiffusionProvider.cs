@@ -732,8 +732,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         catch (Exception e)
         {
             throw DiffusionFailure.Fatal(_logger,
-                "The coarse stage failed during the terrain height survey, which is what fixes this " +
-                "world's metre-to-block mapping.", e);
+                "The coarse stage failed during the terrain height survey.", e);
         }
         finally
         {
@@ -982,8 +981,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
             catch (Exception e)
             {
                 throw DiffusionFailure.Fatal(_logger,
-                    $"The model failed while checking the climate at ({centre.BlockX}, {centre.BlockZ}) " +
-                    "during the spawn search.", e);
+                    $"The model failed on the spawn search climate check at " +
+                    $"({centre.BlockX}, {centre.BlockZ}).", e);
             }
 
             SpawnCandidate? best = BestColumnInTile(tile, band, northSouthCost);

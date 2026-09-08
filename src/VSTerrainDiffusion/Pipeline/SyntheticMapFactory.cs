@@ -225,10 +225,8 @@ public sealed class SyntheticMapFactory
         if (_landmask != null && plane > 0 && (sea == null || sea.Length != plane))
         {
             throw DiffusionFailure.Fatal(
-                $"The landmask returned {(sea == null ? "nothing" : sea.Length + " values")} for the " +
-                $"{w}x{h} coarse window at ({x1}, {y1}), where {plane} were needed. Conditioning this " +
-                "window on anything else would put its coastline somewhere the neighbouring windows " +
-                "do not agree with.");
+                $"The landmask returned {(sea == null ? "nothing" : sea.Length + " values")} for " +
+                $"the {w}x{h} coarse window at ({x1}, {y1}), where {plane} were needed.");
         }
 
         // Rows run along Z, which is the axis latitude is measured on, so a band is one climate per
@@ -455,9 +453,8 @@ public sealed class SyntheticMapFactory
         catch (Exception e)
         {
             throw DiffusionFailure.Fatal(
-                "pipeline_data.json could not be read, so this world's climate settings cannot be " +
-                "turned into conditioning. Generating without them would ignore the climate the " +
-                "world was created with.", e);
+                "pipeline_data.json could not be read, so this world's climate settings cannot " +
+                "be applied.", e);
         }
 
         (float exponent, float temperatureDelivered) = PlanTemperature(

@@ -143,10 +143,7 @@ public sealed class OceanMapLandmask : ILandmaskSource
     {
         throw DiffusionFailure.Fatal(_logger,
             $"The world's ocean map ({layer.GetType().Name}) failed on a {side}x{side} pixel query. " +
-            "That map is what the model's coastlines are conditioned on, so terrain generated without " +
-            "it would not match the terrain already generated with it. This is a fault in whichever " +
-            "mod supplies that layer - world generation only ever asks one for a square region, and " +
-            "so does this.", e);
+            "That is a fault in the mod supplying the layer; worldgen only ever asks for a square.", e);
     }
 
     /// <summary>
@@ -165,10 +162,8 @@ public sealed class OceanMapLandmask : ILandmaskSource
 
             MapLayerBase found = _resolveLayer()
                 ?? throw DiffusionFailure.Fatal(_logger,
-                    "No ocean map is installed, but this world is configured to condition the model " +
-                    "on one (worldGen.oceanMap is \"input\"). Set it to \"output\" to let the model " +
-                    "decide the coastline itself, rather than have it decided differently depending " +
-                    "on when a chunk was generated.");
+                    "No ocean map is installed, but worldGen.oceanMap is \"input\". Set it to " +
+                    "\"output\" to let the model decide the coastline.");
 
             _layer = found;
             _logger.Notification("[{0}] Conditioning terrain on the world's ocean map ({1}).",

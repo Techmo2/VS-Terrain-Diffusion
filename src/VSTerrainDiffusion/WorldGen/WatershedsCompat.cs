@@ -252,9 +252,8 @@ public static class WatershedsCompat
             // its own terrain generate this column would put a column of its landscape in the
             // middle of ours, saved and indistinguishable from the rest.
             ?? throw DiffusionFailure.Fatal(
-                "Algernon's Watersheds generated a terrain column outside the call this mod reads " +
-                "the chunk position from, so the model cannot say what belongs there. The two mods " +
-                "are out of step; update Watersheds, or this mod.");
+                "Algernon's Watersheds generated a terrain column with no chunk position, so the " +
+                "model cannot say what belongs there. Update Watersheds, or this mod.");
 
         int worldX = chunk.X * 32 + chunkIndex2d % 32;
         int worldZ = chunk.Z * 32 + chunkIndex2d / 32;
@@ -326,8 +325,8 @@ public static class WatershedsCompat
         if (coordinate == null)
         {
             throw DiffusionFailure.Fatal(
-                "Algernon's Watersheds asked for a ground height without a world coordinate, so the " +
-                "model cannot answer it. The two mods are out of step; update Watersheds, or this mod.");
+                "Algernon's Watersheds asked for a ground height with no world coordinate. " +
+                "Update Watersheds, or this mod.");
         }
 
         return (_coordinateX(coordinate), _coordinateZ(coordinate));

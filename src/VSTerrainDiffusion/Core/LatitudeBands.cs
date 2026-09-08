@@ -238,8 +238,7 @@ public sealed class LatitudeBands : ILatitudeSource
         {
             // The settings are only ever read once the models are resident, so the data is there.
             throw DiffusionFailure.Fatal(
-                "The model's climate data could not be read, so this world's latitude bands cannot " +
-                "be built. Generating without them would put the cold places somewhere else entirely.", e);
+                "The model's climate data could not be read, so latitude bands cannot be built.", e);
         }
 
         var conditioningC = new float[Samples];

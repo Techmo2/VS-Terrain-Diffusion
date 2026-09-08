@@ -72,10 +72,9 @@ public static class OnnxRuntimeBootstrap
                 // Downgrading to CPU here would change the numbers the model produces, and so the
                 // terrain, without the player ever choosing it.
                 throw DiffusionFailure.Fatal(logger,
-                    $"The {provider} runtime could not be prepared, so this world cannot be generated " +
-                    "on the device it was configured for. Check the network connection and the free " +
-                    "space in the mod's data directory, or set inferenceDevice to \"cpu\" in the mod " +
-                    "config - but note that CPU and GPU do not produce identical terrain.", e);
+                    $"The {provider} runtime could not be prepared. Check the network connection " +
+                    "and free disk space, or set inferenceDevice to \"cpu\" - but not partway " +
+                    "through a world, as CPU and GPU terrain differ.", e);
             }
 
             _nativeDirectory = directory;

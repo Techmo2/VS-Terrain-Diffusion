@@ -44,8 +44,8 @@ public static class DiffusionFailure
     /// </summary>
     /// <param name="logger">Where to write the reason. May be null.</param>
     /// <param name="problem">
-    /// What went wrong, as a sentence, in terms the player can act on. This is the only thing they
-    /// will see, so name the setting, the mod or the file involved.
+    /// What went wrong, in one short sentence. Name the file, setting or mod involved; the detail
+    /// belongs in <paramref name="cause"/>, not here.
     /// </param>
     /// <param name="cause">The underlying exception, when there is one.</param>
     public static Exception Fatal(ILogger logger, string problem, Exception cause = null)
@@ -60,11 +60,8 @@ public static class DiffusionFailure
 
         string message =
             $"[{DiffusionPaths.ModId}] {problem}\n" +
-            "Terrain Diffusion has stopped the game rather than let another generator finish this " +
-            "world. It does not fall back: a world that is part modelled and part vanilla has a " +
-            "permanent seam through it and cannot be repaired afterwards. Fix the fault reported " +
-            "above, or turn the mod off for this world (world config: diffusionTerrain), and the " +
-            "chunks generated so far will still be good.";
+            "Stopped rather than finish this world with a different generator. Set diffusionTerrain " +
+            "to false in the world config to play without the mod.";
 
         logger ??= _ambient;
 
