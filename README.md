@@ -234,8 +234,8 @@ Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whate
 - **Terrain pass** — vanilla `GenTerra`'s chunk handler is swapped for one that fills columns from
   the diffusion heightmap. When another mod has already replaced terrain generation, the model
   supplies heights to *it* instead; see [Other terrain mods](#other-terrain-mods).
-- **Climate map** — temperature and rainfall from the model, pre-compensated for the altitude
-  corrections the game applies on read. The geologic activity byte is still vanilla's.
+- **Climate map** — sea-level temperature and annual rainfall from the model, with the game's own
+  altitude corrections replaced by the real lapse rate. The geologic activity byte is still vanilla's.
 - **Global temperature and precipitation** — conditioning rather than post-processing, so the world
   is drawn at the climate asked for instead of being drawn temperate and rescaled.
 - **Latitude** — the game's own latitude, from `polarEquatorDistance`, is conditioned into the model
@@ -402,10 +402,13 @@ above the treeline are all new behaviour. The map goes on being read by everythi
 before — trees, shrubs, ground patches, structure placement, creature spawning — so the animals and
 the undergrowth follow the woods around.
 
-**Temperature** is written pre-compensated. The game re-applies its own lapse rate whenever it reads
-the climate map, and the model has already accounted for altitude, so the stored value is chosen to
-make the game's answer *at the surface* the one the model predicted. Without that, every mountain
-would come out twice as cold as it should be.
+**Temperature** is stored as the column's sea-level temperature — what Vintage Story's climate byte
+is supposed to hold — and the mod replaces the lapse rate the game applies on read. Vanilla's is a
+flat 0.157 °C per block, which is a real lapse rate only at about 24 m per block and over-cools
+mountains at anything finer; the mod substitutes 6.5 °C/km, so the surface reads back as the model
+predicted at any vertical scale. Writing a pre-compensated value instead, which is the obvious
+alternative, spends the byte's whole range on the correction and used to put a hard floor under how
+fine the vertical scale could go.
 
 ### Seasons
 

@@ -332,8 +332,8 @@ explored makes new chunks disagree with the ones already on disk.
 
     // Overrides the world's "Diffusion resolution" setting. It is a divisor of the model's native
     // 30 m pixel, so 1 is 30 m per block, 2 (the default) is 15 m, 4 is 7.5 m. Zero uses the
-    // world setting; values above 6 are only reachable from here. Finer than 15 m runs the model
-    // harder and overruns the one-byte climate map on high warm ground.
+    // world setting; values above 6 are only reachable from here. Finer costs generation time and
+    // shrinks the world you can walk across; the climate map no longer limits it.
     "ScaleOverride": 0,
 
     // Overrides the world's "Vertical exaggeration" setting. Zero uses the world setting. In auto

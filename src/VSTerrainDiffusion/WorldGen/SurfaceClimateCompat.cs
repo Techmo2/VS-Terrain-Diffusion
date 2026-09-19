@@ -16,21 +16,16 @@ namespace VSTerrainDiffusion.WorldGen;
 /// Makes the parts of Vintage Story that read a column's climate at sea level read it at the
 /// surface instead.
 ///
-/// Vintage Story stores one climate byte per column and takes it to mean the temperature at sea
-/// level, subtracting <c>distToSealevel / 1.5</c> on read to get the temperature where you actually
-/// are. That fixed rate works out to 0.157 C per block, which at the shipped 15 m per block is
-/// 10.5 C per km - well over the real atmospheric lapse rate of about 6.5. So the model's surface
-/// temperature and a sane sea-level temperature cannot both fit in the one byte, and this mod
-/// stores whatever makes the surface come out right: <c>surfaceTemperature + surfaceDistance/1.5</c>.
+/// The stored byte is a sea-level temperature and, since <see cref="Core.ClimateScale"/>, an honest
+/// one: apply the altitude correction and you get the temperature the model predicted for that
+/// height. Most readers do exactly that - tree and shrub species, ground plant patches, block
+/// layers, tall grass - and they need nothing from this file.
 ///
-/// Everything that applies the game's own correction at the real surface then reads the temperature
-/// the model predicted - tree and shrub species, ground plant patches, block layers, tall grass. But
-/// the stored byte on its own no longer means anything: on a 5 C peak 169 blocks above the sea it
-/// holds 219, which reads back as 27 C at sea level, and above about 250 blocks it saturates at 255
-/// and reads as a flat 40 C no matter how cold the summit really is.
-///
-/// Five places read it that way, and each of them is patched here to use the column's surface
-/// instead. Without this, high ground grows tropical.
+/// Five do not. They read the byte at sea level, or raw, and treat the answer as the climate of the
+/// place. That was catastrophic under the old pre-compensated storage and is merely wrong now: a
+/// 9.9 C summit 147 blocks up has a sea-level temperature near 24 C, so what lives there is still
+/// chosen from the wrong end of the scale. Animals and plants should follow the ground they are
+/// standing on, so each of these is pointed at the column's surface.
 ///
 /// <list type="bullet">
 /// <item><c>ServerSystemEntitySpawner.GetSuitableClimateTemperatureRainfall</c> deliberately
@@ -131,8 +126,14 @@ public static class SurfaceClimateCompat
                 prefix: Method(nameof(BeforeSpawnerClimate)));
             _harmony.Patch(fertility,
                 prefix: Method(nameof(BeforeFertility)));
+            // Must run before ClimateScale's own prefix on this method: this one substitutes a
+            // raw block distance for the sea-level read, and that distance still has to go through
+            // the lapse-rate correction afterwards. Reversed, the substitution would escape it and
+            // the chunk would read far too cold.
             _harmony.Patch(scaledTemperature,
-                prefix: Method(nameof(BeforeScaledTemperature)));
+                prefix: new HarmonyMethod(AccessTools.Method(
+                    typeof(SurfaceClimateCompat), nameof(BeforeScaledTemperature)))
+                { priority = Priority.First });
 
             // Arm the token around the two generators that ask at sea level, and clear it again
             // however they return so a chunk that took an early exit cannot leave it lying about.

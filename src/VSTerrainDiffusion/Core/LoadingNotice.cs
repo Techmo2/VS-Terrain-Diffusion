@@ -17,10 +17,11 @@ namespace VSTerrainDiffusion.Core;
 /// a dedicated server sees any of this. The cost is a duplicate line in server-main.log, which is
 /// a fair trade for a handful of messages that only appear while something slow is happening.
 ///
-/// Deliberately only three of them: one when the models start downloading, one when the runtime
-/// does, and one when both are finished. The screen appends lines and never rewrites them, so
-/// progress reporting would push the game's own messages off the top for no real gain - anyone who
-/// wants byte counts has server-main.log.
+/// Rationed, because the screen appends lines and never rewrites them and <c>updateLogText</c>
+/// stops accepting new ones past about ten thousand characters. What goes here is the model
+/// download reporting itself in tenths (see <see cref="DownloadProgress"/>), a line when the
+/// inference runtime is fetched, and one when both are done - around six hundred characters all
+/// told. Anyone who wants byte counts per file has server-main.log.
 /// </summary>
 public static class LoadingNotice
 {

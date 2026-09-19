@@ -134,10 +134,20 @@ public class TerrainDiffusionModSystem : ModSystem
         InstallTerrain();
         InstallMapLayers();
 
-        // Only while the model owns the climate map. Left to vanilla, the stored byte really is a
-        // sea-level temperature and the readers these patches correct are already right about it.
-        if (_settings.ClimateMode != DiffusionClimateMode.Off) SurfaceClimateCompat.Install(_api);
-        else SurfaceClimateCompat.Uninstall();
+        // Both only while the model owns the climate map. Left to vanilla the stored byte is a
+        // sea-level temperature already read at the game's own lapse rate, and correcting either
+        // would make it wrong. After calibration, because the lapse correction follows from how
+        // tall a block is, and before any chunk generates, because the map layer writes through it.
+        if (_settings.ClimateMode != DiffusionClimateMode.Off)
+        {
+            ClimateScale.Install(_api.Logger, ClimateScale.ScaleFor(_settings.MetersPerBlockVertical));
+            SurfaceClimateCompat.Install(_api);
+        }
+        else
+        {
+            ClimateScale.Uninstall();
+            SurfaceClimateCompat.Uninstall();
+        }
 
         if (DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic)
         {
@@ -215,13 +225,13 @@ public class TerrainDiffusionModSystem : ModSystem
         // A temperate 10 C place is the useful yardstick: colder ground has scale to spare and
         // hotter ground is rarely high.
         float temperatureCeiling = _settings.TemperatureCeilingMeters(10f);
-        if (temperatureCeiling < 2500f)
+        if (temperatureCeiling < _settings.LinearRangeMeters)
         {
             _api.Logger.Warning(
-                "[{0}] At {1:0.##} m per block of height, Vintage Story's one-byte climate map runs out of scale " +
-                "above about {2:0} m, and warmer ground above that will read colder than the model intended. " +
-                "A coarser diffusion resolution avoids it.",
-                DiffusionPaths.ModId, _settings.MetersPerBlockVertical, temperatureCeiling);
+                "[{0}] Vintage Story's one-byte climate map tops out at 40 C of sea-level temperature, " +
+                "so temperate ground above about {1:0} m reads colder than the model intended. Only the " +
+                "very highest peaks reach that.",
+                DiffusionPaths.ModId, temperatureCeiling);
         }
 
         if (_settings.CalibrationClamped)
@@ -1067,6 +1077,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _debugMap = null;
         WatershedsCompat.Uninstall();
         SurfaceClimateCompat.Uninstall();
+        ClimateScale.Uninstall();
         ConfigLibCompat.Uninstall();
         _provider?.Dispose();
         _provider = null;
@@ -1078,6 +1089,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _debugMap?.Dispose();
         _debugMap = null;
         SurfaceClimateCompat.Uninstall();
+        ClimateScale.Uninstall();
         _provider?.Dispose();
         _provider = null;
 

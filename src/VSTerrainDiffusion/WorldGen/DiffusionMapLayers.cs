@@ -72,11 +72,13 @@ public abstract class DiffusionMapLayer : MapLayerBase
 /// system all follow the world the terrain came from.
 ///
 /// The packed climate integer is (unscaledTemperature &lt;&lt; 16) | (rainfall &lt;&lt; 8) |
-/// geologicActivity. Vintage Story re-applies its own altitude corrections whenever it reads those,
-/// so what is written here is pre-compensated: the values are chosen such that the temperature and
-/// rainfall the game computes <em>at the terrain surface</em> are the ones the model predicted for
-/// that spot. Without that, the game would subtract a lapse rate the model has already applied and
-/// every mountain would come out twice as cold as it should be.
+/// geologicActivity, and both values mean exactly what the game says they mean: the temperature this
+/// column would have at sea level, and its annual precipitation. What makes that work is
+/// <see cref="ClimateScale"/>, which replaces the game's fixed altitude correction with the real
+/// lapse rate, so the surface reads back as the model predicted without the byte having to carry
+/// the correction itself. Writing a pre-compensated value instead - the obvious alternative - costs
+/// the byte its entire range on high ground and is what used to put a floor under the vertical
+/// resolution.
 ///
 /// Latitude plays no part. The model's temperature field is a real climatology with continents,
 /// oceans, rain shadows and altitude in it; layering a synthetic pole-to-equator gradient on top
@@ -114,27 +116,24 @@ public sealed class DiffusionClimateMapLayer : DiffusionMapLayer
     protected override int ValueAt(TerrainTile tile, int index, int blockX, int blockZ)
     {
         // Climate is read at whatever surface is exposed to the sky, which over water is the sea
-        // surface rather than the sea bed. Compensating against a sea bed hundreds of blocks down
-        // would make every ocean read tens of degrees too cold.
+        // surface rather than the sea bed. Measuring from a sea bed hundreds of blocks down would
+        // make every ocean read tens of degrees too warm at sea level.
         int surfaceY = Math.Max(tile.SurfaceY[index], _seaLevel - 1);
         int distanceToSeaLevel = surfaceY - _seaLevel;
 
         // The world's global temperature setting and the config's offset are already in the tile.
         Bioclim climate = tile.ClimateAt(index);
-        float surfaceTemperature = climate.MeanTemperatureC;
 
-        // Undo the game's own altitude correction so the surface lands on the intended value.
+        // Take the model's surface temperature back down to sea level at the reference lapse rate.
+        // The game undoes exactly this on read, through the same helper, so the surface returns the
+        // model's own number and sea level returns something that means what it says.
         int unscaledTemperature = GameMath.Clamp(
-            (int)Math.Round((surfaceTemperature + 20f) * Climate.TemperatureScaleConversion
-                            + distanceToSeaLevel / 1.5f), 0, 255);
+            (int)Math.Round((climate.MeanTemperatureC + 20f) * Climate.TemperatureScaleConversion
+                            + ClimateScale.ScaleDistance(distanceToSeaLevel) / 1.5f), 0, 255);
 
-        // Likewise for rainfall: the game adds height and a coastal bonus on read, and the model
-        // has already accounted for both.
-        int modelRainfall = _rainfall.ToRainfall(climate);
-        int rainfall = GameMath.Clamp(
-            modelRainfall
-            - distanceToSeaLevel / 2
-            - 5 * GameMath.Clamp(8 + _seaLevel - surfaceY, 0, 8), 0, 255);
+        // Straight through. The game's altitude and shoreline additions to rainfall are switched
+        // off in ClimateScale, so there is nothing left to pre-compensate for.
+        int rainfall = GameMath.Clamp(_rainfall.ToRainfall(climate), 0, 255);
 
         return (unscaledTemperature << 16) | (rainfall << 8);
     }

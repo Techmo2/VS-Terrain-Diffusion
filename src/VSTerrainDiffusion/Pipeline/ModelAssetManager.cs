@@ -112,21 +112,18 @@ public static class ModelAssetManager
             logger.Notification("[{0}] Preparing model assets in {1}", DiffusionPaths.ModId, DiffusionPaths.ModelDirectory);
 
             // The player is staring at a loading screen while this runs, so say what the wait is
-            // for and how big it is. Once only, at the start: the log file has the detail.
-            long pending = PendingBytes(validate);
-            if (pending > 0)
-            {
-                Downloaded = true;
-                LoadingNotice.Post(logger,
-                    "Downloading the world generation models ({0}). This happens once, and the world will " +
-                    "finish loading when it completes.", HumanBytes(pending));
-            }
+            // for, how big it is, and that it is still moving.
+            var progress = new DownloadProgress(logger, "model files", PendingBytes(validate));
+            if (progress.Active) Downloaded = true;
+            progress.Announce();
 
             foreach (Asset asset in Assets)
             {
                 cancellation.ThrowIfCancellationRequested();
-                EnsureSingleAsset(asset, logger, validate, cancellation);
+                EnsureSingleAsset(asset, logger, validate, progress, cancellation);
             }
+
+            progress.Complete();
 
             logger.Notification("[{0}] Model assets ready", DiffusionPaths.ModId);
             _ready = true;
@@ -136,7 +133,7 @@ public static class ModelAssetManager
     public static string ResolveAssetPath(string fileName) => DiffusionPaths.ResolveAsset(fileName);
 
     private static void EnsureSingleAsset(Asset asset, ILogger logger, bool validate,
-                                          CancellationToken cancellation)
+                                          DownloadProgress progress, CancellationToken cancellation)
     {
         string path = DiffusionPaths.ResolveAsset(asset.FileName);
         if (File.Exists(path))
@@ -153,22 +150,22 @@ public static class ModelAssetManager
                 return;
             }
 
-            // A file that looked complete but failed its hash was not in the pending total, so the
-            // player was told nothing was being fetched. Rare, and worth its own line.
+            // A file that looked complete but failed its hash was not in the pending total - only
+            // hashing finds it - so its bytes join the total now rather than pushing past 100%.
             logger.Warning("[{0}] '{1}' failed verification, re-downloading", DiffusionPaths.ModId, asset.FileName);
-            if (info.Length == asset.SizeBytes && !Downloaded)
+            if (info.Length == asset.SizeBytes)
             {
                 Downloaded = true;
-                LoadingNotice.Post(logger, "Re-downloading a world generation model that did not verify.");
+                progress.AddPending(asset.SizeBytes);
             }
             File.Delete(path);
         }
 
-        DownloadAndVerify(asset, path, logger, cancellation);
+        DownloadAndVerify(asset, path, logger, progress, cancellation);
     }
 
     private static void DownloadAndVerify(Asset asset, string path, ILogger logger,
-                                          CancellationToken cancellation)
+                                          DownloadProgress progress, CancellationToken cancellation)
     {
         string tempPath = path + ".tmp";
         try
@@ -191,7 +188,7 @@ public static class ModelAssetManager
             using (Stream netStream = response.Content.ReadAsStreamAsync(cancellation).GetAwaiter().GetResult())
             using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
             {
-                Copy(netStream, fileStream, cancellation);
+                Copy(netStream, fileStream, progress, cancellation);
             }
 
             var info = new FileInfo(tempPath);
@@ -228,7 +225,8 @@ public static class ModelAssetManager
         }
     }
 
-    private static void Copy(Stream source, Stream destination, CancellationToken cancellation)
+    private static void Copy(Stream source, Stream destination, DownloadProgress progress,
+                             CancellationToken cancellation)
     {
         var buffer = new byte[1 << 20];
 
@@ -237,6 +235,7 @@ public static class ModelAssetManager
         {
             cancellation.ThrowIfCancellationRequested();
             destination.Write(buffer, 0, read);
+            progress?.Advance(read);
         }
     }
 

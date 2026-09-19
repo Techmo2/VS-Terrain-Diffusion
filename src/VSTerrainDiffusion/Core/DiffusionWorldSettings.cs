@@ -445,17 +445,19 @@ public sealed class DiffusionWorldSettings
     /// Highest ground at <paramref name="temperatureC"/> whose temperature the climate map can still
     /// represent, in metres.
     ///
-    /// Vintage Story stores temperature as one byte and re-applies its own lapse rate — a flat
-    /// 1/1.5 units per block — whenever it reads the map, so the value written has to carry that
-    /// correction on top of the real temperature. The two together can overflow the byte: at a fine
-    /// vertical scale there are a great many blocks between sea level and a summit, and warm high
-    /// ground runs out of scale and reads colder than the model said. Above this elevation the
-    /// error grows by 0.235 C per block.
+    /// The map holds a sea-level temperature in one byte, which tops out at 40 C, and a summit's
+    /// sea-level equivalent is its own temperature plus the lapse rate over its height. Ground high
+    /// and warm enough for that sum to pass 40 C reads back colder than the model said.
+    ///
+    /// This used to depend on the vertical scale, and badly - the byte also had to carry the game's
+    /// whole altitude correction, which is what ruled out fine resolutions. Since
+    /// <see cref="ClimateScale"/> moved that correction out of the byte, the ceiling is a property
+    /// of the lapse rate alone and the vertical scale is free.
     /// </summary>
     public float TemperatureCeilingMeters(float temperatureC)
     {
-        float blocks = 1.5f * (255f - (temperatureC + 20f) * 4.25f);
-        return blocks <= 0f ? 0f : blocks * MetersPerBlockVertical;
+        float headroom = 40f - temperatureC;
+        return headroom <= 0f ? 0f : headroom / ClimateScale.ReferenceLapseCPerKm * 1000f;
     }
 
     /// <summary>
