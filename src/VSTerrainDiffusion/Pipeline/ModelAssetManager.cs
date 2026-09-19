@@ -133,15 +133,10 @@ public static class ModelAssetManager
             logger.Notification("[{0}] Preparing model assets in {1}", DiffusionPaths.ModId, DiffusionPaths.ModelDirectory);
 
             // The player is staring at a loading screen while this runs, so say what the wait is
-            // for and how big it is. Once only, at the start: the log file has the detail.
-            long pending = PendingBytes();
-            if (pending > 0)
-            {
-                Downloaded = true;
-                LoadingNotice.Post(logger,
-                    "Downloading the world generation models ({0}). This happens once, and the world will " +
-                    "finish loading when it completes.", HumanBytes(pending));
-            }
+            // for, how big it is, and that it is still moving.
+            var progress = new DownloadProgress(logger, "model files", PendingBytes());
+            if (progress.Active) Downloaded = true;
+            progress.Announce();
 
             foreach (Asset asset in RequiredAssets())
             {
@@ -200,7 +195,7 @@ public static class ModelAssetManager
             // A file that looked complete but failed its hash was not in the pending total - only
             // hashing finds it - so its bytes join the total now rather than pushing past 100%.
             logger.Warning("[{0}] '{1}' failed verification, re-downloading", DiffusionPaths.ModId, asset.FileName);
-            if (validSize && !Downloaded)
+            if (validSize)
             {
                 Downloaded = true;
                 progress.AddPending(asset.SizeBytes);

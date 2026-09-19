@@ -405,7 +405,7 @@ public sealed class OnnxModel : IModelRunner
 
     /// <summary>
     /// Runs the graph optimiser once and caches the result on disk, so later starts skip the
-    /// (slow) constant folding and fusion passes.
+    /// (slow) constant folding and fusion passes. Falls back to the raw graph on any failure.
     /// </summary>
     private static string OptimizeAtRuntime(string sourcePath, string name, ILogger logger,
                                             bool rebuild = false)
@@ -419,7 +419,6 @@ public sealed class OnnxModel : IModelRunner
                 File.Delete(cachePath);
             }
 
-            sourceBytes = File.ReadAllBytes(modelFilePath);
             Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
             string tempPath = cachePath + ".tmp";
             if (File.Exists(tempPath)) File.Delete(tempPath);
@@ -484,6 +483,5 @@ public sealed class OnnxModel : IModelRunner
         _residentSession = null;
         _runOptions?.Dispose();
         _runOptions = null;
-        _graphBytes = null;
     }
 }

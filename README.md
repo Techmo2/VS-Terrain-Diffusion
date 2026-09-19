@@ -496,6 +496,9 @@ changing either can make newly generated terrain disagree slightly with existing
 | `latentBatchSize`            | 0       | 0 – 4        | Latent windows per base-model call. Zero chooses 1 on CPU and 4 on GPU. |
 | `terrainTileCacheMegabytes`  | 256     | 128 – 1024   | Finished terrain tiles. Raise if you see thrash warnings. |
 | `terrainTileSizeBlocks`      | 0       | 0, 128 – 512 | Blocks generated per model invocation, a multiple of 32. Zero chooses 128 on CPU and 256 on GPU; larger values amortise the model better but make first-visit stalls longer. |
+| `debugMapPort`               | 0 (off) | 8088         | Serves the [debug map](#debug-map) on this port. 0 opens no port. |
+| `debugMapBindAddress`        | `127.0.0.1` | loopback | Where the debug map listens. `0.0.0.0` publishes your world's terrain to the network. |
+| `debugMapHistoryTiles`       | 2048    | 512 – 8192   | Tiles the debug map remembers, about 8 KB each. |
 | `verboseInference`           | false   | on / off     | Log every terrain tile at notification level. Noisy; for diagnosing slowness. Off, those lines still go to the debug log and only a tile that stalls — a second or more, and four times the session average — reaches the main one. |
 
 #### Stuttering
