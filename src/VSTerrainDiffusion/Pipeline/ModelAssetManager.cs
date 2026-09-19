@@ -75,8 +75,8 @@ public static class ModelAssetManager
     private static readonly Asset Int8DecoderAsset = new()
     {
         FileName = "decoder_model.int8.onnx",
-        SizeBytes = 43496635,
-        Sha256 = "0ce6eb771a072a8622448c30488f0505c009e43bebccd65246a4dd58fe8e2da6",
+        SizeBytes = 43497445,
+        Sha256 = "0ae464c884593b3016a19365caf3ae43a7e26743c8ef1234814e10bbbd9b5b74",
         UrlOverride =
             "https://github.com/Techmo2/VS-Terrain-Diffusion/releases/download/decoder-int8-v1/decoder_model.int8.onnx"
     };

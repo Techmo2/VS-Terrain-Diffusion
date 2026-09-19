@@ -20,10 +20,10 @@ python quantize_decoder.py decoder_model.onnx decoder_model.int8.onnx \
 ```
 
 The script checks its dependency versions, the source and calibration hashes, the selected graph
-nodes, and the exact output size and SHA-256. The release output is 43,496,635 bytes with SHA-256:
+nodes, and the exact output size and SHA-256. The release output is 43,497,445 bytes with SHA-256:
 
 ```text
-0ce6eb771a072a8622448c30488f0505c009e43bebccd65246a4dd58fe8e2da6
+0ae464c884593b3016a19365caf3ae43a7e26743c8ef1234814e10bbbd9b5b74
 ```
 
 The generated ONNX file embeds its source URL, recipe, copyright, and full MIT licence. The upstream

@@ -414,7 +414,7 @@ An unrecognised `InferenceDevice`, `ModelLoadMode`, `DecoderPrecision`, `HeightM
 
 The selected decoder is downloaded automatically. The optional mixed-precision decoder is stored at
 `TerrainDiffusionModels/decoder_model.int8.onnx`; its SHA-256 is
-`0ce6eb771a072a8622448c30488f0505c009e43bebccd65246a4dd58fe8e2da6`; the exact recipe and
+`0ae464c884593b3016a19365caf3ae43a7e26743c8ef1234814e10bbbd9b5b74`; the exact recipe and
 calibration hashes are under `scripts/`. Keep `InferenceDevice` and `DecoderPrecision` fixed for an
 established world: changing either can introduce small numerical differences in newly generated
 terrain at chunk boundaries.
