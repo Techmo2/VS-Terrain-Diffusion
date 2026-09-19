@@ -234,11 +234,11 @@ public sealed class LatitudeBands : ILatitudeSource
         {
             (neutralC, neutralMm) = SyntheticMapFactory.NeutralClimate();
         }
-        catch (InvalidOperationException)
+        catch (Exception e)
         {
-            // The model's data is not on disk yet; a fresh install reads the world once before
-            // anything is downloaded. An unbanded world is the honest answer for that pass.
-            return new LatitudeBands("off, because the model data has not been downloaded yet");
+            // The settings are only ever read once the models are resident, so the data is there.
+            throw DiffusionFailure.Fatal(
+                "The model's climate data could not be read, so latitude bands cannot be built.", e);
         }
 
         var conditioningC = new float[Samples];

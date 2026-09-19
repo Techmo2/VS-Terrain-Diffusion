@@ -101,7 +101,6 @@ public static class WatershedsCompat
     [ThreadStatic]
     private static TerrainTile _tile;
 
-    private static int _lostContextWarnings;
 
     private sealed class ChunkRef
     {
@@ -180,7 +179,6 @@ public static class WatershedsCompat
         }
 
         Installed = true;
-        _lostContextWarnings = 0;
         failure = null;
         return true;
     }
@@ -249,15 +247,13 @@ public static class WatershedsCompat
         int chunkIndex2d,
         float heightDisplacementFromStream)
     {
-        ChunkRef chunk = CurrentChunk.Value;
-        if (chunk == null)
-        {
+        ChunkRef chunk = CurrentChunk.Value
             // Should not happen: Watersheds only reaches here from the call that sets it. Letting
-            // its own terrain generate this column is wrong but local and visible, which beats
-            // filling it from a coordinate we guessed.
-            WarnLostContext();
-            return true;
-        }
+            // its own terrain generate this column would put a column of its landscape in the
+            // middle of ours, saved and indistinguishable from the rest.
+            ?? throw DiffusionFailure.Fatal(
+                "Algernon's Watersheds generated a terrain column with no chunk position, so the " +
+                "model cannot say what belongs there. Update Watersheds, or this mod.");
 
         int worldX = chunk.X * 32 + chunkIndex2d % 32;
         int worldZ = chunk.Z * 32 + chunkIndex2d / 32;
@@ -300,8 +296,7 @@ public static class WatershedsCompat
     /// </summary>
     private static bool BeforeGroundHeight(object[] __args, ref int __result)
     {
-        if (!TryCoordinate(__args, out int worldX, out int worldZ)) return true;
-
+        (int worldX, int worldZ) = Coordinate(__args);
         __result = SurfaceAt(worldX, worldZ);
         return false;
     }
@@ -313,25 +308,28 @@ public static class WatershedsCompat
     /// </summary>
     private static bool BeforeCarvedGroundHeight(object[] __args, ref int __result)
     {
-        if (!TryCoordinate(__args, out int worldX, out int worldZ)) return true;
-
+        (int worldX, int worldZ) = Coordinate(__args);
         var displacement = (float)__args[_streamDisplacementArgIndex];
         __result = CarvedSurfaceAt(worldX, worldZ, displacement);
         return false;
     }
 
-    private static bool TryCoordinate(object[] args, out int worldX, out int worldZ)
+    /// <summary>
+    /// Reads the world coordinate out of a boxed height query argument. Letting the original method
+    /// run instead would answer the query from Watersheds' own landscape, so there is no soft
+    /// outcome here.
+    /// </summary>
+    private static (int X, int Z) Coordinate(object[] args)
     {
         object coordinate = args.Length > 0 ? args[0] : null;
         if (coordinate == null)
         {
-            worldX = worldZ = 0;
-            return false;
+            throw DiffusionFailure.Fatal(
+                "Algernon's Watersheds asked for a ground height with no world coordinate. " +
+                "Update Watersheds, or this mod.");
         }
 
-        worldX = _coordinateX(coordinate);
-        worldZ = _coordinateZ(coordinate);
-        return true;
+        return (_coordinateX(coordinate), _coordinateZ(coordinate));
     }
 
     // ---------------------------------------------------------------- reflection
@@ -409,15 +407,6 @@ public static class WatershedsCompat
         }
 
         return false;
-    }
-
-    private static void WarnLostContext()
-    {
-        if (Interlocked.Increment(ref _lostContextWarnings) > 3) return;
-
-        _api?.Logger.Warning(
-            "[{0}] Watersheds generated a terrain column outside the call this mod reads the chunk " +
-            "position from; that column is its terrain, not the model's.", DiffusionPaths.ModId);
     }
 
     /// <summary>

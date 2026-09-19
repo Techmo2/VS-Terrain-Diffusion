@@ -234,8 +234,8 @@ Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whate
 - **Terrain pass** — vanilla `GenTerra`'s chunk handler is swapped for one that fills columns from
   the diffusion heightmap. When another mod has already replaced terrain generation, the model
   supplies heights to *it* instead; see [Other terrain mods](#other-terrain-mods).
-- **Climate map** — temperature and rainfall from the model, pre-compensated for the altitude
-  corrections the game applies on read. The geologic activity byte is still vanilla's.
+- **Climate map** — sea-level temperature and annual rainfall from the model, with the game's own
+  altitude corrections replaced by the real lapse rate. The geologic activity byte is still vanilla's.
 - **Global temperature and precipitation** — conditioning rather than post-processing, so the world
   is drawn at the climate asked for instead of being drawn temperate and rescaled.
 - **Latitude** — the game's own latitude, from `polarEquatorDistance`, is conditioned into the model
@@ -402,10 +402,13 @@ above the treeline are all new behaviour. The map goes on being read by everythi
 before — trees, shrubs, ground patches, structure placement, creature spawning — so the animals and
 the undergrowth follow the woods around.
 
-**Temperature** is written pre-compensated. The game re-applies its own lapse rate whenever it reads
-the climate map, and the model has already accounted for altitude, so the stored value is chosen to
-make the game's answer *at the surface* the one the model predicted. Without that, every mountain
-would come out twice as cold as it should be.
+**Temperature** is stored as the column's sea-level temperature — what Vintage Story's climate byte
+is supposed to hold — and the mod replaces the lapse rate the game applies on read. Vanilla's is a
+flat 0.157 °C per block, which is a real lapse rate only at about 24 m per block and over-cools
+mountains at anything finer; the mod substitutes 6.5 °C/km, so the surface reads back as the model
+predicted at any vertical scale. Writing a pre-compensated value instead, which is the obvious
+alternative, spends the byte's whole range on the correction and used to put a hard floor under how
+fine the vertical scale could go.
 
 ### Seasons
 
@@ -434,6 +437,7 @@ vanilla's seasons for display.
 | -------------------- | ---------------------------------------------------------------------- |
 | `status`             | Device, world scaling, tiles generated, average tile time, and where that time went: total model inference, its share of tile time, and a per-stage breakdown. A low inference share means something other than the GPU is the bottleneck. |
 | `gpulimit [percent]` | The share of the time inference is allowed to keep the device busy, and how much has been given up to the limit so far. With a percentage, sets it there and now, and saves it. |
+| `map`                | The debug map's address, and how many tiles it is holding. |
 | `here`               | Elevation, slope, full bioclimate and derived cover where you stand, plus the latitude diagnostics below. |
 | `season <x> <z>`     | The same diagnostics at a position, and the year's temperature and rainfall cycle there. Usable from a server console, where `here` is not. |
 | `column <x> <z>`     | What actually got generated in a column, next to what the model said.   |
@@ -518,6 +522,25 @@ generation unable to keep up with a walking player, which is its own kind of stu
 gpulimit <percent>` changes it without a restart, so you can watch your frame rate and tune it in
 place. On a dedicated server there are no frames to protect and the setting is only a way of leaving
 the card to something else; leave it at 100 unless you have a reason.
+
+#### Debug map
+
+Set `debugMapPort` and the mod serves a small read-only page showing what the model is actually
+producing, updating as tiles are generated. `/tdiff map` prints the address; the default binding is
+loopback, so only the machine running the server can reach it.
+
+Eight layers, switchable without refetching: surface height in blocks, model elevation in metres,
+slope, mean temperature, temperature seasonality, annual precipitation, precipitation seasonality,
+and the 0–255 rainfall byte the game itself reads. Drag to pan, wheel to zoom, and hover any column
+for all eight values at once. The colour scale fits whatever is loaded and is shown with its ends.
+
+It keeps its own record rather than reading the generator's tile cache, because that cache is an
+LRU sized for world generation and drops a tile as soon as the generator has moved on — which is
+exactly when you want to look at it. Each tile is stored as a 32×32 thumbnail quantised to a byte
+per column per layer, about 8 KB, so the default 2048-tile history costs some 17 MB.
+
+The port is off by default and nothing on it accepts input. Point it at `0.0.0.0` only if you mean
+to publish your world's terrain and climate to the network; the server logs a warning if you do.
 
 ### World generation
 

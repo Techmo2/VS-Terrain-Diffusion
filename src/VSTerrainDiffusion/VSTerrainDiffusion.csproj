@@ -81,6 +81,11 @@
                       LogicalName="VSTerrainDiffusion.OpenVinoWorker.runtimeconfig.json" />
   </ItemGroup>
 
+  <!-- The debug map page is served straight out of the assembly, so it cannot go missing. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Debug/map.html" LogicalName="VSTerrainDiffusion.Debug.map.html" />
+  </ItemGroup>
+
   <ItemGroup>
     <None Include="modinfo.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="modicon.png" Condition="Exists('modicon.png')" CopyToOutputDirectory="PreserveNewest" />

@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terrain Diffusion debug map</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2c313b;
+    --ink: #e6e9ef; --dim: #99a1b3; --accent: #7fb2ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 13px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    display: grid; grid-template-columns: 264px 1fr; overflow: hidden;
+  }
+  aside {
+    background: var(--panel); border-right: 1px solid var(--line);
+    padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+  }
+  h1 { font-size: 13px; margin: 0; letter-spacing: .02em; }
+  h1 small { display: block; color: var(--dim); font-weight: 400; letter-spacing: 0; }
+  fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 0; padding: 9px 10px 10px; }
+  legend { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; padding: 0 4px; }
+  label.row { display: flex; align-items: center; gap: 7px; padding: 2px 0; cursor: pointer; }
+  label.row span { flex: 1; }
+  label.row em { color: var(--dim); font-style: normal; font-size: 11px; }
+  .stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; }
+  .stats dt { color: var(--dim); }
+  .stats dd { margin: 0; font-variant-numeric: tabular-nums; }
+  #legend { width: 100%; height: 12px; border-radius: 3px; border: 1px solid var(--line); }
+  .legend-ends { display: flex; justify-content: space-between; color: var(--dim); font-size: 11px; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  main { position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  #hud {
+    position: absolute; left: 12px; bottom: 12px; background: rgba(20,22,26,.9);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 11px;
+    font-variant-numeric: tabular-nums; pointer-events: none; min-width: 210px;
+  }
+  #hud .head { color: var(--accent); margin-bottom: 4px; }
+  #hud dl { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; margin: 0; font-size: 12px; }
+  #hud dt { color: var(--dim); }
+  #hud dd { margin: 0; text-align: right; }
+  #status { position: absolute; right: 12px; top: 12px; color: var(--dim); font-size: 12px; }
+  #status.live::before { content: "●"; color: #58c26a; margin-right: 5px; }
+  #status.stalled::before { content: "●"; color: #c2a058; margin-right: 5px; }
+  button {
+    background: #262b34; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 9px; font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Terrain Diffusion<small>debug map</small></h1>
+
+  <fieldset>
+    <legend>Layer</legend>
+    <div id="layers"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Scale</legend>
+    <canvas id="legend" width="240" height="12"></canvas>
+    <div class="legend-ends"><span id="legendLo">–</span><span id="legendHi">–</span></div>
+    <label class="row" style="margin-top:8px">
+      <input type="checkbox" id="autoRange" checked>
+      <span>Fit to what is loaded <em>otherwise fixed at first fit</em></span>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>World</legend>
+    <dl class="stats" id="world"></dl>
+  </fieldset>
+
+  <fieldset>
+    <legend>View</legend>
+    <button id="fit">Fit to tiles</button>
+    <button id="follow">Follow newest</button>
+    <p style="color:var(--dim);margin:8px 0 0;font-size:11px">
+      Drag to pan, wheel to zoom. Each tile is one model query, drawn the moment it is generated.
+    </p>
+  </fieldset>
+</aside>
+
+<main>
+  <canvas id="map"></canvas>
+  <div id="status">connecting…</div>
+  <div id="hud"><div class="head">–</div><dl></dl></div>
+</main>
+
+<script>
+"use strict";
+
+const THUMB_BYTES = 1; // one byte per column per layer
+
+const state = {
+  info: null,
+  layers: [],
+  layer: 0,
+  tiles: new Map(),      // key -> {x, z, min[], max[], data:Uint8Array}
+  seq: 0,
+  range: null,           // [lo, hi] for the active layer
+  autoRange: true,
+  view: { x: 0, z: 0, scale: 0.25 },  // world blocks at centre, pixels per block
+  drag: null,
+  hover: null,
+  follow: false,
+  newest: null,
+};
+
+const canvas = document.getElementById("map");
+const ctx = canvas.getContext("2d", { alpha: false });
+
+/* ---------- colour ramps -------------------------------------------------- */
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function ramp(stops) {
+  return t => {
+    t = Math.max(0, Math.min(1, t));
+    for (let i = 1; i < stops.length; i++) {
+      if (t <= stops[i][0] || i === stops.length - 1) {
+        const [p0, c0] = stops[i - 1], [p1, c1] = stops[i];
+        const k = p1 === p0 ? 0 : (t - p0) / (p1 - p0);
+        return [lerp(c0[0], c1[0], k), lerp(c0[1], c1[1], k), lerp(c0[2], c1[2], k)];
+      }
+    }
+    return stops[stops.length - 1][1];
+  };
+}
+
+// Hypsometric: deep water through shelf, lowland green, upland brown, snow.
+const terrainRamp = ramp([
+  [0.00, [ 12,  30,  62]], [0.30, [ 26,  74, 130]], [0.48, [ 66, 140, 190]],
+  [0.50, [214, 205, 162]], [0.56, [ 96, 142,  78]], [0.70, [148, 148,  76]],
+  [0.82, [138, 106,  70]], [0.92, [126, 118, 112]], [1.00, [246, 248, 250]],
+]);
+const greyRamp = ramp([[0, [16, 18, 22]], [1, [238, 242, 248]]]);
+const tempRamp = ramp([
+  [0.00, [ 40,  70, 160]], [0.25, [ 90, 160, 215]], [0.45, [200, 225, 235]],
+  [0.58, [240, 220, 150]], [0.78, [225, 130,  60]], [1.00, [150,  30,  35]],
+]);
+const wetRamp = ramp([
+  [0.00, [140, 100,  50]], [0.25, [200, 180, 110]], [0.50, [160, 195, 110]],
+  [0.75, [ 60, 150, 110]], [1.00, [ 25,  75, 150]],
+]);
+const seasonRamp = ramp([
+  [0.00, [ 30,  60,  90]], [0.5, [190, 190, 200]], [1.00, [190,  70, 130]],
+]);
+
+const RAMPS = {
+  surfaceY: terrainRamp, elevation: terrainRamp, slope: greyRamp,
+  temperature: tempRamp, tempSeasonality: seasonRamp,
+  precipitation: wetRamp, precipCv: seasonRamp, rainfall: wetRamp,
+};
+
+/* ---------- data ---------------------------------------------------------- */
+
+async function loadInfo() {
+  const res = await fetch("api/info", { cache: "no-store" });
+  state.info = await res.json();
+  state.layers = state.info.layers;
+  buildLayerList();
+  buildWorldStats();
+}
+
+async function poll() {
+  try {
+    const res = await fetch("api/tiles?since=" + state.seq, { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    ingest(new DataView(await res.arrayBuffer()));
+    setStatus("live", state.tiles.size + " tiles");
+  } catch (e) {
+    setStatus("stalled", "server not responding");
+  }
+}
+
+function ingest(view) {
+  if (view.byteLength < 16) return;
+  const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+  if (magic !== "TDMP") return;
+
+  const serverSeq = Number(view.getBigInt64(4, true));
+  const count = view.getInt32(12, true);
+  const nLayers = state.layers.length;
+  const cells = state.info.thumbSize * state.info.thumbSize;
+  const stride = 8 + nLayers * 8 + nLayers * cells * THUMB_BYTES;
+
+  let off = 16, added = 0;
+  for (let i = 0; i < count; i++) {
+    if (off + stride > view.byteLength) break;
+    const x = view.getInt32(off, true);
+    const z = view.getInt32(off + 4, true);
+    let p = off + 8;
+
+    const min = new Float32Array(nLayers), max = new Float32Array(nLayers);
+    for (let l = 0; l < nLayers; l++) {
+      min[l] = view.getFloat32(p, true); p += 4;
+      max[l] = view.getFloat32(p, true); p += 4;
+    }
+    const data = new Uint8Array(view.buffer, view.byteOffset + p, nLayers * cells);
+    p += nLayers * cells;
+
+    state.tiles.set(x + ":" + z, { x, z, min, max, data: new Uint8Array(data), canvas: null, drawnFor: null });
+    state.newest = { x, z };
+    off = p;
+    added++;
+  }
+
+  state.seq = serverSeq;
+  if (added) {
+    if (state.autoRange) recomputeRange();
+    if (state.follow) centreOnNewest();
+    draw();
+  }
+}
+
+/* ---------- ranges and drawing -------------------------------------------- */
+
+function recomputeRange() {
+  let lo = Infinity, hi = -Infinity;
+  for (const tile of state.tiles.values()) {
+    if (tile.min[state.layer] < lo) lo = tile.min[state.layer];
+    if (tile.max[state.layer] > hi) hi = tile.max[state.layer];
+  }
+  if (!isFinite(lo)) { state.range = null; return; }
+  const next = [lo, hi];
+  if (!state.range || state.range[0] !== next[0] || state.range[1] !== next[1]) {
+    state.range = next;
+    for (const tile of state.tiles.values()) tile.drawnFor = null;
+    drawLegend();
+  }
+}
+
+/** Value at one thumbnail cell, dequantised from the tile's own byte range. */
+function valueAt(tile, layer, cell) {
+  const cells = state.info.thumbSize * state.info.thumbSize;
+  const lo = tile.min[layer], hi = tile.max[layer];
+  if (hi <= lo) return lo;
+  return lo + (tile.data[layer * cells + cell] / 255) * (hi - lo);
+}
+
+function tileCanvas(tile) {
+  const key = state.layer + "|" + (state.range ? state.range.join(",") : "");
+  if (tile.canvas && tile.drawnFor === key) return tile.canvas;
+
+  const n = state.info.thumbSize;
+  const c = tile.canvas || (tile.canvas = document.createElement("canvas"));
+  c.width = c.height = n;
+  const g = c.getContext("2d");
+  const img = g.createImageData(n, n);
+
+  const paint = RAMPS[state.layers[state.layer].id] || greyRamp;
+  const [lo, hi] = state.range || [0, 1];
+  const span = hi - lo || 1;
+
+  for (let i = 0; i < n * n; i++) {
+    const [r, gg, b] = paint((valueAt(tile, state.layer, i) - lo) / span);
+    img.data[i * 4] = r; img.data[i * 4 + 1] = gg; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+  }
+
+  g.putImageData(img, 0, 0);
+  tile.drawnFor = key;
+  return c;
+}
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+    canvas.width = w * dpr; canvas.height = h * dpr;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#14161a";
+  ctx.fillRect(0, 0, w, h);
+
+  if (!state.info || !state.tiles.size) return;
+
+  const size = state.info.tileSize, s = state.view.scale;
+  ctx.imageSmoothingEnabled = s * size < state.info.thumbSize;
+
+  for (const tile of state.tiles.values()) {
+    const px = (tile.x * size - state.view.x) * s + w / 2;
+    const py = (tile.z * size - state.view.z) * s + h / 2;
+    const side = size * s;
+    if (px + side < 0 || py + side < 0 || px > w || py > h) continue;
+    ctx.drawImage(tileCanvas(tile), px, py, side + 0.5, side + 0.5);
+  }
+}
+
+function drawLegend() {
+  const c = document.getElementById("legend");
+  const g = c.getContext("2d");
+  const paint = RAMPS[state.layers[state.layer]?.id] || greyRamp;
+  for (let x = 0; x < c.width; x++) {
+    const [r, gg, b] = paint(x / (c.width - 1));
+    g.fillStyle = `rgb(${r|0},${gg|0},${b|0})`;
+    g.fillRect(x, 0, 1, c.height);
+  }
+  const unit = state.layers[state.layer]?.unit || "";
+  document.getElementById("legendLo").textContent =
+    state.range ? fmt(state.range[0]) + " " + unit : "–";
+  document.getElementById("legendHi").textContent =
+    state.range ? fmt(state.range[1]) + " " + unit : "–";
+}
+
+/* ---------- chrome -------------------------------------------------------- */
+
+function fmt(v) {
+  if (!isFinite(v)) return "–";
+  const a = Math.abs(v);
+  return a >= 1000 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : v.toFixed(2);
+}
+
+function buildLayerList() {
+  const host = document.getElementById("layers");
+  host.innerHTML = "";
+  state.layers.forEach((layer, i) => {
+    const label = document.createElement("label");
+    label.className = "row";
+    label.innerHTML =
+      `<input type="radio" name="layer" value="${i}" ${i === 0 ? "checked" : ""}>` +
+      `<span>${layer.label}</span><em>${layer.unit}</em>`;
+    label.querySelector("input").addEventListener("change", () => {
+      state.layer = i;
+      if (state.autoRange) { state.range = null; recomputeRange(); }
+      drawLegend();
+      draw();
+      updateHud();
+    });
+    host.appendChild(label);
+  });
+  drawLegend();
+}
+
+function buildWorldStats() {
+  const i = state.info;
+  const rows = [
+    ["Tile size", i.tileSize + " blocks"],
+    ["Horizontal", i.metersPerBlock + " m/block"],
+    ["Vertical", i.metersPerBlockVertical + " m/block"],
+    ["Sea level", "Y " + i.seaLevel],
+    ["World height", i.mapSizeY],
+    ["History cap", i.historyLimit + " tiles"],
+  ];
+  document.getElementById("world").innerHTML =
+    rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+}
+
+function setStatus(cls, text) {
+  const el = document.getElementById("status");
+  el.className = cls;
+  el.textContent = text;
+}
+
+function screenToWorld(cx, cy) {
+  const w = canvas.clientWidth, h = canvas.clientHeight, s = state.view.scale;
+  return { x: (cx - w / 2) / s + state.view.x, z: (cy - h / 2) / s + state.view.z };
+}
+
+function updateHud() {
+  const hud = document.getElementById("hud");
+  if (!state.hover || !state.info) { hud.querySelector(".head").textContent = "–"; hud.querySelector("dl").innerHTML = ""; return; }
+
+  const { x, z } = state.hover;
+  const size = state.info.tileSize, n = state.info.thumbSize;
+  const tx = Math.floor(x / size), tz = Math.floor(z / size);
+  const tile = state.tiles.get(tx + ":" + tz);
+
+  hud.querySelector(".head").textContent = `x ${Math.round(x)}, z ${Math.round(z)}`;
+  if (!tile) { hud.querySelector("dl").innerHTML = "<dt>not generated</dt><dd></dd>"; return; }
+
+  const u = Math.min(n - 1, Math.floor(((x - tx * size) / size) * n));
+  const v = Math.min(n - 1, Math.floor(((z - tz * size) / size) * n));
+  const cell = v * n + u;
+
+  hud.querySelector("dl").innerHTML = state.layers.map((layer, i) =>
+    `<dt${i === state.layer ? ' style="color:var(--accent)"' : ""}>${layer.label}</dt>` +
+    `<dd>${fmt(valueAt(tile, i, cell))} ${layer.unit}</dd>`).join("");
+}
+
+function centreOnNewest() {
+  if (!state.newest || !state.info) return;
+  const size = state.info.tileSize;
+  state.view.x = state.newest.x * size + size / 2;
+  state.view.z = state.newest.z * size + size / 2;
+}
+
+function fitToTiles() {
+  if (!state.tiles.size) return;
+  const size = state.info.tileSize;
+  let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+  for (const t of state.tiles.values()) {
+    x0 = Math.min(x0, t.x * size); z0 = Math.min(z0, t.z * size);
+    x1 = Math.max(x1, (t.x + 1) * size); z1 = Math.max(z1, (t.z + 1) * size);
+  }
+  state.view.x = (x0 + x1) / 2;
+  state.view.z = (z0 + z1) / 2;
+  state.view.scale = Math.min(
+    canvas.clientWidth / Math.max(1, x1 - x0),
+    canvas.clientHeight / Math.max(1, z1 - z0)) * 0.9;
+  draw();
+}
+
+canvas.addEventListener("mousedown", e => {
+  state.drag = { cx: e.clientX, cy: e.clientY, x: state.view.x, z: state.view.z };
+  state.follow = false;
+});
+window.addEventListener("mouseup", () => { state.drag = null; });
+window.addEventListener("mousemove", e => {
+  const rect = canvas.getBoundingClientRect();
+  if (state.drag) {
+    state.view.x = state.drag.x - (e.clientX - state.drag.cx) / state.view.scale;
+    state.view.z = state.drag.z - (e.clientY - state.drag.cy) / state.view.scale;
+    draw();
+  }
+  if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
+    state.hover = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+    updateHud();
+  }
+});
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const before = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+  state.view.scale = Math.max(0.002, Math.min(8, state.view.scale * (e.deltaY < 0 ? 1.18 : 1 / 1.18)));
+  const after = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+  state.view.x += before.x - after.x;
+  state.view.z += before.z - after.z;
+  draw();
+}, { passive: false });
+
+document.getElementById("fit").addEventListener("click", fitToTiles);
+document.getElementById("follow").addEventListener("click", () => {
+  state.follow = !state.follow;
+  if (state.follow) { centreOnNewest(); draw(); }
+});
+document.getElementById("autoRange").addEventListener("change", e => {
+  state.autoRange = e.target.checked;
+  if (state.autoRange) recomputeRange();
+  draw();
+});
+window.addEventListener("resize", draw);
+
+(async function main() {
+  await loadInfo();
+  await poll();
+  fitToTiles();
+  setInterval(poll, 1000);
+})();
+</script>
+</body>
+</html>

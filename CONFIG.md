@@ -86,6 +86,21 @@ exploration so new chunks do not disagree slightly with the ones already on disk
   // 64-1024.
   "TerrainTileSizeBlocks": 0,
 
+  // Port for the debug map: a small read-only web page showing the model's heightmap and climate
+  // maps as tiles are generated, with a layer picker, a pannable view and a per-column readout.
+  // 0, the default, opens no port at all. See /tdiff map for the address once it is running.
+  "DebugMapPort": 0,
+
+  // Address the debug map listens on. Loopback by default, so only this machine can reach it.
+  // "0.0.0.0" exposes the world's terrain and climate to anything that can reach the port; the
+  // server logs a warning if you do.
+  "DebugMapBindAddress": "127.0.0.1",
+
+  // How many generated tiles the debug map remembers, at about 8 KB each; the oldest are dropped
+  // past this. It keeps its own record because the generator's tile cache drops a tile as soon as
+  // it has moved on, which is exactly when you want to look at it.
+  "DebugMapHistoryTiles": 2048,
+
   // Log a line at notification level for every terrain tile generated. Very noisy; useful when
   // profiling. With this off those lines still go to the debug log, and the main log gets one only
   // when a tile takes at least a second and at least four times the session's average - a stall
@@ -340,8 +355,8 @@ exploration so new chunks do not disagree slightly with the ones already on disk
 
     // Overrides the world's "Diffusion resolution" setting. It is a divisor of the model's native
     // 30 m pixel, so 1 is 30 m per block, 2 (the default) is 15 m, 4 is 7.5 m. Zero uses the
-    // world setting; values above 6 are only reachable from here. Finer than 15 m runs the model
-    // harder and overruns the one-byte climate map on high warm ground.
+    // world setting; values above 6 are only reachable from here. Finer costs generation time and
+    // shrinks the world you can walk across; the climate map no longer limits it.
     "ScaleOverride": 0,
 
     // Overrides the world's "Vertical exaggeration" setting. Zero uses the world setting. In auto
@@ -361,6 +376,8 @@ only has to stop the mod breaking, not stop the world looking silly.
 | Field | Clamped to | Useful | Default |
 | --- | --- | --- | --- |
 | `GpuUtilizationPercent` | 5 – 100 | 40 – 100 | 100 |
+| `DebugMapPort` | 0, or 1024 – 65535 | 8088 | 0 (off) |
+| `DebugMapHistoryTiles` | 64 – 65536 | 512 – 8192 | 2048 |
 | `TileCacheMegabytes`, `TerrainTileCacheMegabytes` | 32 – 4096 | 128 – 1024 | 256 |
 | `LatentBatchSize` | 0 – 16 | 0 – 4 | 0 |
 | `TerrainTileSizeBlocks` | 0, or 64 – 1024 rounded down to a multiple of 32 | 0, or 128 – 512 | 0 |

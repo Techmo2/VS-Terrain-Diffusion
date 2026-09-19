@@ -42,8 +42,6 @@ public sealed class OceanMapLandmask : ILandmaskSource
     private readonly object _gate = new();
 
     private MapLayerBase _layer;
-    private bool _warned;
-    private bool _disabled;
 
     /// <param name="resolveLayer">
     /// Produces the ocean map to read. Called late and only until it answers, so that a mod which
@@ -135,23 +133,17 @@ public sealed class OceanMapLandmask : ILandmaskSource
     }
 
     /// <summary>
-    /// Gives up on an ocean map that will not answer, for the rest of the session.
+    /// Reports an ocean map that will not answer, and stops the game.
     ///
-    /// The alternative is letting the exception out, and it does not stay a worldgen error: it
-    /// comes back up through the chunk thread and takes the server down with it. A world whose
-    /// coastlines are the model's own is a worse world than the player asked for, but it is a
-    /// world.
+    /// Carrying on without it is not an option even though it sounds like the gentler one: the
+    /// landmask is what the coarse stage is conditioned on, so a world that loses it mid-generation
+    /// grows continents in different places from the ones already on disk.
     /// </summary>
     private void Disable(MapLayerBase layer, int side, Exception e)
     {
-        _disabled = true;
-        _layer = null;
-        _logger.Error(
-            "[{0}] The world's ocean map ({1}) failed on a {2}x{2} pixel query, so the world's land " +
-            "cover and ocean scale settings cannot be honoured; the model will decide where the " +
-            "continents go instead. This is a fault in whichever mod supplies that layer - worldgen " +
-            "only ever asks one for a square region, and so does this. {3}",
-            DiffusionPaths.ModId, layer.GetType().Name, side, e);
+        throw DiffusionFailure.Fatal(_logger,
+            $"The world's ocean map ({layer.GetType().Name}) failed on a {side}x{side} pixel query. " +
+            "That is a fault in the mod supplying the layer; worldgen only ever asks for a square.", e);
     }
 
     /// <summary>
@@ -163,26 +155,15 @@ public sealed class OceanMapLandmask : ILandmaskSource
     private MapLayerBase ResolveLayer()
     {
         if (_layer != null) return _layer;
-        if (_disabled) return null;
 
         lock (_gate)
         {
             if (_layer != null) return _layer;
-            if (_disabled) return null;
 
-            MapLayerBase found = _resolveLayer();
-            if (found == null)
-            {
-                if (!_warned)
-                {
-                    _warned = true;
-                    _logger.Warning(
-                        "[{0}] No ocean map is installed, so the world's land cover and ocean scale " +
-                        "settings cannot be honoured; the model will decide where the continents go.",
-                        DiffusionPaths.ModId);
-                }
-                return null;
-            }
+            MapLayerBase found = _resolveLayer()
+                ?? throw DiffusionFailure.Fatal(_logger,
+                    "No ocean map is installed, but worldGen.oceanMap is \"input\". Set it to " +
+                    "\"output\" to let the model decide the coastline.");
 
             _layer = found;
             _logger.Notification("[{0}] Conditioning terrain on the world's ocean map ({1}).",
