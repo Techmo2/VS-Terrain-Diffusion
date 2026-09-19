@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
+using VSTerrainDiffusion.Native;
 
 namespace VSTerrainDiffusion.Pipeline;
 
@@ -26,8 +27,9 @@ public static class ModelAssetManager
         public string FileName;
         public string Sha256;
         public long SizeBytes;
+        public string UrlOverride;
 
-        public string Url =>
+        public string Url => UrlOverride ??
             $"https://huggingface.co/{RepositorySlug}/resolve/{Revision}/{FileName}?download=true";
     }
 
@@ -35,7 +37,7 @@ public static class ModelAssetManager
     /// Pinned manifest for the commit above. Sizes and hashes come from the Hugging Face
     /// <c>paths-info</c> API; regenerate them with tools/refresh-manifest.sh when bumping the revision.
     /// </summary>
-    private static readonly Asset[] Assets =
+    private static readonly Asset[] CommonAssets =
     {
         new()
         {
@@ -51,12 +53,6 @@ public static class ModelAssetManager
         },
         new()
         {
-            FileName = "decoder_model.onnx",
-            SizeBytes = 223854143,
-            Sha256 = "6473ae47ca6ec4d743d30fe4f5d381fe4158899714eff09b762005bdbdef68c1"
-        },
-        new()
-        {
             FileName = "pipeline_data.json",
             SizeBytes = 12226,
             Sha256 = "e3132c3ef0c65d8613615f9278ffe23bbd9363ddcd87f1cc6f18456bcc9efe5c"
@@ -69,8 +65,27 @@ public static class ModelAssetManager
         }
     };
 
+    private static readonly Asset Fp32DecoderAsset = new()
+    {
+        FileName = "decoder_model.onnx",
+        SizeBytes = 223854143,
+        Sha256 = "6473ae47ca6ec4d743d30fe4f5d381fe4158899714eff09b762005bdbdef68c1"
+    };
+
+    private static readonly Asset Int8DecoderAsset = new()
+    {
+        FileName = "decoder_model.int8.onnx",
+        SizeBytes = 43496635,
+        Sha256 = "0ce6eb771a072a8622448c30488f0505c009e43bebccd65246a4dd58fe8e2da6",
+        UrlOverride =
+            "https://github.com/Techmo2/VS-Terrain-Diffusion/releases/download/decoder-int8-v1/decoder_model.int8.onnx"
+    };
+
     private static readonly object Gate = new();
     private static bool _ready;
+
+    private static Asset SelectedDecoderAsset =>
+        DiffusionConfig.Instance.DecoderPrecision == "int8" ? Int8DecoderAsset : Fp32DecoderAsset;
 
     public static string OfflineHelpUrl => $"https://huggingface.co/{RepositorySlug}/tree/{Revision}";
 
@@ -83,16 +98,22 @@ public static class ModelAssetManager
     /// figure quoted to the player matches what actually gets fetched. Only a file that passes the
     /// size check and then fails its hash escapes the count.
     /// </summary>
-    private static long PendingBytes(bool validate)
+    private static long PendingBytes()
     {
         long pending = 0;
-        foreach (Asset asset in Assets)
+        foreach (Asset asset in RequiredAssets())
         {
             string path = DiffusionPaths.ResolveAsset(asset.FileName);
             if (!File.Exists(path)) pending += asset.SizeBytes;
-            else if (validate && new FileInfo(path).Length != asset.SizeBytes) pending += asset.SizeBytes;
+            else if (new FileInfo(path).Length != asset.SizeBytes) pending += asset.SizeBytes;
         }
         return pending;
+    }
+
+    private static IEnumerable<Asset> RequiredAssets()
+    {
+        foreach (Asset asset in CommonAssets) yield return asset;
+        yield return SelectedDecoderAsset;
     }
 
     /// <summary>
@@ -112,12 +133,17 @@ public static class ModelAssetManager
             logger.Notification("[{0}] Preparing model assets in {1}", DiffusionPaths.ModId, DiffusionPaths.ModelDirectory);
 
             // The player is staring at a loading screen while this runs, so say what the wait is
-            // for, how big it is, and that it is still moving.
-            var progress = new DownloadProgress(logger, "model files", PendingBytes(validate));
-            if (progress.Active) Downloaded = true;
-            progress.Announce();
+            // for and how big it is. Once only, at the start: the log file has the detail.
+            long pending = PendingBytes();
+            if (pending > 0)
+            {
+                Downloaded = true;
+                LoadingNotice.Post(logger,
+                    "Downloading the world generation models ({0}). This happens once, and the world will " +
+                    "finish loading when it completes.", HumanBytes(pending));
+            }
 
-            foreach (Asset asset in Assets)
+            foreach (Asset asset in RequiredAssets())
             {
                 cancellation.ThrowIfCancellationRequested();
                 EnsureSingleAsset(asset, logger, validate, progress, cancellation);
@@ -132,6 +158,26 @@ public static class ModelAssetManager
 
     public static string ResolveAssetPath(string fileName) => DiffusionPaths.ResolveAsset(fileName);
 
+    /// <summary>
+    /// Returns the decoder selected by the machine configuration. Asset preparation is deliberately
+    /// strict: silently changing precision after a download failure would change newly generated
+    /// terrain on the next successful start.
+    /// </summary>
+    public static string ResolveDecoderPath(ILogger logger)
+    {
+        if (!_ready)
+            throw new InvalidOperationException("Terrain Diffusion model assets have not been prepared");
+
+        Asset decoder = SelectedDecoderAsset;
+        string path = ResolveAssetPath(decoder.FileName);
+        if (!File.Exists(path) || new FileInfo(path).Length != decoder.SizeBytes)
+            throw new ModelAssetException($"The selected decoder '{decoder.FileName}' is unavailable");
+
+        logger.Notification("[{0}] Decoder precision: {1} ({2})", DiffusionPaths.ModId,
+            DiffusionConfig.Instance.DecoderPrecision.ToUpperInvariant(), HumanBytes(decoder.SizeBytes));
+        return path;
+    }
+
     private static void EnsureSingleAsset(Asset asset, ILogger logger, bool validate,
                                           DownloadProgress progress, CancellationToken cancellation)
     {
@@ -139,12 +185,13 @@ public static class ModelAssetManager
         if (File.Exists(path))
         {
             var info = new FileInfo(path);
-            if (!validate)
+            bool validSize = info.Length == asset.SizeBytes;
+            if (validSize && !validate)
             {
                 logger.Notification("[{0}] Using existing '{1}' without hash validation", DiffusionPaths.ModId, asset.FileName);
                 return;
             }
-            if (info.Length == asset.SizeBytes && (asset.Sha256 == null || Sha256Hex(path).Equals(asset.Sha256, StringComparison.OrdinalIgnoreCase)))
+            if (validSize && (asset.Sha256 == null || Sha256Hex(path).Equals(asset.Sha256, StringComparison.OrdinalIgnoreCase)))
             {
                 logger.Notification("[{0}] Verified '{1}'", DiffusionPaths.ModId, asset.FileName);
                 return;
@@ -153,7 +200,7 @@ public static class ModelAssetManager
             // A file that looked complete but failed its hash was not in the pending total - only
             // hashing finds it - so its bytes join the total now rather than pushing past 100%.
             logger.Warning("[{0}] '{1}' failed verification, re-downloading", DiffusionPaths.ModId, asset.FileName);
-            if (info.Length == asset.SizeBytes)
+            if (validSize && !Downloaded)
             {
                 Downloaded = true;
                 progress.AddPending(asset.SizeBytes);
@@ -181,8 +228,8 @@ public static class ModelAssetManager
             if (!response.IsSuccessStatusCode)
             {
                 throw new ModelAssetException(
-                    $"Failed to download {asset.FileName} from Hugging Face (HTTP {(int)response.StatusCode}). " +
-                    $"Direct download: {OfflineHelpUrl}");
+                    $"Failed to download {asset.FileName} (HTTP {(int)response.StatusCode}). " +
+                    $"Direct download: {asset.Url}");
             }
 
             using (Stream netStream = response.Content.ReadAsStreamAsync(cancellation).GetAwaiter().GetResult())
@@ -210,6 +257,11 @@ public static class ModelAssetManager
             File.Move(tempPath, path, overwrite: true);
             logger.Notification("[{0}] Downloaded and verified '{1}'", DiffusionPaths.ModId, asset.FileName);
         }
+        catch (OperationCanceledException)
+        {
+            TryDelete(tempPath);
+            throw;
+        }
         catch (Exception e)
         {
             TryDelete(tempPath);
@@ -219,7 +271,7 @@ public static class ModelAssetManager
                 throw new ModelAssetException(
                     "The Terrain Diffusion models are missing and must be downloaded while online. " +
                     "Connect to the internet and restart the server, or place the files manually in " +
-                    DiffusionPaths.ModelDirectory + ". Direct download: " + OfflineHelpUrl, e);
+                    DiffusionPaths.ModelDirectory + ". Direct download: " + asset.Url, e);
             }
             throw new ModelAssetException("Failed downloading " + asset.FileName + ": " + e.Message, e);
         }
@@ -230,10 +282,11 @@ public static class ModelAssetManager
     {
         var buffer = new byte[1 << 20];
 
-        int read;
-        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+        while (true)
         {
-            cancellation.ThrowIfCancellationRequested();
+            int read = source.ReadAsync(buffer.AsMemory(), cancellation)
+                .AsTask().GetAwaiter().GetResult();
+            if (read == 0) break;
             destination.Write(buffer, 0, read);
             progress?.Advance(read);
         }

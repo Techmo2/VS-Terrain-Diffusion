@@ -22,7 +22,6 @@ public sealed class InfiniteTensor
     private readonly InfiniteTensor[] _deps;
     private readonly TensorWindow[] _depWindows;
     private readonly MemoryTileStore _store;
-    private readonly long _cacheLimitBytes;
 
     internal InfiniteTensor(
         string id,
@@ -33,8 +32,7 @@ public sealed class InfiniteTensor
         int batchSize,
         InfiniteTensor[] deps,
         TensorWindow[] depWindows,
-        MemoryTileStore store,
-        long cacheLimitBytes)
+        MemoryTileStore store)
     {
         _id = id;
         _shape = shape;
@@ -45,53 +43,59 @@ public sealed class InfiniteTensor
         _deps = deps;
         _depWindows = depWindows;
         _store = store;
-        _cacheLimitBytes = cacheLimitBytes;
     }
 
     /// <summary>Retrieves a contiguous slice; <paramref name="start"/> inclusive, <paramref name="end"/> exclusive.</summary>
     public FloatTensor GetSlice(int[] start, int[] end)
     {
-        int n = _shape.Length;
-        int[][] pixelRange = BuildRange(start, end);
-
-        EnsureComputed(pixelRange);
-
-        var outShape = new int[n];
-        for (int d = 0; d < n; d++) outShape[d] = end[d] - start[d];
-        var output = new FloatTensor(outShape);
-
-        int[] lo = _outputWindow.GetLowestIntersection(pixelRange);
-        int[] hi = _outputWindow.GetHighestIntersection(pixelRange);
-
-        IterateWindows(lo, hi, windowIndex =>
+        _store.BeginRead(_id);
+        try
         {
-            FloatTensor cached = _store.GetCachedWindow(_id, windowIndex);
-            if (cached == null) return;
+            int n = _shape.Length;
+            int[][] pixelRange = BuildRange(start, end);
 
-            int[][] wBounds = _outputWindow.GetBounds(windowIndex);
+            EnsureComputed(pixelRange);
 
-            var isect = new int[n][];
-            for (int d = 0; d < n; d++)
+            var outShape = new int[n];
+            for (int d = 0; d < n; d++) outShape[d] = end[d] - start[d];
+            var output = new FloatTensor(outShape);
+
+            int[] lo = _outputWindow.GetLowestIntersection(pixelRange);
+            int[] hi = _outputWindow.GetHighestIntersection(pixelRange);
+
+            IterateWindows(lo, hi, windowIndex =>
             {
-                int a = Math.Max(pixelRange[d][0], wBounds[d][0]);
-                int b = Math.Min(pixelRange[d][1], wBounds[d][1]);
-                if (a >= b) return; // no overlap
-                isect[d] = new[] { a, b };
-            }
+                FloatTensor cached = _store.GetCachedWindow(_id, windowIndex);
+                if (cached == null) return;
 
-            var srcRegion = new int[n][];
-            var dstRegion = new int[n][];
-            for (int d = 0; d < n; d++)
-            {
-                srcRegion[d] = new[] { isect[d][0] - wBounds[d][0], isect[d][1] - wBounds[d][0] };
-                dstRegion[d] = new[] { isect[d][0] - pixelRange[d][0], isect[d][1] - pixelRange[d][0] };
-            }
+                int[][] wBounds = _outputWindow.GetBounds(windowIndex);
 
-            output.AddFrom(cached, dstRegion, srcRegion);
-        });
+                var isect = new int[n][];
+                for (int d = 0; d < n; d++)
+                {
+                    int a = Math.Max(pixelRange[d][0], wBounds[d][0]);
+                    int b = Math.Min(pixelRange[d][1], wBounds[d][1]);
+                    if (a >= b) return; // no overlap
+                    isect[d] = new[] { a, b };
+                }
 
-        _store.EvictIfNeeded(_id, _cacheLimitBytes);
-        return output;
+                var srcRegion = new int[n][];
+                var dstRegion = new int[n][];
+                for (int d = 0; d < n; d++)
+                {
+                    srcRegion[d] = new[] { isect[d][0] - wBounds[d][0], isect[d][1] - wBounds[d][0] };
+                    dstRegion[d] = new[] { isect[d][0] - pixelRange[d][0], isect[d][1] - pixelRange[d][0] };
+                }
+
+                output.AddFrom(cached, dstRegion, srcRegion);
+            });
+
+            return output;
+        }
+        finally
+        {
+            _store.EndRead(_id);
+        }
     }
 
     private void EnsureComputed(int[][] pixelRange)

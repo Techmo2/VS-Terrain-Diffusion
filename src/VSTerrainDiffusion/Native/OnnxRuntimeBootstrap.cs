@@ -1,9 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Net.Http;
-using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
@@ -18,15 +19,16 @@ public enum InferenceProvider
     Cpu,
     Cuda,
     DirectMl,
-    CoreMl
+    CoreMl,
+    OpenVino
 }
 
 /// <summary>
 /// Locates (and, if needed, downloads) the native ONNX Runtime that matches this machine and the
 /// configured execution provider, then teaches the runtime's P/Invoke layer where to find it.
 ///
-/// The mod ships only the ~1 MB managed binding; the native library is pulled from the pinned NuGet
-/// packages on first use, using range requests so only the files actually needed are transferred.
+/// The mod ships only the ~1 MB managed binding; native libraries are pulled from pinned official
+/// packages on first use. ZIP packages are range-read so only the required entries are transferred.
 /// </summary>
 public static class OnnxRuntimeBootstrap
 {
@@ -34,10 +36,52 @@ public static class OnnxRuntimeBootstrap
     public const string OnnxRuntimeVersion = "1.24.4";
 
     private const string DirectMlVersion = "1.15.4";
+    // Later releases inspect host cache topology through sysfs and can crash when a restricted
+    // container exposes sibling CPU IDs outside its virtual CPU set. The 2022.3 LTS runtime uses
+    // /proc and process affinity instead, and supports both decoder graphs used by the mod.
+    public const string OpenVinoVersion = "2022.3.2";
+    private const string OpenVinoArchiveUrl =
+        "https://storage.openvinotoolkit.org/repositories/openvino/packages/2022.3.2/linux/" +
+        "l_openvino_toolkit_rhel8_2022.3.2.9279.e2c7e4d7b4d_x86_64.tgz";
+    private const string OpenVinoWheelUrl =
+        "https://files.pythonhosted.org/packages/df/6f/44de968108af6194e3a156493a2ab0003a03d51b5dfff9853cee055aa922/" +
+        "openvino-2022.3.2-9279-cp310-cp310-manylinux2014_x86_64.whl";
+    private const string OpenVinoArchiveSha256 =
+        "21968bc27dc15463004706fd7d4efa28445fd544e3e977e7580cb7ce1b3ba830";
+    private const string OpenVinoWheelSha256 =
+        "ab4a54f0841bdcfe5fd2c654a4a8c0257991aa2aeaf65fe9498cd6b7a20bd84d";
+    private const string OpenVinoVerificationFileName = ".sources.sha256";
+    private const string OpenVinoVerificationContents =
+        OpenVinoArchiveSha256 + "  openvino-rhel8.tgz\n" +
+        OpenVinoWheelSha256 + "  openvino-manylinux.whl\n";
+    private static readonly (string Name, long Size, string Sha256)[] OpenVinoRuntimeFiles =
+    {
+        ("libopenvino_c.so.2232", 457176,
+            "e6af0851acb20bee97c46cdbe81dfa24f746ec1b27798b85ff73bb594be43c98"),
+        ("libopenvino.so.2232", 18474168,
+            "57cbe0668c5fd0aaf214b768b32f051b258ef79d652e25d5dc7173fbde1101ea"),
+        ("libopenvino_onnx_frontend.so.2232", 5192296,
+            "e48e169f3c1877d41ca6e42bcf32f6e2d096e9f62324c1f9d761382a13444fd3"),
+        ("libopenvino_intel_cpu_plugin.so", 41362344,
+            "eecf898422c883393004300b1dc3c876c6083b8697b2739a5c832af9e0f398ed"),
+        ("libtbb.so.2", 261488,
+            "dc72de1a3de811d973cd72ebd068767a19a8f9e6a211e5d864da23d9004eb54e"),
+        ("libtbbbind.so.2", 78008,
+            "c36624ea9065d0e21eb669933bd91a528fefc1f2d61474d4fa5b861837bde927"),
+        ("libhwloc.so.5", 254200,
+            "278cc4cd04939fd7d4591872a88fffc5b8d9490e0345d5d0d42816e1e6b3ea0a"),
+        ("libpugixml.so.1", 249128,
+            "ba546fe4e42eb07a14421e4e79fc74ae50b61be30a86e7b3451a2c7eee6339c7"),
+        ("plugins.xml", 753,
+            "45bb98cee3bf8d8c51499c7e9a3ad789b181a8878e7919cca866e52175782cb2")
+    };
 
     private static readonly object Gate = new();
+    private static readonly object OpenVinoGate = new();
     private static bool _initialised;
+    private static bool _openVinoInitialised;
     private static string _nativeDirectory;
+    private static string _openVinoDirectory;
 
     /// <summary>The provider that was actually resolved, available after <see cref="Initialize"/>.</summary>
     public static InferenceProvider Provider { get; private set; } = InferenceProvider.Cpu;
@@ -47,6 +91,68 @@ public static class OnnxRuntimeBootstrap
 
     /// <summary>Directory containing the resolved native libraries.</summary>
     public static string NativeDirectory => _nativeDirectory;
+
+    /// <summary>Native ONNX Runtime version selected for the active provider.</summary>
+    public static string ActiveRuntimeVersion => OnnxRuntimeVersion;
+
+    /// <summary>Human-readable runtime combination used in the status command.</summary>
+    public static string ActiveRuntimeDescription => Provider == InferenceProvider.OpenVino
+        ? $"OpenVINO {OpenVinoVersion} decoder, ONNX Runtime {OnnxRuntimeVersion} coarse/base"
+        : $"ONNX Runtime {ActiveRuntimeVersion}";
+
+    /// <summary>Directory containing the standalone OpenVINO C runtime, if initialised.</summary>
+    public static string OpenVinoDirectory => _openVinoDirectory;
+
+    /// <summary>
+    /// Download and initialise the standalone OpenVINO C runtime used for decoder inference.
+    /// It is separate from ONNX Runtime and does not change <see cref="Provider"/>.
+    /// </summary>
+    public static string InitializeOpenVino(ILogger logger, CancellationToken cancellation = default)
+    {
+        if (_openVinoInitialised) return _openVinoDirectory;
+        lock (OpenVinoGate)
+        {
+            if (_openVinoInitialised) return _openVinoDirectory;
+            if (!OperatingSystem.IsLinux() || RuntimeInformation.OSArchitecture != Architecture.X64)
+                throw new PlatformNotSupportedException("The standalone OpenVINO runtime requires 64-bit Linux");
+
+            string directory = Path.Combine(
+                DiffusionPaths.RuntimeDirectory, "openvino", OpenVinoVersion, "linux-x64");
+            bool filesPresent = HasStandaloneOpenVinoRuntime(directory);
+            bool verified = filesPresent && HasVerifiedOpenVinoRuntime(directory);
+            if (!verified)
+            {
+                if (!DiffusionConfig.Instance.DownloadRuntime)
+                {
+                    // An administrator may deliberately provide the native files themselves. An
+                    // auto-downloaded install, identified by its marker, must match the pinned
+                    // sources rather than silently accepting a stale or interrupted install.
+                    if (!filesPresent || File.Exists(Path.Combine(directory, OpenVinoVerificationFileName)))
+                    {
+                        throw new InvalidOperationException(
+                            "Runtime downloads are disabled and no verified standalone OpenVINO runtime was found in " +
+                            directory);
+                    }
+                }
+                else
+                {
+                    Downloaded = true;
+                    LoadingNotice.Post(logger, "Downloading the OpenVINO inference runtime. This happens once.");
+                    using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+                    InstallStandaloneOpenVino(client, directory, logger, cancellation);
+                }
+            }
+
+            if (!HasStandaloneOpenVinoRuntime(directory))
+                throw new FileNotFoundException("Standalone OpenVINO native libraries are missing in " + directory);
+
+            _openVinoDirectory = directory;
+            _openVinoInitialised = true;
+            logger.Notification("[{0}] OpenVINO {1} standalone CPU runtime prepared in {2}",
+                DiffusionPaths.ModId, OpenVinoVersion, directory);
+            return directory;
+        }
+    }
 
     /// <summary>
     /// Resolves the native runtime and installs the DllImport resolver. Blocking; may download
@@ -59,31 +165,35 @@ public static class OnnxRuntimeBootstrap
         {
             if (_initialised) return;
 
-            InferenceProvider requested = ResolveRequestedProvider(DiffusionConfig.Instance.InferenceDevice, logger);
-            InferenceProvider provider = requested;
+            InferenceProvider provider = ResolveRequestedProvider(DiffusionConfig.Instance.InferenceDevice, logger);
+            InferenceProvider onnxProvider = provider == InferenceProvider.OpenVino
+                ? InferenceProvider.Cpu
+                : provider;
             string directory;
 
             try
             {
-                directory = EnsureNativeFiles(provider, logger, cancellation);
+                directory = EnsureNativeFiles(onnxProvider, logger, cancellation);
+                if (provider == InferenceProvider.OpenVino) InitializeOpenVino(logger, cancellation);
             }
-            catch (Exception e) when (provider != InferenceProvider.Cpu)
+            catch (Exception e) when (provider != InferenceProvider.Cpu && e is not OperationCanceledException)
             {
-                // Downgrading to CPU here would change the numbers the model produces, and so the
-                // terrain, without the player ever choosing it.
-                throw DiffusionFailure.Fatal(logger,
-                    $"The {provider} runtime could not be prepared. Check the network connection " +
-                    "and free disk space, or set inferenceDevice to \"cpu\" - but not partway " +
-                    "through a world, as CPU and GPU terrain differ.", e);
+                logger.Warning("[{0}] Could not prepare the {1} runtime ({2}); falling back to CPU. " +
+                               "Keep the effective provider fixed for an established world because provider changes " +
+                               "can alter newly generated terrain slightly.",
+                    DiffusionPaths.ModId, provider, e.Message);
+                provider = InferenceProvider.Cpu;
+                onnxProvider = InferenceProvider.Cpu;
+                directory = EnsureNativeFiles(provider, logger, cancellation);
             }
 
             _nativeDirectory = directory;
             Provider = provider;
-            InstallResolver(directory, logger);
+            InstallResolver(directory);
             _initialised = true;
 
             logger.Notification("[{0}] ONNX Runtime {1} ({2}) loaded from {3}",
-                DiffusionPaths.ModId, OnnxRuntimeVersion, provider, directory);
+                DiffusionPaths.ModId, OnnxRuntimeVersion, onnxProvider, directory);
         }
     }
 
@@ -105,6 +215,11 @@ public static class OnnxRuntimeBootstrap
                 return InferenceProvider.DirectMl;
             case "coreml":
                 return InferenceProvider.CoreMl;
+            case "openvino":
+                if (linux && x64) return InferenceProvider.OpenVino;
+                logger.Warning("[{0}] inference device 'openvino' is only available on 64-bit Linux.",
+                    DiffusionPaths.ModId);
+                return InferenceProvider.Cpu;
             case "gpu":
             case "auto":
             default:
@@ -147,9 +262,17 @@ public static class OnnxRuntimeBootstrap
         public string Name;
         public string Url;
         public ArchiveKind Kind;
+        public string Sha256;
 
         /// <summary>Exact archive paths for <see cref="ArchiveKind.Zip"/>; ignored for tarballs.</summary>
         public string[] EntryPaths;
+
+        /// <summary>
+        /// Optional destination names corresponding to <see cref="EntryPaths"/>. Used when an
+        /// archive only contains a versioned library name but the native binding loads its stable
+        /// name.
+        /// </summary>
+        public string[] TargetFileNames;
 
         /// <summary>File names to pull out of a tarball.</summary>
         public string[] FileNames;
@@ -162,35 +285,46 @@ public static class OnnxRuntimeBootstrap
             ? "cuda" + DetectCudaMajorVersion()
             : provider.ToString().ToLowerInvariant();
         string directory = Path.Combine(DiffusionPaths.RuntimeDirectory, OnnxRuntimeVersion, flavour, rid);
+        List<NativeSource> sources = SourcesFor(provider, rid);
 
-        // A directory that already holds a runtime (downloaded earlier, or supplied by hand) is
-        // used as-is and never overwritten.
-        if (HasPrimaryLibrary(directory)) return directory;
+        if (HasCompleteRuntime(directory, sources)) return directory;
 
         if (!DiffusionConfig.Instance.DownloadRuntime)
         {
             throw new InvalidOperationException(
-                "Runtime downloads are disabled (downloadRuntime=false) and no ONNX Runtime was found in " + directory);
+                "Runtime downloads are disabled (downloadRuntime=false) and no complete ONNX Runtime was found in " +
+                directory);
         }
 
-        List<NativeSource> sources = SourcesFor(provider, rid);
-        Directory.CreateDirectory(directory);
+        string parent = Path.GetDirectoryName(directory)
+                        ?? throw new InvalidOperationException("ONNX Runtime directory has no parent");
+        Directory.CreateDirectory(parent);
+        string staging = directory + ".install-" + Guid.NewGuid().ToString("N");
+        Directory.CreateDirectory(staging);
 
         // Another first-run download the player is waiting on, so it goes on the loading screen too.
         Downloaded = true;
         LoadingNotice.Post(logger, "Downloading the {0} inference runtime. This happens once.",
             provider.ToString().ToUpperInvariant());
 
-        using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-        foreach (NativeSource source in sources)
+        try
         {
-            if (source.Kind == ArchiveKind.TarGz) ExtractFromTarGz(client, source, directory, logger, cancellation);
-            else ExtractFromZip(client, source, directory, logger, cancellation);
-        }
+            using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+            foreach (NativeSource source in sources)
+            {
+                if (source.Kind == ArchiveKind.TarGz)
+                    ExtractFromTarGz(client, source, staging, logger, cancellation);
+                else
+                    ExtractFromZip(client, source, staging, logger, cancellation);
+            }
 
-        if (!HasPrimaryLibrary(directory))
+            if (!HasCompleteRuntime(staging, sources))
+                throw new FileNotFoundException("ONNX Runtime native libraries are incomplete after download");
+            ReplaceDirectory(staging, directory);
+        }
+        finally
         {
-            throw new FileNotFoundException("ONNX Runtime native library missing after download in " + directory);
+            TryDeleteDirectory(staging);
         }
         return directory;
     }
@@ -198,10 +332,22 @@ public static class OnnxRuntimeBootstrap
     private static void ExtractFromZip(HttpClient client, NativeSource source, string directory,
                                        ILogger logger, CancellationToken cancellation)
     {
+        if (source.TargetFileNames != null && source.TargetFileNames.Length != source.EntryPaths.Length)
+        {
+            throw new InvalidDataException($"{source.Name} has mismatched archive and destination file lists");
+        }
+
+        if (!string.IsNullOrEmpty(source.Sha256))
+        {
+            ExtractVerifiedZip(client, source, directory, logger, cancellation);
+            return;
+        }
+
         List<RemoteZipExtractor.Entry> entries = RemoteZipExtractor.ReadCentralDirectory(client, source.Url, cancellation);
 
-        foreach (string wanted in source.EntryPaths)
+        for (int i = 0; i < source.EntryPaths.Length; i++)
         {
+            string wanted = source.EntryPaths[i];
             RemoteZipExtractor.Entry entry = entries.Find(e =>
                 string.Equals(e.Name, wanted, StringComparison.OrdinalIgnoreCase));
             if (entry == null)
@@ -209,7 +355,10 @@ public static class OnnxRuntimeBootstrap
                 throw new FileNotFoundException($"{source.Name} does not contain {wanted}");
             }
 
-            string target = Path.Combine(directory, Path.GetFileName(entry.Name));
+            string targetName = source.TargetFileNames == null
+                ? Path.GetFileName(entry.Name)
+                : source.TargetFileNames[i];
+            string target = Path.Combine(directory, targetName);
             if (File.Exists(target) && new FileInfo(target).Length == entry.UncompressedSize) continue;
 
             logger.Notification("[{0}] Fetching {1} ({2}) from {3}",
@@ -225,14 +374,169 @@ public static class OnnxRuntimeBootstrap
         logger.Notification("[{0}] Downloading {1}; this archive cannot be partially fetched, so the whole file is streamed.",
             DiffusionPaths.ModId, source.Name);
 
-        List<string> written = RemoteTarGzExtractor.Extract(client, source.Url, source.FileNames, directory, cancellation);
-        foreach (string name in source.FileNames)
+        List<string> written = RemoteTarGzExtractor.Extract(
+            client, source.Url, source.Sha256, source.FileNames, source.TargetFileNames, directory, cancellation);
+        IReadOnlyList<string> expected = source.TargetFileNames ?? source.FileNames;
+        foreach (string name in expected)
         {
             if (!written.Contains(name) && !File.Exists(Path.Combine(directory, name)))
             {
                 throw new FileNotFoundException($"{source.Name} does not contain {name}");
             }
         }
+    }
+
+    private static void InstallStandaloneOpenVino(HttpClient client, string directory, ILogger logger,
+                                                  CancellationToken cancellation)
+    {
+        string parent = Path.GetDirectoryName(directory)
+                        ?? throw new InvalidOperationException("OpenVINO runtime directory has no parent");
+        Directory.CreateDirectory(parent);
+
+        string staging = directory + ".install-" + Guid.NewGuid().ToString("N");
+        Directory.CreateDirectory(staging);
+        try
+        {
+            foreach (NativeSource source in StandaloneOpenVinoSources())
+            {
+                if (source.Kind == ArchiveKind.TarGz)
+                    ExtractFromTarGz(client, source, staging, logger, cancellation);
+                else
+                    ExtractFromZip(client, source, staging, logger, cancellation);
+            }
+
+            if (!HasStandaloneOpenVinoRuntime(staging))
+                throw new FileNotFoundException("The verified OpenVINO archives did not contain a complete runtime");
+
+            File.WriteAllText(
+                Path.Combine(staging, OpenVinoVerificationFileName), OpenVinoVerificationContents);
+            if (!HasVerifiedOpenVinoRuntime(staging))
+                throw new InvalidDataException(
+                    "The extracted OpenVINO runtime did not match the pinned file manifest");
+            ReplaceDirectory(staging, directory);
+        }
+        finally
+        {
+            TryDeleteDirectory(staging);
+        }
+    }
+
+    private static void ExtractVerifiedZip(HttpClient client, NativeSource source, string directory,
+                                           ILogger logger, CancellationToken cancellation)
+    {
+        logger.Notification("[{0}] Downloading and verifying {1}; the complete archive is required for SHA-256 validation.",
+            DiffusionPaths.ModId, source.Name);
+
+        string archivePath = Path.Combine(directory, "." + Guid.NewGuid().ToString("N") + ".download");
+        try
+        {
+            DownloadVerifiedFile(client, source.Url, source.Sha256, archivePath, cancellation);
+
+            using var archive = new ZipArchive(File.OpenRead(archivePath), ZipArchiveMode.Read);
+            var selected = new ZipArchiveEntry[source.EntryPaths.Length];
+            for (int i = 0; i < source.EntryPaths.Length; i++)
+            {
+                selected[i] = archive.GetEntry(source.EntryPaths[i]);
+                if (selected[i] == null)
+                    throw new FileNotFoundException($"{source.Name} does not contain {source.EntryPaths[i]}");
+            }
+
+            for (int i = 0; i < selected.Length; i++)
+            {
+                ZipArchiveEntry entry = selected[i];
+                string targetName = source.TargetFileNames == null
+                    ? Path.GetFileName(entry.FullName)
+                    : source.TargetFileNames[i];
+                string target = Path.Combine(directory, targetName);
+                string temporary = target + ".tmp";
+                try
+                {
+                    using (Stream input = entry.Open())
+                    using (var output = new FileStream(
+                               temporary, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
+                    {
+                        input.CopyTo(output);
+                        output.Flush(flushToDisk: true);
+                    }
+                    if (new FileInfo(temporary).Length != entry.Length)
+                        throw new InvalidDataException($"{source.Name} produced an incomplete {entry.FullName}");
+                    File.Move(temporary, target, overwrite: true);
+                }
+                finally
+                {
+                    if (File.Exists(temporary)) File.Delete(temporary);
+                }
+            }
+        }
+        finally
+        {
+            if (File.Exists(archivePath)) File.Delete(archivePath);
+        }
+    }
+
+    private static void DownloadVerifiedFile(HttpClient client, string url, string expectedSha256,
+                                             string destination, CancellationToken cancellation)
+    {
+        using HttpResponseMessage response = client
+            .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellation)
+            .GetAwaiter().GetResult();
+        response.EnsureSuccessStatusCode();
+
+        using Stream input = response.Content.ReadAsStream(cancellation);
+        using var output = new FileStream(
+            destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20,
+            FileOptions.SequentialScan);
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[1 << 20];
+        while (true)
+        {
+            int read = input.ReadAsync(buffer.AsMemory(), cancellation).AsTask().GetAwaiter().GetResult();
+            if (read == 0) break;
+            hash.AppendData(buffer, 0, read);
+            output.Write(buffer, 0, read);
+        }
+        output.Flush(flushToDisk: true);
+
+        string actualSha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+        if (!string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"Downloaded archive SHA-256 is {actualSha256}, expected {expectedSha256}");
+        }
+    }
+
+    private static void ReplaceDirectory(string staging, string destination)
+    {
+        string backup = destination + ".previous-" + Guid.NewGuid().ToString("N");
+        bool backedUp = false;
+        if (Directory.Exists(destination))
+        {
+            Directory.Move(destination, backup);
+            backedUp = true;
+        }
+
+        try
+        {
+            Directory.Move(staging, destination);
+        }
+        catch
+        {
+            if (backedUp && !Directory.Exists(destination) && Directory.Exists(backup))
+                Directory.Move(backup, destination);
+            throw;
+        }
+
+        if (backedUp) TryDeleteDirectory(backup);
+    }
+
+    private static void TryDeleteDirectory(string directory)
+    {
+        try
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private static string NuGetUrl(string packageId, string version)
@@ -335,6 +639,55 @@ public static class OnnxRuntimeBootstrap
         return sources;
     }
 
+    private static IReadOnlyList<NativeSource> StandaloneOpenVinoSources() => new NativeSource[]
+    {
+        new()
+        {
+            Name = $"OpenVINO {OpenVinoVersion} (Intel/RHEL 8)",
+            Url = OpenVinoArchiveUrl,
+            Kind = ArchiveKind.TarGz,
+            Sha256 = OpenVinoArchiveSha256,
+            FileNames = new[]
+            {
+                "LICENSE",
+                "runtime-third-party-programs.txt",
+                "onednn_third-party-programs.txt",
+                "tbb_third-party-programs.txt",
+                "libopenvino_c.so.2022.3.2",
+                "libopenvino.so.2022.3.2",
+                "libopenvino_onnx_frontend.so.2022.3.2",
+                "libopenvino_intel_cpu_plugin.so",
+                "plugins.xml"
+            },
+            TargetFileNames = new[]
+            {
+                "LICENSE.txt",
+                "runtime-third-party-programs.txt",
+                "onednn-third-party-programs.txt",
+                "onetbb-third-party-programs.txt",
+                "libopenvino_c.so.2232",
+                "libopenvino.so.2232",
+                "libopenvino_onnx_frontend.so.2232",
+                "libopenvino_intel_cpu_plugin.so",
+                "plugins.xml"
+            }
+        },
+        new()
+        {
+            Name = $"OpenVINO {OpenVinoVersion} dependencies (Intel/PyPI)",
+            Url = OpenVinoWheelUrl,
+            Kind = ArchiveKind.Zip,
+            Sha256 = OpenVinoWheelSha256,
+            EntryPaths = new[]
+            {
+                "openvino/libs/libtbb.so.2",
+                "openvino/libs/libtbbbind.so.2",
+                "openvino/libs/libhwloc.so.5",
+                "openvino/libs/libpugixml.so.1"
+            }
+        }
+    };
+
     private static int _cudaMajor = -1;
 
     /// <summary>
@@ -367,8 +720,61 @@ public static class OnnxRuntimeBootstrap
         _ => "x64-win"
     };
 
-    private static bool HasPrimaryLibrary(string directory)
-        => Directory.Exists(directory) && File.Exists(Path.Combine(directory, PrimaryLibraryName()));
+    private static bool HasCompleteRuntime(string directory, IReadOnlyList<NativeSource> sources)
+    {
+        if (!Directory.Exists(directory)) return false;
+        foreach (NativeSource source in sources)
+        {
+            string[] fileNames = source.TargetFileNames ?? (source.Kind == ArchiveKind.TarGz
+                ? source.FileNames
+                : Array.ConvertAll(source.EntryPaths, Path.GetFileName));
+            foreach (string fileName in fileNames)
+            {
+                var file = new FileInfo(Path.Combine(directory, fileName));
+                if (!file.Exists || file.Length == 0) return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool HasStandaloneOpenVinoRuntime(string directory)
+    {
+        foreach ((string name, _, _) in OpenVinoRuntimeFiles)
+        {
+            if (!File.Exists(Path.Combine(directory, name))) return false;
+        }
+        return true;
+    }
+
+    private static bool HasVerifiedOpenVinoRuntime(string directory)
+    {
+        string marker = Path.Combine(directory, OpenVinoVerificationFileName);
+        try
+        {
+            if (!File.Exists(marker) ||
+                !string.Equals(File.ReadAllText(marker), OpenVinoVerificationContents, StringComparison.Ordinal))
+                return false;
+
+            foreach ((string name, long size, string expectedSha256) in OpenVinoRuntimeFiles)
+            {
+                string path = Path.Combine(directory, name);
+                var info = new FileInfo(path);
+                if (!info.Exists || info.Length != size) return false;
+                using FileStream input = File.OpenRead(path);
+                string actualSha256 = Convert.ToHexString(SHA256.HashData(input)).ToLowerInvariant();
+                if (!string.Equals(actualSha256, expectedSha256, StringComparison.Ordinal)) return false;
+            }
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
 
     private static string PrimaryLibraryName()
     {
@@ -399,50 +805,8 @@ public static class OnnxRuntimeBootstrap
         return os + "-" + arch;
     }
 
-    private static void InstallResolver(string directory, ILogger logger)
+    private static void InstallResolver(string directory)
     {
-        Assembly onnxAssembly;
-        try
-        {
-            onnxAssembly = Assembly.Load("Microsoft.ML.OnnxRuntime");
-        }
-        catch (Exception e)
-        {
-            throw new InvalidOperationException(
-                "Microsoft.ML.OnnxRuntime.dll is missing from the mod folder. Reinstall the mod archive.", e);
-        }
-
-        NativeLibrary.SetDllImportResolver(onnxAssembly, (libraryName, assembly, searchPath) =>
-        {
-            if (!libraryName.Contains("onnxruntime", StringComparison.OrdinalIgnoreCase)) return IntPtr.Zero;
-
-            foreach (string candidate in CandidateFileNames(libraryName))
-            {
-                string path = Path.Combine(directory, candidate);
-                if (File.Exists(path) && NativeLibrary.TryLoad(path, out IntPtr handle)) return handle;
-            }
-
-            logger.Warning("[{0}] Could not resolve native library '{1}' in {2}", DiffusionPaths.ModId, libraryName, directory);
-            return IntPtr.Zero;
-        });
-    }
-
-    private static IEnumerable<string> CandidateFileNames(string libraryName)
-    {
-        yield return libraryName;
-        if (OperatingSystem.IsWindows())
-        {
-            yield return libraryName + ".dll";
-        }
-        else if (OperatingSystem.IsMacOS())
-        {
-            yield return "lib" + libraryName + ".dylib";
-            yield return libraryName + ".dylib";
-        }
-        else
-        {
-            yield return "lib" + libraryName + ".so";
-            yield return libraryName + ".so";
-        }
+        NativeLibraryResolver.ConfigureOnnxRuntime(directory);
     }
 }

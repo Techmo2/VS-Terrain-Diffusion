@@ -709,18 +709,24 @@ public class TerrainDiffusionModSystem : ModSystem
         {
             "Terrain Diffusion active",
             "",
-            $"Device: {OnnxRuntimeBootstrap.Provider} (ONNX Runtime {OnnxRuntimeBootstrap.OnnxRuntimeVersion})",
+            $"Requested device: {DiffusionConfig.Instance.InferenceDevice}",
+            $"Decoder precision: {DiffusionConfig.Instance.DecoderPrecision}",
+            $"Runtime: {OnnxRuntimeBootstrap.ActiveRuntimeDescription}",
+            $"Provider: {OnnxModel.ActiveProvider}",
             $"Model resolution: {WorldPipelineModelConfig.Instance.NativeResolution:0.##} m per pixel",
             $"Models resident: {(DiffusionConfig.Instance.OffloadModels ? "no, one at a time (offloadModels)" : "yes")}",
+            $"Latent batch: {_provider.LatentBatchSize}",
+            $"Pipeline cache: {_provider.PipelineCachedBytes / 1048576.0:0.#} / " +
+            $"{DiffusionConfig.Instance.TileCacheMegabytes} MB",
+            $"Pipeline windows computed: {_provider.PipelineComputedWindows}",
             $"Device limit: {InferenceThrottle.Describe()}",
             $"Settings screen: {(ConfigLibCompat.IsPresent(_api) ? "ConfigLib" : "not installed")}",
             $"Debug map: {(_debugMap?.IsRunning == true ? _debugMap.Url : "off")}",
             $"Tiles generated: {_provider.TilesGenerated}",
             $"Tile size: {_provider.TileSize}x{_provider.TileSize} blocks",
             $"Average tile time: {_provider.AverageTileMillis} ms",
-            $"Model inference: {OnnxModel.TotalInferenceMillis} ms over {OnnxModel.TotalInferenceCount} runs " +
-            $"({_provider.InferenceSharePercent}% of tile time)",
-            "  " + string.Join(", ", DescribeModelTimes()),
+            $"Model inference: {_provider.ModelTimingSummary}",
+            $"Inference share of tile time: {_provider.InferenceSharePercent}%",
             "",
             $"Horizontal scale: {_settings.MetersPerBlock:0.##} m per block (scale {_settings.Scale})",
             $"Vertical scale: {_settings.DescribeHeight()}",
@@ -807,19 +813,6 @@ public class TerrainDiffusionModSystem : ModSystem
         {
             _api.Logger.Warning("[{0}] Could not save the GPU limit: {1}", DiffusionPaths.ModId, e.Message);
             return false;
-        }
-    }
-
-    /// <summary>Per-stage inference cost, which is what says where the time is actually going.</summary>
-    private static IEnumerable<string> DescribeModelTimes()
-    {
-        PipelineModels models = PipelineModels.IsReady ? PipelineModels.Await() : null;
-        if (models == null) yield break;
-
-        foreach (OnnxModel model in new[] { models.Coarse, models.Base, models.Decoder })
-        {
-            if (model == null) continue;
-            yield return $"{model.Name} {model.ModelMillis} ms / {model.ModelRuns} runs";
         }
     }
 

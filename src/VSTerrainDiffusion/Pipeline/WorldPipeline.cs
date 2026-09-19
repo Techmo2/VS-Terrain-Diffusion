@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using VSTerrainDiffusion.Core;
+using VSTerrainDiffusion.Native;
 using VSTerrainDiffusion.Tensors;
 
 namespace VSTerrainDiffusion.Pipeline;
@@ -21,12 +22,6 @@ public sealed class WorldPipeline
     private const int LatentTileStride = 32;
     private const int DecoderTileSize = 256;
     private const int DecoderTileStride = 192;
-
-    /// <summary>
-    /// Latent windows run per model invocation. The latent graph is small enough that one 64x64
-    /// window does not fill the GPU, so windows wanted together are run together.
-    /// </summary>
-    private const int LatentBatchSize = 4;
 
     private const float SigmaData = EdmScheduler.SigmaData;
 
@@ -50,12 +45,12 @@ public sealed class WorldPipeline
     private readonly float _residualMean;
     private readonly float _residualStd;
 
-    private readonly OnnxModel _coarseModel;
-    private readonly OnnxModel _baseModel;
-    private readonly OnnxModel _decoderModel;
+    private readonly IModelRunner _coarseModel;
+    private readonly IModelRunner _baseModel;
+    private readonly IModelRunner _decoderModel;
 
     private readonly MemoryTileStore _tileStore;
-    private readonly long _cacheLimitBytes;
+    private readonly int _latentBatchSize;
 
     private readonly InfiniteTensor _coarse;
     private readonly InfiniteTensor _latents;
@@ -140,8 +135,12 @@ public sealed class WorldPipeline
         _decoderModel = models.Decoder;
 
         _syntheticMapFactory = new SyntheticMapFactory(seed, _landmask, _landmaskStrength, _climate, _latitude);
-        _tileStore = new MemoryTileStore();
-        _cacheLimitBytes = Math.Max(32L, DiffusionConfig.Instance.TileCacheMegabytes) * 1024 * 1024;
+        long cacheLimitBytes = Math.Max(32L, DiffusionConfig.Instance.TileCacheMegabytes) * 1024 * 1024;
+        _tileStore = new MemoryTileStore(cacheLimitBytes);
+        int configuredBatchSize = DiffusionConfig.Instance.LatentBatchSize;
+        _latentBatchSize = configuredBatchSize > 0
+            ? configuredBatchSize
+            : OnnxModel.ActiveProvider is InferenceProvider.Cpu or InferenceProvider.OpenVino ? 1 : 4;
 
         _coarse = BuildCoarseStage();
         _latents = BuildLatentStage();
@@ -153,6 +152,18 @@ public sealed class WorldPipeline
     public float NativeResolution => _config.NativeResolution;
 
     public long TotalComputedWindowCount => _tileStore.TotalComputedWindowCount;
+
+    public long CachedBytes => _tileStore.CachedBytes;
+
+    public int LatentBatchSize => _latentBatchSize;
+
+    public string ModelTimingSummary =>
+        $"coarse [{_coarseModel.Backend}] {_coarseModel.RunCount} calls/{_coarseModel.RunItems} items/{_coarseModel.RunMilliseconds} ms, " +
+        $"base [{_baseModel.Backend}] {_baseModel.RunCount} calls/{_baseModel.RunItems} items/{_baseModel.RunMilliseconds} ms, " +
+        $"decoder [{_decoderModel.Backend}] {_decoderModel.RunCount} calls/{_decoderModel.RunItems} items/{_decoderModel.RunMilliseconds} ms";
+
+    public long TotalModelInferenceMilliseconds =>
+        _coarseModel.RunMilliseconds + _baseModel.RunMilliseconds + _decoderModel.RunMilliseconds;
 
     /// <summary>Switches to a different world seed and drops every cached window.</summary>
     public void SetSeed(ulong newSeed)
@@ -186,7 +197,7 @@ public sealed class WorldPipeline
 
         return _tileStore.GetOrCreate("base_coarse_map", new int?[] { 7, null, null },
             (windowIndex, _) => CoarseTile(windowIndex, weights), outWindow,
-            Array.Empty<InfiniteTensor>(), Array.Empty<TensorWindow>(), _cacheLimitBytes);
+            Array.Empty<InfiniteTensor>(), Array.Empty<TensorWindow>());
     }
 
     private FloatTensor CoarseTile(int[] windowIndex, float[] weights)
@@ -292,13 +303,13 @@ public sealed class WorldPipeline
         InfiniteTensor initialLatent = _tileStore.GetOrCreateBatched(
             "init_latent_map", new int?[] { 6, null, null },
             (windowIndices, args) => LatentBatch(windowIndices, null, args[0], initialT, 5819, weights),
-            outWindow, new[] { _coarse }, new[] { coarseWindow }, _cacheLimitBytes, LatentBatchSize);
+            outWindow, new[] { _coarse }, new[] { coarseWindow }, _latentBatchSize);
 
         float intermediateT = (float)Math.Atan(0.35f / SigmaData);
         return _tileStore.GetOrCreateBatched(
             "step_latent_map_0", new int?[] { 6, null, null },
             (windowIndices, args) => LatentBatch(windowIndices, args[0], args[1], intermediateT, 5820, weights),
-            outWindow, new[] { initialLatent, _coarse }, new[] { outWindow, coarseWindow }, _cacheLimitBytes, LatentBatchSize);
+            outWindow, new[] { initialLatent, _coarse }, new[] { outWindow, coarseWindow }, _latentBatchSize);
     }
 
     private IReadOnlyList<FloatTensor> LatentBatch(IReadOnlyList<int[]> windowIndices,
@@ -448,7 +459,7 @@ public sealed class WorldPipeline
         // the same work, because there is no launch overhead left to hide.
         return _tileStore.GetOrCreate("init_residual_map", new int?[] { 2, null, null },
             (windowIndex, args) => DecoderTile(windowIndex, args[0], t, weights),
-            outWindow, new[] { _latents }, new[] { inputWindow }, _cacheLimitBytes);
+            outWindow, new[] { _latents }, new[] { inputWindow });
     }
 
     private FloatTensor DecoderTile(int[] windowIndex, FloatTensor latentSlice, float t, float[] weights)

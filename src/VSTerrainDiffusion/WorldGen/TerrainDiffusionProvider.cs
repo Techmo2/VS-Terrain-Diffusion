@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Threading;
 using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
+using VSTerrainDiffusion.Native;
 using VSTerrainDiffusion.Pipeline;
 using VSTerrainDiffusion.Tensors;
 
@@ -195,12 +196,17 @@ public sealed class TerrainDiffusionProvider : IDisposable
         _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude);
         _settings = settings;
         _logger = logger;
-        _tileSize = DiffusionConfig.Instance.TerrainTileSizeBlocks;
+        int configuredTileSize = DiffusionConfig.Instance.TerrainTileSizeBlocks;
+        _tileSize = configuredTileSize > 0
+            ? configuredTileSize
+            : OnnxModel.ActiveProvider is InferenceProvider.Cpu or InferenceProvider.OpenVino ? 128 : 256;
 
         long budget = (long)DiffusionConfig.Instance.TerrainTileCacheMegabytes * 1024 * 1024;
         _maxCachedTiles = (int)Math.Max(16, budget / TerrainTile.EstimateBytes(_tileSize));
         logger.Notification("[{0}] Terrain tile cache: up to {1} tiles of {2}x{2} blocks ({3} MB budget)",
             DiffusionPaths.ModId, _maxCachedTiles, _tileSize, DiffusionConfig.Instance.TerrainTileCacheMegabytes);
+        logger.Notification("[{0}] Pipeline tensor cache: {1} MB total; latent batch size: {2}",
+            DiffusionPaths.ModId, DiffusionConfig.Instance.TileCacheMegabytes, _pipeline.LatentBatchSize);
     }
 
     public DiffusionWorldSettings Settings => _settings;
@@ -218,6 +224,14 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
     public int TileSize => _tileSize;
 
+    public int LatentBatchSize => _pipeline.LatentBatchSize;
+
+    public long PipelineCachedBytes => _pipeline.CachedBytes;
+
+    public long PipelineComputedWindows => _pipeline.TotalComputedWindowCount;
+
+    public string ModelTimingSummary => _pipeline.ModelTimingSummary;
+
     /// <summary>
     /// How much of the time spent generating tiles went to the models rather than to this mod's own
     /// arithmetic. A low number means the bottleneck is here, not on the GPU.
@@ -227,7 +241,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         get
         {
             long total = Interlocked.Read(ref _totalInferenceMillis);
-            return total == 0 ? 0 : Math.Min(100, OnnxModel.TotalInferenceMillis * 100 / total);
+            return total == 0 ? 0 : Math.Min(100, _pipeline.TotalModelInferenceMilliseconds * 100 / total);
         }
     }
 

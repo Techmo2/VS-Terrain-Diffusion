@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Security.Cryptography;
 using System.Threading;
 using Microsoft.ML.OnnxRuntime;
 using Vintagestory.API.Common;
@@ -17,31 +16,30 @@ namespace VSTerrainDiffusion.Pipeline;
 /// Normally every model keeps its session for the life of the server, because generating one
 /// terrain tile runs two or three of them and rebuilding a session for a graph of most of a
 /// gigabyte costs far more than the inference does. <see cref="DiffusionConfig.OffloadModels"/>
-/// trades that away on a card too small to hold all three: the graph bytes stay in RAM and a
-/// session is created on demand, evicting whichever model held the GPU before.
+/// trades that away on a card too small to hold all three: a session is created on demand,
+/// evicting whichever model held the accelerated-provider slot before. Graphs may stay in memory
+/// to make that switch cheap, or be opened from their files to save system RAM.
 /// </summary>
-public sealed class OnnxModel : IDisposable
+public sealed class OnnxModel : IModelRunner
 {
-    private static readonly object GpuSlotLock = new();
-    private static OnnxModel _gpuSlotHolder;
-    private static InferenceSession _activeGpuSession;
+    private const long AutoFileMemoryThresholdBytes = 8L * 1024 * 1024 * 1024;
+
+    private static readonly object ProviderSlotLock = new();
+    private static OnnxModel _providerSlotHolder;
+    private static InferenceSession _activeProviderSession;
+    private static bool? _loadGraphsFromFile;
 
     private readonly string _name;
     private readonly ILogger _logger;
-
-    /// <summary>
-    /// The serialised graph. Only needed to build a session, so it is dropped as soon as the one
-    /// session this model will ever have exists - it is around a gigabyte for the base model, and
-    /// holding it for the life of the world costs that much managed heap for nothing. Offloading
-    /// is the exception: there the session is rebuilt every time the model reclaims the GPU.
-    /// </summary>
-    private byte[] _graphBytes;
-
-    /// <summary>Length of <see cref="_graphBytes"/>, kept for reporting after it is released.</summary>
-    private readonly long _graphLength;
+    private readonly string _graphPath;
+    private readonly byte[] _graphBytes;
+    private readonly long _graphSize;
 
     private InferenceSession _residentSession;
     private bool _disposed;
+    private long _runCount;
+    private long _runItems;
+    private long _runStopwatchTicks;
 
     /// <summary>Names of this graph's inputs, in declaration order.</summary>
     private readonly List<string> _inputNames = new();
@@ -54,51 +52,51 @@ public sealed class OnnxModel : IDisposable
     private RunOptions _runOptions;
     private readonly List<OrtValue> _inputValues = new();
 
-    private static long _inferenceTicks;
-    private static long _inferenceCount;
-
-    private long _modelTicks;
-    private long _modelRuns;
-
-    /// <summary>Wall-clock milliseconds spent running this particular graph.</summary>
-    public long ModelMillis => Interlocked.Read(ref _modelTicks) * 1000 / Stopwatch.Frequency;
-
-    /// <summary>Number of times this particular graph has been executed.</summary>
-    public long ModelRuns => Interlocked.Read(ref _modelRuns);
-
-    public string Name => _name;
-
-    /// <summary>Wall-clock milliseconds spent inside <c>session.Run</c> since startup.</summary>
-    public static long TotalInferenceMillis =>
-        Interlocked.Read(ref _inferenceTicks) * 1000 / Stopwatch.Frequency;
-
-    /// <summary>Number of graph executions since startup.</summary>
-    public static long TotalInferenceCount => Interlocked.Read(ref _inferenceCount);
-
     public OnnxModel(string modelFilePath, string name, ILogger logger)
     {
         _name = name;
         _logger = logger;
 
         var stopwatch = Stopwatch.StartNew();
-        _graphBytes = OptimizeAtRuntime(modelFilePath, name, logger);
-        _graphLength = _graphBytes.Length;
+        bool loadFromFile = LoadGraphsFromFile(logger);
+        bool offloadProvider = ConfiguredProviderEnabled && DiffusionConfig.Instance.OffloadModels;
+        _graphPath = OptimizeAtRuntime(modelFilePath, name, logger);
+        _graphSize = new FileInfo(_graphPath).Length;
+        _graphBytes = loadFromFile ? null : File.ReadAllBytes(_graphPath);
 
         // Always create one session up front: it validates the graph and, for the CPU/no-offload
         // paths, is the session used for every run.
-        InferenceSession probe = CreateSession(GpuEnabled && DiffusionConfig.Instance.OffloadModels
-            ? SessionKind.CpuOnly
-            : SessionKind.Configured);
+        InferenceSession probe;
+        bool providerUnavailableBeforeProbe = _providerUnavailable;
+        try
+        {
+            probe = CreateSession(offloadProvider
+                ? SessionKind.CpuOnly
+                : SessionKind.Configured);
+        }
+        catch (Exception e) when (!SamePath(_graphPath, modelFilePath))
+        {
+            logger.Warning(
+                "[{0}] Cached optimised graph for '{1}' could not be loaded ({2}); rebuilding it",
+                DiffusionPaths.ModId, name, e.Message);
+            _providerUnavailable = providerUnavailableBeforeProbe;
+            _graphPath = OptimizeAtRuntime(modelFilePath, name, logger, rebuild: true);
+            _graphSize = new FileInfo(_graphPath).Length;
+            _graphBytes = loadFromFile ? null : File.ReadAllBytes(_graphPath);
+            probe = CreateSession(offloadProvider
+                ? SessionKind.CpuOnly
+                : SessionKind.Configured);
+        }
 
         foreach (string inputName in probe.InputNames) _inputNames.Add(inputName);
         _outputNames = probe.OutputNames.Count > 0 ? new[] { probe.OutputNames[0] } : Array.Empty<string>();
 
-        if (GpuEnabled && DiffusionConfig.Instance.OffloadModels)
+        if (offloadProvider)
         {
-            // Only the metadata was needed; sessions are created per GPU slot claim.
+            // Only the metadata was needed; accelerated sessions are created per slot claim.
             probe.Dispose();
             logger.Notification("[{0}] Model '{1}' prepared ({2}) in {3} ms",
-                DiffusionPaths.ModId, name, ModelAssetManager.HumanBytes(_graphLength), stopwatch.ElapsedMilliseconds);
+                DiffusionPaths.ModId, name, ModelAssetManager.HumanBytes(_graphSize), stopwatch.ElapsedMilliseconds);
         }
         else
         {
@@ -108,15 +106,97 @@ public sealed class OnnxModel : IDisposable
             _graphBytes = null;
 
             logger.Notification("[{0}] Model '{1}' loaded on {2} ({3}) in {4} ms",
-                DiffusionPaths.ModId, name, ActiveProvider,
-                ModelAssetManager.HumanBytes(_graphLength), stopwatch.ElapsedMilliseconds);
+                DiffusionPaths.ModId, name, UsesConfiguredProvider ? ActiveProvider : InferenceProvider.Cpu,
+                ModelAssetManager.HumanBytes(_graphSize), stopwatch.ElapsedMilliseconds);
         }
     }
 
-    private static bool GpuEnabled => OnnxRuntimeBootstrap.Provider != InferenceProvider.Cpu;
+    /// <summary>
+    /// Set the first time an accelerated session cannot be created (a mismatched runtime, missing
+    /// device or exhausted memory). Everything falls back to CPU rather than failing world generation.
+    /// </summary>
+    private static volatile bool _providerUnavailable;
 
-    /// <summary>The execution provider in use. Fixed for the life of the process.</summary>
-    public static InferenceProvider ActiveProvider => OnnxRuntimeBootstrap.Provider;
+    private static bool ConfiguredProviderEnabled =>
+        OnnxRuntimeBootstrap.Provider is not (InferenceProvider.Cpu or InferenceProvider.OpenVino) &&
+        !_providerUnavailable;
+
+    private bool UsesConfiguredProvider => ConfiguredProviderEnabled;
+
+    private static bool LoadGraphsFromFile(ILogger logger)
+    {
+        if (_loadGraphsFromFile.HasValue) return _loadGraphsFromFile.Value;
+
+        string mode = DiffusionConfig.Instance.ModelLoadMode;
+        bool fromFile;
+        string reason;
+
+        if (mode == "file")
+        {
+            fromFile = true;
+            reason = "configured";
+        }
+        else if (mode == "memory")
+        {
+            fromFile = false;
+            reason = "configured";
+        }
+        else if (!ConfiguredProviderEnabled)
+        {
+            fromFile = true;
+            reason = "auto, CPU provider";
+        }
+        else if (!DiffusionConfig.Instance.OffloadModels)
+        {
+            fromFile = true;
+            reason = "auto, sessions stay resident";
+        }
+        else
+        {
+            long availableMemory = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+            fromFile = availableMemory > 0 && availableMemory < AutoFileMemoryThresholdBytes;
+            reason = fromFile
+                ? $"auto, {ModelAssetManager.HumanBytes(availableMemory)} available"
+                : availableMemory > 0
+                    ? $"auto, provider model switching and {ModelAssetManager.HumanBytes(availableMemory)} available"
+                    : "auto, provider model switching";
+        }
+
+        _loadGraphsFromFile = fromFile;
+        logger.Notification("[{0}] Model graph loading: {1} ({2})", DiffusionPaths.ModId,
+            fromFile ? "file" : "memory", reason);
+        return fromFile;
+    }
+
+    internal static void ResetSharedState()
+    {
+        lock (ProviderSlotLock)
+        {
+            _activeProviderSession?.Dispose();
+            _activeProviderSession = null;
+            _providerSlotHolder = null;
+            _providerUnavailable = false;
+            _loadGraphsFromFile = null;
+        }
+    }
+
+    /// <summary>The provider actually in use, which is CPU if the requested provider was unusable.</summary>
+    public static InferenceProvider ActiveProvider =>
+        _providerUnavailable ? InferenceProvider.Cpu : OnnxRuntimeBootstrap.Provider;
+
+    public string Backend => UsesConfiguredProvider
+        ? $"ONNX Runtime {ActiveProvider}"
+        : "ONNX Runtime CPU";
+
+    /// <summary>Number of completed inference calls since this model was loaded.</summary>
+    public long RunCount => Interlocked.Read(ref _runCount);
+
+    /// <summary>Wall-clock milliseconds spent inside ONNX Runtime inference calls.</summary>
+    public long RunMilliseconds =>
+        Interlocked.Read(ref _runStopwatchTicks) * 1000 / Stopwatch.Frequency;
+
+    /// <summary>Total batch items processed by completed inference calls.</summary>
+    public long RunItems => Interlocked.Read(ref _runItems);
 
     private enum SessionKind
     {
@@ -129,25 +209,26 @@ public sealed class OnnxModel : IDisposable
 
     private InferenceSession CreateSession(SessionKind kind)
     {
-        if (kind != SessionKind.Configured || !GpuEnabled) return CreateSessionCore(useGpu: false);
+        if (kind == SessionKind.Configured && UsesConfiguredProvider)
+        {
+            try
+            {
+                return CreateSessionCore(useConfiguredProvider: true);
+            }
+            catch (Exception e)
+            {
+                _providerUnavailable = true;
+                _logger.Warning(
+                    "[{0}] The {1} execution provider could not be initialised, so terrain generation will run on the CPU " +
+                    "(much slower). This provider change can alter newly generated terrain slightly. Cause: {2}",
+                    DiffusionPaths.ModId, OnnxRuntimeBootstrap.Provider, e.Message);
+            }
+        }
 
-        try
-        {
-            return CreateSessionCore(useGpu: true);
-        }
-        catch (Exception e)
-        {
-            // Quietly running on the CPU instead is the tempting answer and the wrong one: the two
-            // providers do not compute bit-identical results, so half a world drawn on the GPU and
-            // half on the CPU disagrees along the seam.
-            throw DiffusionFailure.Fatal(_logger,
-                $"The {OnnxRuntimeBootstrap.Provider} execution provider could not be initialised " +
-                $"for model '{_name}'. Set inferenceDevice to \"cpu\" to generate on the CPU " +
-                "instead - but not partway through a world, as the two differ.", e);
-        }
+        return CreateSessionCore(useConfiguredProvider: false);
     }
 
-    private InferenceSession CreateSessionCore(bool useGpu)
+    private InferenceSession CreateSessionCore(bool useConfiguredProvider)
     {
         var options = new SessionOptions
         {
@@ -155,7 +236,7 @@ public sealed class OnnxModel : IDisposable
             LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR
         };
 
-        if (useGpu)
+        if (useConfiguredProvider)
         {
             switch (OnnxRuntimeBootstrap.Provider)
             {
@@ -191,15 +272,15 @@ public sealed class OnnxModel : IDisposable
                     // Subgraph mode lets CoreML take what it can and leaves the rest on CPU.
                     options.AppendExecutionProvider_CoreML(CoreMLFlags.COREML_FLAG_ENABLE_ON_SUBGRAPH);
                     break;
+
             }
         }
 
         try
         {
-            byte[] graph = _graphBytes
-                ?? throw new InvalidOperationException(
-                    $"Model '{_name}' released its graph after building a permanent session, so no further session can be created");
-            return new InferenceSession(graph, options);
+            return _graphBytes == null
+                ? new InferenceSession(_graphPath, options)
+                : new InferenceSession(_graphBytes, options);
         }
         finally
         {
@@ -221,16 +302,16 @@ public sealed class OnnxModel : IDisposable
             lock (resident) return RunWithSession(resident, inputs);
         }
 
-        lock (GpuSlotLock)
+        lock (ProviderSlotLock)
         {
-            ClaimGpuSlot();
+            ClaimProviderSlot();
 
-            // ClaimGpuSlot promotes the session to _residentSession if the GPU turned out to be
-            // unusable, in which case there is nothing in the GPU slot to run.
+            // ClaimProviderSlot promotes the session to _residentSession if the provider turned
+            // out to be unusable, in which case there is nothing in the shared slot to run.
             resident = _residentSession;
             if (resident != null) return RunWithSession(resident, inputs);
 
-            return RunWithSession(_activeGpuSession, inputs);
+            return RunWithSession(_activeProviderSession, inputs);
         }
     }
 
@@ -270,15 +351,14 @@ public sealed class OnnxModel : IDisposable
             }
 
             _runOptions ??= new RunOptions();
-            long start = Stopwatch.GetTimestamp();
+            long started = Stopwatch.GetTimestamp();
             using IDisposableReadOnlyCollection<OrtValue> results =
                 session.Run(_runOptions, _inputNames, values, _outputNames);
-            elapsed = Stopwatch.GetTimestamp() - start;
+            elapsed = Stopwatch.GetTimestamp() - started;
 
-            Interlocked.Add(ref _inferenceTicks, elapsed);
-            Interlocked.Increment(ref _inferenceCount);
-            Interlocked.Add(ref _modelTicks, elapsed);
-            Interlocked.Increment(ref _modelRuns);
+            Interlocked.Add(ref _runStopwatchTicks, elapsed);
+            Interlocked.Increment(ref _runCount);
+            Interlocked.Add(ref _runItems, inputs.Count > 0 ? inputs[0].Shape[0] : 0);
 
             output = results[0].GetTensorDataAsSpan<float>().ToArray();
         }
@@ -295,39 +375,49 @@ public sealed class OnnxModel : IDisposable
     }
 
     /// <summary>
-    /// Makes this model the GPU resident one, disposing whichever session held the slot.
-    /// Must be called under <see cref="GpuSlotLock"/>.
+    /// Makes this model the active accelerated one, disposing whichever session held the slot.
+    /// Must be called under <see cref="ProviderSlotLock"/>.
     /// </summary>
-    private void ClaimGpuSlot()
+    private void ClaimProviderSlot()
     {
-        if (_gpuSlotHolder == this && _activeGpuSession != null) return;
+        if (_providerSlotHolder == this && _activeProviderSession != null) return;
 
-        if (_activeGpuSession != null)
+        if (_activeProviderSession != null)
         {
-            _activeGpuSession.Dispose();
-            _activeGpuSession = null;
-            _gpuSlotHolder = null;
+            _activeProviderSession.Dispose();
+            _activeProviderSession = null;
+            _providerSlotHolder = null;
         }
 
         InferenceSession session = CreateSession(SessionKind.Configured);
 
-        _activeGpuSession = session;
-        _gpuSlotHolder = this;
+        if (_providerUnavailable)
+        {
+            // The configured provider failed and we got a CPU session instead. Keep it resident:
+            // there is no reason to tear it down and rebuild it every time another model runs.
+            _residentSession = session;
+            return;
+        }
+
+        _activeProviderSession = session;
+        _providerSlotHolder = this;
     }
 
     /// <summary>
     /// Runs the graph optimiser once and caches the result on disk, so later starts skip the
     /// (slow) constant folding and fusion passes.
     /// </summary>
-    private static byte[] OptimizeAtRuntime(string modelFilePath, string name, ILogger logger)
+    private static string OptimizeAtRuntime(string sourcePath, string name, ILogger logger,
+                                            bool rebuild = false)
     {
-        // Hashed off the file rather than off its contents in memory: the raw base model is two
-        // gigabytes, and on the usual path - a cache that is already there - it is never needed.
-        string cachePath = ResolveOptimizedPath(modelFilePath, name);
-        byte[] sourceBytes = null;
+        string cachePath = ResolveOptimizedPath(sourcePath, name);
         try
         {
-            if (File.Exists(cachePath)) return File.ReadAllBytes(cachePath);
+            if (File.Exists(cachePath))
+            {
+                if (!rebuild) return cachePath;
+                File.Delete(cachePath);
+            }
 
             sourceBytes = File.ReadAllBytes(modelFilePath);
             Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
@@ -340,32 +430,37 @@ public sealed class OnnxModel : IDisposable
                        OptimizedModelFilePath = tempPath,
                        LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR
                    })
-            using (var _ = new InferenceSession(sourceBytes, options))
+            using (var _ = new InferenceSession(sourcePath, options))
             {
                 // Creating the session writes the optimised graph to disk.
             }
 
-            byte[] optimized = File.ReadAllBytes(tempPath);
+            long sourceSize = new FileInfo(sourcePath).Length;
+            long optimizedSize = new FileInfo(tempPath).Length;
             File.Move(tempPath, cachePath, overwrite: true);
             logger.Notification("[{0}] Optimised '{1}' ({2} -> {3})", DiffusionPaths.ModId, name,
-                ModelAssetManager.HumanBytes(sourceBytes.Length), ModelAssetManager.HumanBytes(optimized.Length));
-            return optimized;
+                ModelAssetManager.HumanBytes(sourceSize), ModelAssetManager.HumanBytes(optimizedSize));
+            return cachePath;
         }
         catch (Exception e)
         {
-            // The optimised and unoptimised graphs are not guaranteed to agree to the last bit, so
-            // a world part generated from one and part from the other is not one world.
-            throw DiffusionFailure.Fatal(logger,
-                $"The graph for model '{name}' could not be optimised. Check that " +
-                $"{DiffusionPaths.OptimizedModelDirectory} is writable and has room.", e);
+            logger.Warning("[{0}] Graph optimisation failed for '{1}', using the unoptimised model: {2}",
+                DiffusionPaths.ModId, name, e.Message);
+            return sourcePath;
         }
     }
 
-    private static string ResolveOptimizedPath(string modelFilePath, string name)
+    private static bool SamePath(string left, string right) => string.Equals(
+        Path.GetFullPath(left), Path.GetFullPath(right),
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private static string ResolveOptimizedPath(string sourcePath, string name)
     {
-        using var stream = File.OpenRead(modelFilePath);
-        string hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant()[..16];
-        string fileName = $"{name}-{OnnxRuntimeBootstrap.OnnxRuntimeVersion}-{OnnxRuntimeBootstrap.Provider}-{hash}.onnx"
+        string hash = ModelAssetManager.Sha256Hex(sourcePath)[..16];
+        InferenceProvider provider = OnnxRuntimeBootstrap.Provider == InferenceProvider.OpenVino
+            ? InferenceProvider.Cpu
+            : OnnxRuntimeBootstrap.Provider;
+        string fileName = $"{name}-{OnnxRuntimeBootstrap.ActiveRuntimeVersion}-{provider}-{hash}.onnx"
             .ToLowerInvariant();
         return Path.Combine(DiffusionPaths.OptimizedModelDirectory, fileName);
     }
@@ -375,13 +470,13 @@ public sealed class OnnxModel : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        lock (GpuSlotLock)
+        lock (ProviderSlotLock)
         {
-            if (_gpuSlotHolder == this && _activeGpuSession != null)
+            if (_providerSlotHolder == this && _activeProviderSession != null)
             {
-                _activeGpuSession.Dispose();
-                _activeGpuSession = null;
-                _gpuSlotHolder = null;
+                _activeProviderSession.Dispose();
+                _activeProviderSession = null;
+                _providerSlotHolder = null;
             }
         }
 

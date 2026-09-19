@@ -8,7 +8,7 @@ public static class DiffusionPaths
 {
     public const string ModId = "vsterraindiffusion";
 
-    /// <summary>Where the ONNX models and pipeline metadata live (~2.3 GB once downloaded).</summary>
+    /// <summary>Where the ONNX models and pipeline metadata live (~2.0-2.3 GB once downloaded).</summary>
     public static string ModelDirectory => Path.Combine(GamePaths.DataPath, "TerrainDiffusionModels");
 
     /// <summary>Where the downloaded ONNX Runtime native libraries live, one folder per RID.</summary>

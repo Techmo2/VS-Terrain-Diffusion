@@ -16,15 +16,26 @@ does not allow comments** — copy values out of it, do not paste the whole thin
 [Ranges](#ranges) at the end gives every numeric field's hard limit, the narrower range worth
 staying inside, and its default.
 
-Settings under `WorldGen` change what the world looks like. Editing them after a world has been
-explored makes new chunks disagree with the ones already on disk.
+Settings under `WorldGen`, the inference device, and the decoder precision can change what the world
+looks like. INT8 and OpenVINO must be selected explicitly; keep both machine settings fixed after
+exploration so new chunks do not disagree slightly with the ones already on disk.
 
 ```jsonc
 {
-  // Which execution provider runs the model: "auto", "cpu", "cuda", "directml" or "coreml".
-  // "auto" picks CoreML on macOS, DirectML on 64-bit Windows, CUDA on Linux with an NVIDIA
-  // driver present, and CPU everywhere else.
+  // Which execution provider runs the model: "auto", "cpu", "openvino", "cuda", "directml"
+  // or "coreml". OpenVINO can accelerate the decoder on 64-bit Linux CPUs; the coarse and base
+  // stages remain on ONNX Runtime CPU to keep memory use predictable. It runs in an isolated
+  // helper and falls back to ONNX Runtime CPU if the native compiler is not usable on the host.
+  // That fallback is logged because changing provider can alter newly generated terrain slightly.
+  // OpenVINO is opt-in: "auto" never selects it. Auto picks CoreML on macOS, DirectML on 64-bit
+  // Windows, CUDA on Linux with an NVIDIA driver present, and CPU everywhere else.
   "InferenceDevice": "auto",
+
+  // Where ONNX Runtime loads model graphs from: "memory", "file", or "auto". Memory makes GPU
+  // model switching faster. File uses about 1 GB less RAM with the current optimised models.
+  // Auto uses files for CPU inference, resident GPU sessions, and GPU hosts with less than 8 GB
+  // available; otherwise it keeps the graphs in memory.
+  "ModelLoadMode": "auto",
 
   // Keep only one of the three models resident on the GPU at a time, holding peak VRAM near
   // 1.5 GB instead of about 2.5 GB. Generating a single terrain tile runs the latent model and the
@@ -43,25 +54,37 @@ explored makes new chunks disagree with the ones already on disk.
   "GpuUtilizationPercent": 100,
 
   // Check the SHA-256 of model files that are already on disk at every startup. Turning this off
-  // saves a few seconds of hashing per start and gives up detection of a truncated download.
+  // saves a few seconds of hashing per start; file sizes are still checked.
   "ValidateModelHashes": true,
 
-  // Download the matching ONNX Runtime native library automatically. Turn off to supply your own
-  // in TerrainDiffusionModels/onnxruntime/<version>/<flavour>/<rid>/.
+  // Download the matching ONNX Runtime and, when selected, OpenVINO native libraries
+  // automatically. Turn off to supply them yourself under TerrainDiffusionModels/onnxruntime/.
   "DownloadRuntime": true,
 
-  // Megabytes of decoded tensor windows kept per pipeline stage.
+  // Decoder model precision: "fp32" or "int8". The matching decoder is downloaded automatically;
+  // the unselected decoder is not required. INT8 uses decoder_model.int8.onnx with either OpenVINO
+  // or ONNX Runtime. It is never selected automatically because it can change newly generated
+  // terrain slightly. If the selected decoder cannot be downloaded or verified, loading stops
+  // instead of silently changing precision.
+  "DecoderPrecision": "fp32",
+
+  // Total megabytes of decoded tensor windows kept across all pipeline stages.
   "TileCacheMegabytes": 256,
+
+  // Number of latent windows sent through the base model together. Zero chooses one on CPU and
+  // four on GPU. Larger batches improve GPU utilisation but need more working memory.
+  "LatentBatchSize": 0,
 
   // Megabytes of finished terrain tiles to keep. This has to cover everything world generation
   // touches at once - a spawn area alone can span a hundred tiles - or tiles get evicted while
   // still in use and have to be rebuilt from scratch.
   "TerrainTileCacheMegabytes": 256,
 
-  // Side length, in blocks, of the terrain generated per model query. Larger values spread the
-  // model's latency over more chunks at the cost of a longer stall on first visit. Rounded down
-  // to a multiple of 32, and clamped to 64-1024.
-  "TerrainTileSizeBlocks": 256,
+  // Side length, in blocks, of the terrain generated per model query. Zero chooses 128 on CPU and
+  // 256 on GPU. Larger values spread the model's latency over more chunks at the cost of a longer
+  // stall on first visit. Explicit values are rounded down to a multiple of 32 and clamped to
+  // 64-1024.
+  "TerrainTileSizeBlocks": 0,
 
   // Port for the debug map: a small read-only web page showing the model's heightmap and climate
   // maps as tiles are generated, with a layer picker, a pannable view and a per-column readout.
@@ -356,7 +379,8 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `DebugMapPort` | 0, or 1024 – 65535 | 8088 | 0 (off) |
 | `DebugMapHistoryTiles` | 64 – 65536 | 512 – 8192 | 2048 |
 | `TileCacheMegabytes`, `TerrainTileCacheMegabytes` | 32 – 4096 | 128 – 1024 | 256 |
-| `TerrainTileSizeBlocks` | 64 – 1024, rounded down to a multiple of 32 | 128 – 512 | 256 |
+| `LatentBatchSize` | 0 – 16 | 0 – 4 | 0 |
+| `TerrainTileSizeBlocks` | 0, or 64 – 1024 rounded down to a multiple of 32 | 0, or 128 – 512 | 0 |
 | `TargetPeakFillFraction` | 0.2 – 1 | 0.8 – 0.95 | 0.92 |
 | `PeakQuantile` | 0.5 – 1 | 0.99 – 0.999 | 0.995 |
 | `CalibrationRadiusBlocks` | 512 – 4 000 000 | 2048 – 16384 | 4096 |
@@ -385,5 +409,12 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `ScaleOverride` | 0, or 1 – 16 | 0, or 1 – 6 | 0 |
 | `VerticalExaggerationOverride` | 0, or 0.05 – 20 | 0, or 0.5 – 2 | 0 |
 
-An unrecognised `InferenceDevice`, `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls
-back to its default rather than failing to load.
+An unrecognised `InferenceDevice`, `ModelLoadMode`, `DecoderPrecision`, `HeightMode`,
+`RainfallBasis`, `OceanMap` or `ClimateMode` falls back to its default rather than failing to load.
+
+The selected decoder is downloaded automatically. The optional mixed-precision decoder is stored at
+`TerrainDiffusionModels/decoder_model.int8.onnx`; its SHA-256 is
+`0ce6eb771a072a8622448c30488f0505c009e43bebccd65246a4dd58fe8e2da6`; the exact recipe and
+calibration hashes are under `scripts/`. Keep `InferenceDevice` and `DecoderPrecision` fixed for an
+established world: changing either can introduce small numerical differences in newly generated
+terrain at chunk boundaries.

@@ -15,9 +15,33 @@
       "values": [
         "auto",
         "cpu",
+        "openvino",
         "cuda",
         "directml",
         "coreml"
+      ]
+    },
+    {
+      "code": "ModelLoadMode",
+      "type": "string",
+      "default": "auto",
+      "ingui": "setting-ModelLoadMode",
+      "comment": "setting-ModelLoadMode-hover",
+      "values": [
+        "auto",
+        "memory",
+        "file"
+      ]
+    },
+    {
+      "code": "DecoderPrecision",
+      "type": "string",
+      "default": "fp32",
+      "ingui": "setting-DecoderPrecision",
+      "comment": "setting-DecoderPrecision-hover",
+      "values": [
+        "fp32",
+        "int8"
       ]
     },
     {
@@ -42,11 +66,11 @@
     {
       "code": "TerrainTileSizeBlocks",
       "type": "integer",
-      "default": 256,
+      "default": 0,
       "ingui": "setting-TerrainTileSizeBlocks",
       "comment": "setting-TerrainTileSizeBlocks-hover",
       "range": {
-        "min": 64,
+        "min": 0,
         "max": 1024,
         "step": 32
       }
@@ -60,6 +84,17 @@
       "range": {
         "min": 32,
         "max": 4096
+      }
+    },
+    {
+      "code": "LatentBatchSize",
+      "type": "integer",
+      "default": 0,
+      "ingui": "setting-LatentBatchSize",
+      "comment": "setting-LatentBatchSize-hover",
+      "range": {
+        "min": 0,
+        "max": 16
       }
     },
     {
