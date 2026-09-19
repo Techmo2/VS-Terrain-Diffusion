@@ -134,6 +134,11 @@ public class TerrainDiffusionModSystem : ModSystem
         InstallTerrain();
         InstallMapLayers();
 
+        // Only while the model owns the climate map. Left to vanilla, the stored byte really is a
+        // sea-level temperature and the readers these patches correct are already right about it.
+        if (_settings.ClimateMode != DiffusionClimateMode.Off) SurfaceClimateCompat.Install(_api);
+        else SurfaceClimateCompat.Uninstall();
+
         if (DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic)
         {
             try
@@ -1061,6 +1066,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _debugMap?.Dispose();
         _debugMap = null;
         WatershedsCompat.Uninstall();
+        SurfaceClimateCompat.Uninstall();
         ConfigLibCompat.Uninstall();
         _provider?.Dispose();
         _provider = null;
@@ -1071,6 +1077,7 @@ public class TerrainDiffusionModSystem : ModSystem
     {
         _debugMap?.Dispose();
         _debugMap = null;
+        SurfaceClimateCompat.Uninstall();
         _provider?.Dispose();
         _provider = null;
 
