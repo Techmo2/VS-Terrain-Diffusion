@@ -60,7 +60,11 @@ public sealed class OnnxModel : IModelRunner
         var stopwatch = Stopwatch.StartNew();
         bool loadFromFile = LoadGraphsFromFile(logger);
         bool offloadProvider = ConfiguredProviderEnabled && DiffusionConfig.Instance.OffloadModels;
-        _graphPath = OptimizeAtRuntime(modelFilePath, name, logger);
+        // TensorRT RTX cannot import ONNX Runtime's contrib ops (QuickGelu and friends), and every
+        // fused node it cannot take splits the engine. Hand it the model as exported.
+        _graphPath = OnnxRuntimeBootstrap.Provider == InferenceProvider.TensorRtRtx
+            ? modelFilePath
+            : OptimizeAtRuntime(modelFilePath, name, logger);
         _graphSize = new FileInfo(_graphPath).Length;
         _graphBytes = loadFromFile ? null : File.ReadAllBytes(_graphPath);
 
@@ -228,6 +232,43 @@ public sealed class OnnxModel : IModelRunner
         return CreateSessionCore(useConfiguredProvider: false);
     }
 
+    /// <summary>
+    /// Selects the TensorRT RTX plugin provider, which is chosen by device rather than by name and
+    /// needs a shape profile before it will build an engine.
+    /// </summary>
+    private void AppendTensorRtRtx(SessionOptions options)
+    {
+        Directory.CreateDirectory(OnnxRuntimeBootstrap.TensorRtRtxCacheDirectory);
+        var providerOptions = new Dictionary<string, string>
+        {
+            // Engines are built for this GPU and driver, then reused.
+            { "nv_runtime_cache_path", OnnxRuntimeBootstrap.TensorRtRtxCacheDirectory },
+            // Measured the same as the unbounded default; kept as a bound, since this mod has form
+            // for workspace requests a 6 GB card cannot satisfy (see the cuDNN options above).
+            { "nv_max_workspace_size", (256L * 1024 * 1024).ToString() }
+        };
+
+        (string Min, string Max)? profile = TensorRtShapeProfiles.For(_name);
+        if (profile.HasValue)
+        {
+            providerOptions["nv_profile_min_shapes"] = profile.Value.Min;
+            providerOptions["nv_profile_opt_shapes"] = profile.Value.Max;
+            providerOptions["nv_profile_max_shapes"] = profile.Value.Max;
+        }
+
+        OrtEnv environment = OrtEnv.Instance();
+        var devices = new List<OrtEpDevice>();
+        foreach (OrtEpDevice device in environment.GetEpDevices())
+        {
+            if (device.EpName == OnnxRuntimeBootstrap.TensorRtRtxEpName) devices.Add(device);
+        }
+
+        if (devices.Count == 0)
+            throw new InvalidOperationException("The TensorRT RTX provider registered no devices");
+
+        options.AppendExecutionProvider(environment, devices, providerOptions);
+    }
+
     private InferenceSession CreateSessionCore(bool useConfiguredProvider)
     {
         var options = new SessionOptions
@@ -271,6 +312,10 @@ public sealed class OnnxModel : IModelRunner
                 case InferenceProvider.CoreMl:
                     // Subgraph mode lets CoreML take what it can and leaves the rest on CPU.
                     options.AppendExecutionProvider_CoreML(CoreMLFlags.COREML_FLAG_ENABLE_ON_SUBGRAPH);
+                    break;
+
+                case InferenceProvider.TensorRtRtx:
+                    AppendTensorRtRtx(options);
                     break;
 
             }

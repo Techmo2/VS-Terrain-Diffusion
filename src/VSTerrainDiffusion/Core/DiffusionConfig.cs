@@ -9,8 +9,8 @@ namespace VSTerrainDiffusion.Core;
 public class DiffusionConfig
 {
     /// <summary>
-    /// "auto", "cpu", "openvino", "cuda", "directml" or "coreml". OpenVINO is selected only
-    /// when requested explicitly.
+    /// "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "directml" or "coreml". OpenVINO and
+    /// TensorRT RTX are selected only when requested explicitly.
     /// </summary>
     public string InferenceDevice { get; set; } = "auto";
 
@@ -52,10 +52,23 @@ public class DiffusionConfig
     public bool DownloadRuntime { get; set; } = true;
 
     /// <summary>
-    /// "fp32" or "int8". INT8 is opt-in because changing decoder precision can alter newly
-    /// generated terrain slightly.
+    /// "fp32", "fp16" or "int8". Both are opt-in because changing decoder precision can alter
+    /// newly generated terrain slightly. FP16 needs a GPU provider; INT8 is for CPU and OpenVINO.
     /// </summary>
     public string DecoderPrecision { get; set; } = "fp32";
+
+    /// <summary>
+    /// "fp32" or "fp16" for the base (latent) model, which is most of the work in a tile. FP16
+    /// needs a GPU provider and is worth the most on TensorRT RTX.
+    /// </summary>
+    public string BasePrecision { get; set; } = "fp32";
+
+    /// <summary>
+    /// "fp32" or "fp16" for the coarse model. Measured on an RTX 3060: FP16 here saves about a
+    /// tenth of a tile's time and moves elevation roughly 2 m, because the coarse sampler runs
+    /// twenty steps and compounds the difference. FP32 unless you have measured otherwise.
+    /// </summary>
+    public string CoarsePrecision { get; set; } = "fp32";
 
     /// <summary>Total megabytes of decoded tensor windows kept across all pipeline stages.</summary>
     public int TileCacheMegabytes { get; set; } = 256;
@@ -178,7 +191,13 @@ public class DiffusionConfig
             case "dml":
             case "coreml":
             case "openvino":
+            case "tensorrt-rtx":
             case "gpu":
+                break;
+            case "trt-rtx":
+            case "tensorrtrtx":
+            case "rtx":
+                InferenceDevice = "tensorrt-rtx";
                 break;
             default:
                 InferenceDevice = "auto";
@@ -201,7 +220,13 @@ public class DiffusionConfig
         // Earlier development builds wrote "auto", which coupled OpenVINO to INT8. Treat it as
         // the safe FP32 default when those configs are upgraded.
         if (DecoderPrecision == "auto") DecoderPrecision = "fp32";
-        if (DecoderPrecision is not ("fp32" or "int8")) DecoderPrecision = "fp32";
+        if (DecoderPrecision is not ("fp32" or "fp16" or "int8")) DecoderPrecision = "fp32";
+
+        BasePrecision = (BasePrecision ?? "fp32").Trim().ToLowerInvariant();
+        if (BasePrecision is not ("fp32" or "fp16")) BasePrecision = "fp32";
+
+        CoarsePrecision = (CoarsePrecision ?? "fp32").Trim().ToLowerInvariant();
+        if (CoarsePrecision is not ("fp32" or "fp16")) CoarsePrecision = "fp32";
     }
 }
 

@@ -1,13 +1,10 @@
 # VS Terrain Diffusion — a Vintage Story mod
 
 Generates Vintage Story worlds with [Terrain Diffusion](https://github.com/xandergos/terrain-diffusion),
-a neural model trained on real Earth topography and climate (SIGGRAPH 2026). Instead of stacking
-simplex octaves, the world comes out of a diffusion pipeline that produces continents, drainage
-networks, fjords, plateaus and mountain ranges with the structure of real terrain — and, alongside
-the heightmap, a real climatology to go with it.
-
-The mod uses all of it. Terrain, temperature, rainfall, forests, the surface you walk on and the
-seasons all come from the same model, so the landscape and the life on it agree with each other.
+a neural model trained on real Earth topography and climate (SIGGRAPH 2026): continents, drainage
+networks, fjords, plateaus and mountain ranges with the structure of real terrain, and a real
+climatology alongside the heightmap. Terrain, temperature, rainfall, forests, the surface you walk
+on and the seasons all come from the same model.
 
 **Contents** — [Installing](#installing) · [Creating a world](#creating-a-world) ·
 [What the mod changes](#what-the-mod-changes) · [How it works](#how-it-works) ·
@@ -29,15 +26,14 @@ Drop the release zip in your `Mods` folder. The models download themselves on fi
 | macOS (Apple)     | CoreML                    | No extra install                                  |
 | Anything else     | CPU                       | Works, but slow                                   |
 
-The matching ONNX Runtime native library is downloaded on first use too (a few MB for
-CPU/DirectML, ~300 MB for CUDA). Nothing has to be installed by hand.
+The matching ONNX Runtime native library is downloaded on first use too (a few MB for CPU/DirectML,
+~300 MB for CUDA). Nothing is installed by hand.
 
-The mod is server-side. Clients may install it as well, which keeps their weather display in step
-with what the server is simulating, but it is not required and vanilla clients can join normally.
+Server-side. Clients may install it to keep their weather display in step with the server, but
+vanilla clients can join normally.
 
-The first world you create sits on the loading screen until all of that has been fetched, which on
-a slow connection is a long time. The loading screen says when each download starts and when they
-are finished, so you can tell the wait apart from a hang. `Logs/server-main.log` has the detail.
+The first world sits on the loading screen until everything is fetched; the screen reports each
+download, and `Logs/server-main.log` has the detail.
 
 ## Creating a world
 
@@ -75,21 +71,14 @@ exactly as it does in an unmodded world.
 
 ### Two settings the mod cannot honour
 
-`Landform scale` and `Upheaval rate` both configure maps that exist only to feed vanilla's terrain
-generator, and vanilla's terrain generator is the one thing this mod replaces outright.
+Both configure maps that only fed vanilla's terrain generator, which this mod replaces.
 
-- **Upheaval rate** has no effect at all. It scales the geological upheaval map, which nothing but
-  `GenTerra` ever reads. The map is still generated and still saved into every region; nothing
-  looks at it.
-- **Landform scale** has no effect on terrain, and one small effect elsewhere: `GenDungeons` reads
-  the landform map to place dungeons that require flat ground. Since that map no longer describes
-  the terrain that actually got generated, such a dungeon can be sited on what the map calls a
-  plain and the model made a hillside. Two of the shipped tiled dungeons are affected.
+- **Upheaval rate**: no effect. The map is still generated and saved; nothing reads it.
+- **Landform scale**: no effect on terrain. `GenDungeons` still reads the landform map to place
+  dungeons needing flat ground, so one can land on what the map calls a plain and the model made a
+  hillside. Two shipped tiled dungeons are affected.
 
-These are not oversights. Both settings describe how vanilla's landform palette should shape the
-ground, and there is no landform palette here — the relief comes out of the model. There is no
-equivalent knob to map them onto. `worldGen.slopeDetailStrength` and `Vertical exaggeration` are
-the nearest things to a relief control.
+`worldGen.slopeDetailStrength` and `Vertical exaggeration` are the nearest relief controls.
 
 ### Land and sea
 
@@ -98,27 +87,17 @@ Before generating anything the mod reads Vintage Story's ocean map — the one "
 "Ocean scale" configure — and feeds it to the model as conditioning, so a world set to 50% land
 gets 50% land, with the shelf, the fjords and the mountains behind them drawn from real terrain.
 
-It reads *whichever* ocean map is installed rather than vanilla's in particular, so a mod that
-supplies its own — Continental World, for instance — is honoured on exactly the same terms, and
-the map is left untouched afterwards for everything else that reads it.
+It reads whichever ocean map is installed — Continental World's, for instance — and leaves it
+untouched afterwards.
 
-Two things are worth knowing:
+- **Conditioning is soft.** The coast wanders around the one it was given rather than tracing it,
+  which is what makes it look natural. Sea fraction comes out within ~4 points of the setting;
+  column by column 88% agree, nearly all disagreement within one cell of a coastline.
+- **Resolution floor.** One conditioning pixel spans 512 blocks at the default resolution, so
+  anything smaller fills in as land. Low "Ocean scale" worlds lose their smallest islands and lakes.
 
-- **Conditioning is soft.** The model is steered, not clamped, so the coast it draws wanders around
-  the one it was given rather than tracing it exactly, which is what gives it a natural shape
-  instead of the ocean map's blobs. Measured against vanilla's own map over 131 000 blocks, how
-  much of the world is sea comes out within about four points of what the map asked for, always
-  very slightly wetter; column by column, 88% of the world is on the side of the water it was
-  asked to be, and the disagreement is nearly all within one cell of a coastline.
-- **There is a resolution floor.** One conditioning pixel spans 512 blocks at the default diffusion
-  resolution, so a sea much smaller than that cannot be expressed and the model will fill it in as
-  land. Low "Ocean scale" settings lose their smallest islands and lakes for this reason — though
-  they hold up better than that suggests, still placing 91% of columns correctly at 100% scale,
-  where an ocean cell is only 1024 blocks across.
-
-Vanilla's defaults — 97.5% land, 500% ocean scale — give a nearly unbroken continent, which is a
-fine world but not what most people install this mod for. Around 40–60% land is where real
-coastlines start to appear.
+Vanilla's defaults (97.5% land, 500% ocean scale) give a nearly unbroken continent. 40–60% land is
+where real coastlines start to appear.
 
 Set `worldGen.oceanMap` to `"output"` for the reverse arrangement: the model invents its own
 continents from real-world terrain, ignoring both world settings, and the ocean map is rewritten to
@@ -126,215 +105,130 @@ match it.
 
 ### A hotter, colder, wetter or drier world
 
-"Global temperature" and "Global precipitation" are settings vanilla applies to the climate map it
-draws at random: it generates its world and multiplies the numbers. This mod hands them to the
-model instead, so that a world set to "Semi-Arid" is *drawn* semi-arid — the model puts the forests
-where a drier world would have forests, and the soil, the snow line and the seasons follow, rather
-than a temperate world having its rainfall divided by two on the way to the screen.
+Vanilla multiplies these onto the climate map it drew at random. This mod hands them to the model,
+so a "Semi-Arid" world is *drawn* semi-arid: the forests, soil, snow line and seasons all follow.
+Rainfall is scaled outright; temperature moves the world along the real distribution instead, since
+nowhere on Earth has a mean above 30 °C. What that cannot reach is applied to the output afterwards
+as vanilla does.
 
-The two settings work differently underneath, because the quantities do. Rainfall runs from nothing
-to six metres a year, so it is scaled outright: four times the rain is four times the rain. Mean
-annual temperature occupies about forty degrees and has nothing above 30 °C anywhere on Earth, so
-instead of scaling it the mod moves the world along the real distribution towards its hot or cold
-end. What that cannot reach — the top two or three notches of the temperature setting ask for
-climates that do not exist — is scaled onto the model's output afterwards, as vanilla does, and
-lands in the same place vanilla does: the climate map saturates and the world reads 40 °C.
+Measured on two seeds across both settings' full range: temperature within 2 °C up to "Hot", which
+overshoots ~5 °C for want of anywhere hotter to draw from; rainfall within 10% in a region of
+ordinary wetness, less where it is already very wet or very dry. "Very hot" and "Scorching hot"
+saturate the game's climate scale, as in an unmodded world — and leave the spawn search no temperate
+land, so it settles for the coolest thing going.
 
-Measured on two seeds across the whole range of both settings, against what vanilla's arithmetic
-would have produced for the same world:
-
-- **Temperature** lands within 2 °C of the setting at every notch up to "Hot", which overshoots by
-  about 5 °C for want of anywhere hotter to draw from. "Very hot" and "Scorching hot" saturate the
-  game's climate scale, exactly as they do in an unmodded world.
-- **Rainfall** lands within 10% in a region of ordinary wetness. Somewhere already very wet or very
-  dry moves perhaps half as far as asked: the model will not draw the Sahara four times wetter, and
-  vanilla's own rainfall byte saturates for much the same reason.
-
-The far settings interact with "Starting climate", which is a band of real temperatures: turn the
-world up to "Scorching hot" and there is no temperate land left anywhere for the spawn search to
-find, so it will scan its whole radius, say so in the log, and put you on the coolest thing going —
-usually a mountain top.
-
-Set `worldGen.globalClimateStrength` to 0 for the old arrangement, where the model knows nothing
-and both settings are applied to its output.
+Set `worldGen.globalClimateStrength` to 0 to apply both to the model's output instead.
 
 ### Latitude
 
-Vanilla's latitude is a straight line: +40 °C at the equator, −20 °C at the pole, nothing in
-between but noise, and no rainfall gradient at all. This mod hands the model a real one instead —
-the equatorial rain belt, the subtropical deserts at 25°, the mid-latitude storm track at 50°, the
-dry cold caps — as conditioning, so a tropical belt is *drawn* tropical and a polar one is drawn
-polar, and everything the model knows about coasts, rain shadows and mountains happens **within**
-the band it is in.
+Vanilla's latitude is a straight line from +40 °C to −20 °C with no rainfall gradient. This mod
+conditions the model on a real zonal climate instead — equatorial rain belt, subtropical deserts at
+25°, mid-latitude storm track at 50°, dry cold caps — so a tropical belt is *drawn* tropical, and
+coasts, rain shadows and mountains all happen within the band.
 
-Where each block sits between the equator and the pole is Vintage Story's answer, not this mod's.
-It reads the game's own latitude, which is what `polarEquatorDistance` configures and what the game
-already uses for day length, midnight sun and which hemisphere has its summer when — so the snow
-line and the sun agree with each other for free. It also inherits the phase, which is how vanilla
-honours "Starting climate": the map centre lands on the latitude whose climate you asked for.
+Where each block sits between equator and pole is the game's answer, read from
+`polarEquatorDistance`, so the snow line agrees with day length and the midnight sun. The phase
+comes with it, which is how "Starting climate" lands the map centre at the right latitude.
 
-Measured over full equator-to-pole transects on three seeds:
+Measured over equator-to-pole transects on three seeds: temperature ~1 °C warm on average, 2 °C
+either way in a belt; from ~80° poleward the model runs out of world (it has never seen a mean below
+−14 °C) so the last stretch is added afterwards and the poles read −20 °C. Rainfall lands on the
+band in the median and swings a factor of two either side — geography, not error. A 15 000-block
+polar distance still tracked the bands to 1.5 °C.
 
-- **Temperature** lands about 1 °C warm of the profile on average, 2 °C out either way in a typical
-  belt. From roughly 80° poleward the model runs out of world — it has never seen a climate colder
-  than about −14 °C mean annual — so the last stretch to the ice cap is added to its output, and
-  the poles read −20 °C, which is the bottom of the game's own climate scale.
-- **Rainfall** lands on the band in the median and swings by a factor of two either side of it.
-  That is not error so much as geography: within one latitude the model puts a rain shadow behind
-  every range, and Earth does the same — the Atacama and the Amazon are the same latitude.
-- **A short world still works.** At `polarEquatorDistance` of 15 000 blocks — pole to equator in
-  fifteen kilometres — the model tracked the bands to within 1.5 °C. The gradient being far steeper
-  than any on Earth does not appear to trouble it.
+Heading north or south now changes the climate; east or west mostly does not. 200k–400k gives long
+belts, 15k–25k puts tropics and ice within a day's walk. The hemispheres get opposite years, as the
+game's calendar already does (`worldGen.seasonHemispheres`).
 
-Two things follow from turning this on:
-
-- Heading north or south now changes the climate, and heading east or west mostly does not. A large
-  `polarEquatorDistance` (200k, 400k) gives long belts and gentle travel; a small one (15k, 25k)
-  puts the tropics and the ice within a day's walk of each other.
-- The two hemispheres get opposite years, which they always should have: Vintage Story's calendar
-  already flips the season south of the equator, and until 0.5 the mod's temperature curve did not
-  follow it. `worldGen.seasonHemispheres` now defaults to on.
-
-Set `worldGen.latitudeStrength` to 0 for the unrooted world the mod made before 0.5, where the cold
-places are wherever the model drew them. Values in between walk from one to the other. Bands are
-also off on a "Patchy" world, which has no latitude to speak of.
+Set `worldGen.latitudeStrength` to 0 for an unrooted world; values between weaken the gradient
+without moving it. Bands are off on a "Patchy" world.
 
 ### Starting climate
 
-Vanilla honours this setting by sliding its climate map until the band you picked covers the map
-centre. With latitude bands on, so does this mod: the phase it reads from the game is that same
-slide, so the map centre already sits at the right latitude and the spawn search only has to find
-land there. It then surveys outward for land whose temperature is in the band, checks the likeliest
-spots at full resolution, and puts the spawn on a column that really is in range — usually a few
-hundred blocks away rather than a few thousand.
+The bands mean what they do in an unmodded world, as annual mean temperature: hot 28–32 °C, warm
+19–23 °C, temperate 6–14 °C, cool −5 to 1 °C, icy −15 to −10 °C.
 
-With `worldGen.latitudeStrength` at 0 there is no latitude to slide, and the search does all the
-work: the model predicts one particular world rather than a climate field that can be shifted
-about, so it hunts for a matching climate wherever the model happened to put one.
+With latitude bands on, the map centre already sits at the right latitude and the search only has to
+find land there — usually a few hundred blocks. With `latitudeStrength` at 0 it hunts for a matching
+climate wherever the model put one, and cold is found on high ground rather than far north.
 
-The five bands mean what they do in an unmodded world: hot 28–32 °C, warm 19–23 °C, temperate
-6–14 °C, cool −5 to 1 °C, icy −15 to −10 °C, measured as annual mean temperature.
-
-- Without latitude bands, cold is found on high ground rather than far north, so "icy" is often a
-  nearby mountain rather than a long trek. With them, it is both.
-- The search prefers to travel east or west. Distance along Z is what sets latitude in Vintage
-  Story, and past the world's polar distance that buys midnight sun and polar night; distance along
-  X costs nothing. With latitude bands on it rarely has to go far in either direction — on the test
-  worlds it settled a few hundred blocks from the map centre.
-- It stops at the first matching land it finds, so most worlds spawn within a few thousand blocks
-  and the search takes under a second. A band that is genuinely far away — usually "hot" — can take
-  a few seconds on a GPU and rather longer on CPU inference.
-- If the seed has no such land within range, the server log says so and you spawn at the closest
-  temperature it found.
+It prefers to travel east or west, because distance along Z buys midnight sun past the polar
+distance. It stops at the first match, so most worlds spawn within a few thousand blocks in under a
+second; a distant band — usually "hot" — takes longer, and on CPU inference longer still. If the
+seed has no such land in range the log says so and you spawn at the closest temperature found.
 
 Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whatever its climate.
 
 ## What the mod changes
 
-- **Terrain pass** — vanilla `GenTerra`'s chunk handler is swapped for one that fills columns from
-  the diffusion heightmap. When another mod has already replaced terrain generation, the model
-  supplies heights to *it* instead; see [Other terrain mods](#other-terrain-mods).
-- **Climate map** — sea-level temperature and annual rainfall from the model, with the game's own
-  altitude corrections replaced by the real lapse rate. The geologic activity byte is still vanilla's.
-- **Global temperature and precipitation** — conditioning rather than post-processing, so the world
-  is drawn at the climate asked for instead of being drawn temperate and rescaled.
-- **Latitude** — the game's own latitude, from `polarEquatorDistance`, is conditioned into the model
-  as a real zonal climate: equatorial rain belt, subtropical deserts, mid-latitude storm track, dry
-  cold caps. Vanilla's straight line from +40 °C to −20 °C is replaced, but where the line runs is
-  still the game's business.
-- **Forest and shrub maps** — replaced with cover derived from the model's moisture and growing
-  season.
-- **Ocean map** — read, not written. It is what the terrain is conditioned on, so the world's land
-  cover and ocean scale settings, or another mod's ocean map, decide where the sea goes.
-- **Surface pass** — after vanilla's block layers, two things it cannot know about are fixed up:
-  slopes too steep to hold soil are scoured back to bare rock (vanilla upholsters cliff faces in
-  eight blocks of dirt), and ground whose warmest month never rises above freezing is capped with
-  glacier ice.
-- **Seasons** — temperature and rainfall swing through the year on the model's seasonality rather
-  than on latitude alone, so a maritime coast and a continental interior in the same band get
-  completely different years. Latitude still shows through, because a polar climate is a seasonal
-  one: the model's own seasonality rises as the mean temperature falls. The two hemispheres get
-  opposite years, matching the game's own calendar.
-- **Nothing else.** In particular the landform and geological upheaval maps are still generated, and
-  still ignored, because the generator that read them is gone. See
-  [Two settings the mod cannot honour](#two-settings-the-mod-cannot-honour).
-- **Spawn** — moved to solid ground in the world's chosen starting climate. Vanilla forces land at
-  the map centre through the ocean map, and the terrain follows that, so on most worlds the search
-  does not have to go far.
-- **Surface block layer altitudes** — only when terrain is vertically exaggerated. Vanilla's bands
-  are fractions of world height (bare mountain gravel above 0.66 of it) and assume a block is about
-  a metre; at true scale that already lines up, so nothing is touched.
-
-Everything else — rock strata, ores, caves, rivers, ponds, ruins, traders, temporal stability — is
-vanilla, running unchanged on top.
+- **Terrain pass** — `GenTerra`'s chunk handler fills columns from the diffusion heightmap. If
+  another mod already replaced terrain generation, the model supplies heights to *it*; see
+  [Other terrain mods](#other-terrain-mods).
+- **Climate map** — sea-level temperature and annual rainfall from the model, with the game's
+  altitude correction replaced by the real lapse rate. The geologic activity byte stays vanilla's.
+- **Global temperature and precipitation** — conditioning rather than post-processing.
+- **Latitude** — the game's own latitude, from `polarEquatorDistance`, conditioned in as a real
+  zonal climate in place of vanilla's straight line from +40 °C to −20 °C.
+- **Forest and shrub maps** — cover derived from the model's moisture and growing season.
+- **Ocean map** — read, not written: it is what the terrain is conditioned on.
+- **Surface pass** — slopes too steep for soil are scoured back to bare rock (vanilla upholsters
+  cliffs in eight blocks of dirt), and ground whose warmest month stays below freezing is capped
+  with glacier ice.
+- **Seasons** — the year swings on the model's seasonality rather than on latitude alone, opposite
+  sides of the equator included.
+- **Spawn** — moved to solid ground in the world's chosen starting climate.
+- **Surface block layer altitudes** — only when terrain is vertically exaggerated; at true scale
+  vanilla's bands already line up.
+- **Nothing else.** The landform and upheaval maps are still generated and still ignored, because
+  the generator that read them is gone — see
+  [Two settings the mod cannot honour](#two-settings-the-mod-cannot-honour). Rock strata, ores,
+  caves, rivers, ponds, ruins, traders and temporal stability are vanilla, running unchanged on top.
 
 ## Other terrain mods
 
 Mods that only supply a map — Continental World's ocean map, for instance — need nothing special:
 the mod reads whatever map is installed and conditions the model on it.
 
-A mod that *replaces terrain generation itself* is a different matter. Two generators filling the
-same chunk column do not layer; the world comes out as the union of both landscapes with only one
-mod's heightmaps recorded, and the surface block layers get buried under the other mod's stone.
-There is only one arrangement that works, so that is the one the mod uses: whoever is generating
-terrain gets handed the model's heights and does the filling.
+A mod that *replaces terrain generation itself* cannot layer with this one: two generators filling
+the same column give the union of both landscapes. So whoever generates terrain gets handed the
+model's heights and does the filling.
 
-**Algernon's Watersheds** is supported this way. Watersheds disables vanilla `GenTerra` and fills
-every column itself, so with both mods installed this mod stops generating terrain and instead
-answers every question Watersheds asks about the height of the ground: the height its whole
-watershed analysis is built on, the height a stream's profile is laid out against, the height after
-a stream has cut into it — which is what decides where the water surface and the banks go — and
-which blocks of a column are solid. Its drainage basins are then solved on the model's continents,
-its streams run down the valleys that are really there, and the carve depth it computed for a column
-is applied to the modelled hillside. Everything downstream of that — stream water, banks, rapids,
-groundwater, its block layer pass — is Watersheds' own, unchanged.
+**Algernon's Watersheds** is supported this way. It disables vanilla `GenTerra` and fills every
+column itself, so this mod stops generating terrain and instead answers every height question
+Watersheds asks: the height its analysis is built on, the height a stream's profile is laid against,
+the height after a stream has cut in, and which blocks are solid. Answering *all* of them matters —
+a stream's water surface and its bed are worked out separately, so one height left coming from
+Watersheds' own landscape strands water in the air. Its ridge and gully erosion filter is switched
+off for these worlds: it cuts valley detail into fractal noise, the model's landscape already has
+erosion, and it is computed inside two of those height answers. Everything downstream — stream
+water, banks, rapids, groundwater, block layers — is Watersheds' own.
 
-Answering *all* of those from the model is the whole trick, not a nicety. A stream's water surface
-and the bed it lies in are worked out separately, so a single height left coming from Watersheds'
-own landscape strands water in the air where that landscape stood higher and leaves the channel dry
-below it. One consequence: Watersheds' ridge and gully erosion filter is switched off for these
-worlds. It exists to cut valley detail into fractal noise, the model's landscape already has erosion
-in it, and it is computed privately inside two of those height answers — so keeping it would put the
-water and the bed back out of step.
+- **World creation takes longer.** The analysis samples heights kilometres around spawn, all from
+  the model, so the first load spends a few minutes on tiles it will not visibly use. One-time per
+  area, and cached.
+- **Watersheds decides where streams go.** It will not path one across terrain rougher than
+  `SmallChunkRoughnessThreshold` in `ModConfig/Watersheds/TerrainAnalysisConfig.json` (2 blocks
+  RMSE by default). Ordinary modelled landscape measures 0.0–0.8; genuinely broken ground gets no
+  small streams. Raise the threshold if you want them anyway.
+- **Streams need somewhere to drain.** At vanilla's default land cover there is almost no ocean to
+  reach, so almost no streams. That is Watersheds' behaviour, not this mod's.
 
-Three things to expect:
+Stream maps live in a database beside the save, so a world explored with an older version of this
+mod has streams plotted against the wrong landscape: `/watersheds clearstreammaps` and regenerate,
+or start a new world.
 
-- **World creation takes longer.** The watershed analysis samples heights over a far wider area than
-  the chunks being generated — several kilometres around spawn — and every one of those samples has
-  to come from the model. Expect the first load to spend a few minutes generating terrain tiles it
-  will not visibly use yet. It is a one-time cost per area, and the tiles are cached.
-- **Watersheds decides where streams go, on its own terms.** In particular it refuses to path a
-  stream across terrain rougher than `SmallChunkRoughnessThreshold` in its
-  `ModConfig/Watersheds/TerrainAnalysisConfig.json` (2 blocks of RMSE from a plane across a chunk,
-  by default). Ordinary modelled landscape sits well inside that — a sample of chunks around a
-  460 m plateau measured 0.0 to 0.8 — but genuinely broken ground will not get small streams, the
-  same way it would not in an unmodified Watersheds world. Raise the threshold if you want them
-  anyway.
-- **Streams need somewhere to drain.** They path towards the sea, so a world generated at vanilla's
-  default land cover has almost no ocean for them to reach and produces almost no streams. That is
-  Watersheds' behaviour rather than this mod's, but it is worth knowing before concluding the two
-  are not working together.
-
-Watersheds keeps its stream maps in a database beside the save, so a world explored with an older
-version of this mod has streams in it that were plotted against the wrong landscape. Clear them with
-`/watersheds clearstreammaps` and regenerate the affected chunks, or start a new world.
-
-If Watersheds updates in a way this cannot reach into, the mod says so in the log and on the loading
-screen and takes itself out of the world entirely, leaving Watersheds' own terrain intact rather
-than generating a broken one.
+If Watersheds updates in a way this cannot reach into, the mod says so and takes itself out of the
+world rather than generating a broken one.
 
 ## How it works
 
 ### Scale, and why the world needs to be tall
 
-By default a block is exactly as tall as it is wide, the same geometry the Terrain Diffusion
-Minecraft mod uses. At the default resolution one block is 15 m in every direction, so a 2 000 m
-massif is 133 blocks of climbing spread over however many kilometres the model gave it, and every
-slope has the grade it would have in the real world.
+By default a block is as tall as it is wide — 15 m in every direction at the default resolution —
+so a 2 000 m massif is 133 blocks of climbing and every slope has its real-world grade.
 
-The catch is that real mountains need real room. The model's land runs to about 3 000 m at the 95th
-percentile and 5 000 m at the extreme, which at 15 m per block is 200 and 333 blocks *above sea
-level*:
+Real mountains need room. The model's land runs to about 3 000 m at the 95th percentile and 5 000 m
+at the extreme, which at 15 m per block is 200 and 333 blocks *above sea level*:
 
 | World height | Blocks above sea | Terrain held at true scale |
 | ------------ | ---------------- | -------------------------- |
@@ -342,20 +236,16 @@ level*:
 | 512          | 289              | up to ~3 700 m             |
 | 1024         | 578              | up to ~7 400 m             |
 
-Past that the mapping bends towards the ceiling rather than clipping. The curve is `u / (1 + u)`,
-which has slope 1 where it meets the linear part so there is no crease, and never quite flattens,
-so summits round off instead of shearing into mesas. It still costs you the faithfulness of the
-highest ground, which is why a taller world is better.
+Past that the mapping bends towards the ceiling on `u / (1 + u)` rather than clipping, so summits
+round off instead of shearing into mesas — at the cost of the highest ground's faithfulness.
 
-If a tall world is not an option, set `worldGen.heightMode` to `"auto"`. That surveys the region
-around spawn once, measures how tall its peaks actually get, and stretches the metre-to-block
-mapping so they reach near the ceiling of whatever world you have. The landscape then uses the full
-height available at the cost of exaggerated relief — a gentle region might come out at 4x. The
+If a tall world is not an option, `worldGen.heightMode: "auto"` surveys the region around spawn
+once and stretches the metre-to-block mapping so its peaks reach near the ceiling. The landscape
+uses the full height at the cost of exaggerated relief — a gentle region might come out at 4x. The
 measurement depends only on the seed and is stored in the save.
 
-Resolution is also the main performance dial, because a coarser one covers more blocks per model
-pixel. At 30 m per block you cross a continent in an afternoon; at 5 m per block the same mountain
-is four kilometres of walking, and only a very tall world keeps it true to scale.
+Resolution is also the main performance dial: at 30 m per block you cross a continent in an
+afternoon, at 5 m the same mountain is four kilometres of walking.
 
 ### Climate
 
@@ -368,64 +258,42 @@ The model predicts four WorldClim bioclimatic variables everywhere it predicts e
 | BIO12    | annual precipitation, mm                                |
 | BIO15    | precipitation seasonality — how unevenly it falls       |
 
-These are a real climatology, with continents, maritime coasts, continental interiors, rain shadows
-and altitude already in them — but nothing in the model knows which way is north, so left alone it
-puts the cold places wherever its noise put them. The latitude bands supply the missing axis: the
-model is conditioned on the zonal climate of the latitude the game says each row is at, and
-everything above happens inside that. `globalTemperature` and `globalPrecipitation` are conditioning
-on the same terms, applied to the bands themselves, so a "Snowball earth" world is one whose every
-band is a quarter of the way up the scale, tropics and ice caps alike.
+A real climatology, with maritime coasts, continental interiors, rain shadows and altitude already
+in it — but nothing in the model knows which way is north, so the latitude bands supply that axis.
+`globalTemperature` and `globalPrecipitation` condition the bands themselves, so a "Snowball earth"
+world is one whose every band sits a quarter of the way up the scale.
 
 ### From bioclimate to what the game reads
 
-None of those four is directly what Vintage Story wants, and none of them is directly what a plant
-wants either. 800 mm of rain is generous in Lapland and semi-arid in the Sahel. A mean of 5 °C is a
-pleasant montane climate if it holds all year and a brutal one if it swings forty degrees. So the
-mod derives the quantities climatologists use — potential evapotranspiration, an aridity index, a
-growing season — and keys everything off those. The formulas are ported from the reference
-implementation's own biome classifier, so a place that reads as savanna there reads as savanna here.
+800 mm of rain is generous in Lapland and semi-arid in the Sahel, so the mod derives potential
+evapotranspiration, an aridity index and a growing season, and keys everything off those. The
+formulas are ported from the reference implementation's biome classifier.
 
-**Rainfall** is a quantile map, not a physical conversion. Vanilla draws its 0-255 rainfall byte
-*uniformly*, and every threshold that reads it — the level above which ground stops being bare
-gravel, the fertility curve that decides whether soil forms, the rainfall bands on every tree and
-block patch — was tuned against that uniform spread. Feeding a physical quantity straight in makes
-the whole world read as desert. So the model's tree moisture (aridity, discounted for a dry season)
-goes through its own distribution, which comes out uniform, which is what the game expects. Set
-`worldGen.rainfallBasis` to `"precipitation"` to map raw millimetres instead.
+**Rainfall** is a quantile map, not a physical conversion. Vanilla draws its 0-255 byte *uniformly*
+and every threshold reading it was tuned against that spread, so a physical quantity fed straight in
+makes the world read as desert. The model's tree moisture goes through its own distribution instead.
+`worldGen.rainfallBasis: "precipitation"` maps raw millimetres.
 
-**Forest and shrub cover** come from the same moisture, scaled by the growing season and cut to zero
-on ground too steep to hold soil. This replaces vanilla's forest map outright, and it is worth
-knowing why: vanilla's `MapLayerWobbledForest` computes `128 - rain * temp / 65025`, and that
-product never exceeds 1, so forest density in an unmodified world is pure noise with no
-relationship to climate at all. Woodland in the foothills, scrub on the dry plateau and nothing
-above the treeline are all new behaviour. The map goes on being read by everything that read it
-before — trees, shrubs, ground patches, structure placement, creature spawning — so the animals and
-the undergrowth follow the woods around.
+**Forest and shrub cover** come from the same moisture, scaled by growing season and cut to zero on
+ground too steep for soil. Vanilla's `MapLayerWobbledForest` computes `128 - rain * temp / 65025`,
+a product that never exceeds 1, so its forest density is pure noise with no relation to climate;
+woodland in the foothills and nothing above the treeline are new behaviour. Everything that read
+that map still does, so animals and undergrowth follow the woods.
 
-**Temperature** is stored as the column's sea-level temperature — what Vintage Story's climate byte
-is supposed to hold — and the mod replaces the lapse rate the game applies on read. Vanilla's is a
-flat 0.157 °C per block, which is a real lapse rate only at about 24 m per block and over-cools
-mountains at anything finer; the mod substitutes 6.5 °C/km, so the surface reads back as the model
-predicted at any vertical scale. Writing a pre-compensated value instead, which is the obvious
-alternative, spends the byte's whole range on the correction and used to put a hard floor under how
-fine the vertical scale could go.
+**Temperature** is stored as sea-level temperature, and the mod replaces the lapse rate applied on
+read. Vanilla's flat 0.157 °C per block is only right at about 24 m per block and over-cools
+mountains at anything finer; 6.5 °C/km reads back as the model predicted at any vertical scale.
 
 ### Seasons
 
-Vanilla decides how hard a place swings through the year from latitude alone: `ModTemperature`
-takes an amplitude of `|latitude| * 65` degrees, so the equator has no seasons and the poles have
-enormous ones, and nothing else about the location matters.
+Vanilla takes the year's amplitude from latitude alone (`|latitude| * 65` degrees), so the equator
+has no seasons and nothing else about a place matters. Here it comes from BIO4: a maritime coast
+and a continental interior at the same annual mean get completely different years. Precipitation
+seasonality does the same for rain, giving monsoon climates a real dry season.
 
-Here it comes from BIO4. A maritime coast and a continental interior at the same annual mean get
-completely different years — the coast stays mild, the interior freezes solid every winter and
-bakes every summer. Precipitation seasonality does the same for rain, so a monsoon climate gets a
-real wet and dry season instead of drizzling evenly all year.
-
-The two seasonality channels have nowhere to live in Vintage Story's packed climate integer, whose
-interpolator only touches the low three bytes, so they are stored as map region mod data. That is
-saved with the region and, unlike the region's other maps, sent to clients — which is why a client
-running the mod swings its weather in step with the server, and a vanilla client falls back to
-vanilla's seasons for display.
+Neither channel fits Vintage Story's packed climate integer, whose interpolator only touches the low
+three bytes, so they are map region mod data — saved with the region and, unlike its other maps,
+sent to clients. A vanilla client falls back to vanilla's seasons for display.
 
 `/tdiff season <x> <z>` walks a year at a position and prints what it does.
 
@@ -442,56 +310,47 @@ vanilla's seasons for display.
 | `season <x> <z>`     | The same diagnostics at a position, and the year's temperature and rainfall cycle there. Usable from a server console, where `here` is not. |
 | `column <x> <z>`     | What actually got generated in a column, next to what the model said.   |
 
-Every command prints one field per line. `here` and `season` share four for diagnosing the climate:
+`here` and `season` share four climate diagnostics:
 
-- **Latitude** and **Hemisphere** — how far from the equator the game puts that Z, which side of it,
-  and the season the game's own calendar reports there. That season is the one every other system
-  will think it is, so it is the thing to check if foliage or crops look out of step.
-- **Sea-level temperature** — the same reading with the altitude taken back out, and the local lapse
-  rate the model fitted. This is the number to compare two places by, because it has the mountain
-  out of it. It costs a pipeline query rather than a tile lookup, so it is a little slower than the
-  rest of the readout.
-- **Band temperature** and **Band precipitation** — what the latitude band asked for here and how
-  far this column sits from it, plus a **Band offset applied** line when some of the band had to be
-  added after the model ran rather than conditioned into it.
+- **Latitude** and **Hemisphere** — distance from the equator, which side, and the season the game's
+  calendar reports there. Check this first if foliage or crops look out of step.
+- **Sea-level temperature** — the reading with altitude taken back out, and the fitted local lapse
+  rate. The number to compare two places by. Slightly slower than the rest: it is a pipeline query.
+- **Band temperature** and **Band precipitation** — what the latitude band asked for and how far
+  this column sits from it, plus **Band offset applied** when part of the band was added after the
+  model ran.
 
-A single column is expected to scatter several degrees either side of its band: the band is a
-median over all the land in the belt, and everything that makes one place differ from another is
-the model's business. Consistent drift over many columns is what would indicate something wrong.
+A single column scatters several degrees either side of its band, which is the model's business;
+consistent drift over many columns is not.
 
 ## Configuration
 
 `ModConfig/vsterraindiffusion.json`, written on first start. [CONFIG.md](CONFIG.md) is the whole
 default file with a comment on every field; the tables below are the short version.
 
-Install [ConfigLib](https://mods.vintagestory.at/configlib) and the same settings get an in-game
-screen, every field below on it with its explanation. Nothing else changes: ConfigLib edits this
-mod's own config file in place rather than keeping a copy, so the file and the screen are two views
-of one thing and you can go on editing the file if you would rather. It is not a dependency — with
-ConfigLib absent the mod neither needs nor notices it.
+Optional: [ConfigLib](https://mods.vintagestory.at/configlib) gives the same settings an in-game
+screen, editing this file in place rather than keeping a copy.
 
-`gpuUtilizationPercent` and `verboseInference` take effect the moment they are saved. Everything
-else is read when the world generator starts, so it takes a server restart, which is what the
-screen's hover text says for each one.
-
-**Useful range** is where the setting does something sensible, not where it is legal. Everything is
-clamped to a wider range than this (CONFIG.md lists the hard limits) and nothing outside the useful
-range is *forbidden* — it is just where the results stop being worth having.
+`gpuUtilizationPercent` and `verboseInference` take effect on save; everything else is read when the
+world generator starts, so it needs a restart. **Useful range** below is where a setting does
+something sensible, not where it is legal — CONFIG.md lists the hard limits.
 
 ### Inference
 
-Machine settings. Keep `inferenceDevice` and `decoderPrecision` fixed after exploring a world:
+Machine settings. Keep `inferenceDevice` and the three precision settings fixed after exploring a world:
 changing either can make newly generated terrain disagree slightly with existing chunks.
 
 | Key                          | Default | Useful range | Meaning                                 |
 | ---------------------------- | ------- | ------------ | ---------------------------------------- |
-| `inferenceDevice`            | `auto`  | `auto` `cpu` `openvino` `cuda` `directml` `coreml` | OpenVINO is opt-in. On 64-bit Linux it can accelerate the decoder while leaving the large stages on ORT CPU. A supervised helper contains native failures and falls back to ORT CPU; that fallback is logged because changing provider can alter new terrain slightly. |
+| `inferenceDevice`            | `auto`  | `auto` `cpu` `openvino` `cuda` `tensorrt-rtx` `directml` `coreml` | OpenVINO and TensorRT RTX are opt-in. OpenVINO, on 64-bit Linux, accelerates the decoder while leaving the large stages on ORT CPU. TensorRT RTX needs a GeForce RTX 30xx or newer on 64-bit Linux, fetches ~300 MB of NVIDIA runtime once and builds a cached engine per model; it is about 1.5x faster than CUDA on the same FP32 models and 2.4x with FP16. Failures fall back (TensorRT RTX to CUDA, others to ORT CPU) and are logged, because changing provider can alter new terrain slightly. |
 | `modelLoadMode`              | `auto`  | `auto` `memory` `file` | Load model graphs from RAM or their optimised files. Auto uses files for CPU and memory-constrained hosts. |
 | `offloadModels`              | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
 | `gpuUtilizationPercent`      | 100     | 40 – 100     | Share of the time world generation may keep the device busy. Lower it if generating chunks makes the game stutter; see [Stuttering](#stuttering) below. World generation slows by the reciprocal. |
 | `validateModelHashes`        | true    | on / off     | Verify SHA-256 of existing model files on startup. Off saves a few seconds of disk read. |
 | `downloadRuntime`            | true    | on / off     | Fetch the ONNX Runtime and, when selected, OpenVINO native libraries automatically. |
-| `decoderPrecision`           | `fp32`  | `fp32` `int8` | Select and automatically fetch only the matching decoder. INT8 is opt-in and can change newly generated terrain slightly; a missing or invalid selected decoder stops model loading instead of silently changing precision. |
+| `decoderPrecision`           | `fp32`  | `fp32` `fp16` `int8` | Select and automatically fetch only the matching decoder. FP16 is for GPU providers, INT8 for CPU/OpenVINO. Both are opt-in and change newly generated terrain slightly; a missing or invalid selected decoder stops model loading instead of silently changing precision. |
+| `basePrecision`              | `fp32`  | `fp32` `fp16` | The base model is most of a tile's work, so FP16 here is the biggest GPU win: on an RTX 3060, TensorRT RTX with FP16 base and decoder generated the same ten regions in 7.6 s against 19.0 s on CUDA FP32, for about 4 m mean elevation difference (CPU vs GPU is already ~2.6 m). Needs a GPU provider; on CPU it is slower than FP32 and still changes terrain. |
+| `coarsePrecision`            | `fp32`  | `fp32` `fp16` | Separate because the trade is poor: the coarse sampler runs twenty steps per tile, so FP16 saved 0.3 s and moved elevation a further 2 m on the same bench. |
 | `tileCacheMegabytes`         | 256     | 128 – 1024   | Total decoded tensor-window cache across all pipeline stages. |
 | `latentBatchSize`            | 0       | 0 – 4        | Latent windows per base-model call. Zero chooses 1 on CPU and 4 on GPU. |
 | `terrainTileCacheMegabytes`  | 256     | 128 – 1024   | Finished terrain tiles. Raise if you see thrash warnings. |
@@ -503,47 +362,33 @@ changing either can make newly generated terrain disagree slightly with existing
 
 #### Stuttering
 
-In single player the model runs on the same GPU the game renders with, and world generation submits
-work to it in long unbroken stretches. A graph that has been submitted runs to completion — nothing
-can preempt it — so the renderer's own work queues behind it and a burst of chunk generation reads
-as a freeze, even though the game thread is not blocked at all. It is worst on a card that is only
-just fast enough for both jobs.
+In single player the model shares the GPU with the renderer, and a submitted graph runs to
+completion, so a burst of chunk generation reads as a freeze even though the game thread is not
+blocked.
 
-`gpuUtilizationPercent` is the lever. Below 100 the generator idles after each model run for long
-enough to hold the device to that share, so the pattern becomes run, wait, run, wait instead of one
-solid block of compute, and the renderer gets regular windows to put a frame out. It cannot make an
-individual model run shorter, so it reduces stutter rather than removing it, and world generation
-slows by the reciprocal: at 50% a terrain tile takes about twice as long, at 25% about four times.
+`gpuUtilizationPercent` below 100 idles the generator after each run, so the renderer gets regular
+windows. It cannot shorten an individual run, and world generation slows by the reciprocal: at 50% a
+tile takes about twice as long. Measured on a 6 GB laptop card at 40%, a tile went from 142 ms to
+323 ms, and total inference time rose 14.7 s to 16.5 s because a card that keeps going idle drops
+its clocks.
 
-Measured on a 6 GB laptop card at 40%: the device came out at exactly 40% busy and a terrain tile
-went from 142 ms to 323 ms. Total inference time in `/tdiff status` also rises — 14.7 s to 16.5 s
-here, almost all of it on the shortest of the three models — because a card that keeps going idle
-drops its clocks between runs. That is the cost of the idle windows, not a sign of anything wrong.
-
-Start at 50 and go down only as far as the stutter actually needs — a value too low leaves world
-generation unable to keep up with a walking player, which is its own kind of stutter. `/tdiff
-gpulimit <percent>` changes it without a restart, so you can watch your frame rate and tune it in
-place. On a dedicated server there are no frames to protect and the setting is only a way of leaving
-the card to something else; leave it at 100 unless you have a reason.
+Start at 50 and go down only as far as the stutter needs; too low and generation cannot keep up with
+a walking player. `/tdiff gpulimit <percent>` changes it without a restart. On a dedicated server
+leave it at 100 unless you want the card for something else.
 
 #### Debug map
 
-Set `debugMapPort` and the mod serves a small read-only page showing what the model is actually
-producing, updating as tiles are generated. `/tdiff map` prints the address; the default binding is
-loopback, so only the machine running the server can reach it.
+Set `debugMapPort` and the mod serves a read-only page of what the model is producing, updating as
+tiles are generated. `/tdiff map` prints the address; the default binding is loopback.
 
-Eight layers, switchable without refetching: surface height in blocks, model elevation in metres,
-slope, mean temperature, temperature seasonality, annual precipitation, precipitation seasonality,
-and the 0–255 rainfall byte the game itself reads. Drag to pan, wheel to zoom, and hover any column
-for all eight values at once. The colour scale fits whatever is loaded and is shown with its ends.
+Eight layers: surface height, model elevation, slope, mean temperature, temperature seasonality,
+annual precipitation, precipitation seasonality, and the 0–255 rainfall byte the game reads. Drag to
+pan, wheel to zoom, hover a column for all eight.
 
-It keeps its own record rather than reading the generator's tile cache, because that cache is an
-LRU sized for world generation and drops a tile as soon as the generator has moved on — which is
-exactly when you want to look at it. Each tile is stored as a 32×32 thumbnail quantised to a byte
-per column per layer, about 8 KB, so the default 2048-tile history costs some 17 MB.
-
-The port is off by default and nothing on it accepts input. Point it at `0.0.0.0` only if you mean
-to publish your world's terrain and climate to the network; the server logs a warning if you do.
+It keeps its own record, because the generator's tile cache drops a tile as soon as it has moved on.
+Each is a 32×32 thumbnail, a byte per column per layer, so the default 2048-tile history costs about
+17 MB. Point it at `0.0.0.0` only to publish your world's terrain to the network; the server logs a
+warning if you do.
 
 ### World generation
 
@@ -623,25 +468,18 @@ chunks disagree with old ones.
 | `startingClimateSearchRadiusBlocks`  | 65536   | 16384 – 262144 | How far to look before settling for the closest temperature it saw. The search stops at the first match, so this is only the give-up point. |
 | `startingClimateNorthSouthCost`      | 2       | 1 – 4        | How much more reluctantly the search moves along Z than X, because Z is what buys midnight sun. With latitude bands on it rarely has to move far at all — the map centre already sits at the right latitude. |
 
-Two notes on the tables above.
+**`rainfallBias`** puts back the average of Vintage Story's "higher ground is wetter" bonus, which
+the climate map cancels (the model does orography properly) but vanilla's biome thresholds were
+tuned with.
 
-**`rainfallBias`** exists because the climate map cancels Vintage Story's own "higher ground is
-wetter" bonus — the model already does orography properly — while vanilla's biome thresholds were
-tuned with that bonus present. The default puts its average back.
+**`forestDensityMultiplier` is squared on its way to the ground.** Vanilla accepts each candidate
+tree with probability `(byte / 255)²`, so 1.0 → 1.4 is roughly double the trees, and the setting
+bites hardest where cover is already low. The byte saturates at 255, so much above 1.2 flattens the
+wet end; 0 still scatters lone trees, because the acceptance probability floors at 0.0025. For a
+treeless world use "Forestation & shrubs" at −100%.
 
-**`forestDensityMultiplier` is squared on its way to the ground.** The mod writes a 0–255 forest
-byte; vanilla then draws a pool of candidate tree positions from the *climate*, and accepts each one
-with probability `(byte / 255)²`. So 1.0 → 1.4 is roughly double the trees, not 40% more, and the
-setting bites hardest where cover is already low — it turns scrub into open woodland long before it
-turns forest into rainforest. Two other things follow: the byte saturates at 255, so anything much
-above 1.2 mostly flattens the wet end; and 0 does not give a bare world, because the acceptance
-probability has a floor of 0.0025 that still scatters the odd lone tree. For a genuinely treeless
-world use the world's own "Forestation & shrubs" setting at −100%.
-
-The two forest controls are worth telling apart. "Forestation & shrubs" is *additive* — it shifts
-the byte up or down everywhere, lifting deserts as much as forests. `forestDensityMultiplier` is
-*proportional* — it preserves the climate pattern and scales the contrast. Both still apply, the
-world setting on top of the mod's byte.
+The two differ: "Forestation & shrubs" is *additive*, lifting deserts as much as forests;
+`forestDensityMultiplier` is *proportional*, preserving the climate pattern. Both apply.
 
 ## Building
 

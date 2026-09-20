@@ -41,18 +41,6 @@ public static class ModelAssetManager
     {
         new()
         {
-            FileName = "coarse_model.onnx",
-            SizeBytes = 22497125,
-            Sha256 = "d6ca15b21b2e35d5e594a9ac7a4249a2376590c0ad2b5b49a1e6e2d033450008"
-        },
-        new()
-        {
-            FileName = "base_model.onnx",
-            SizeBytes = 2029994361,
-            Sha256 = "543de788f73d0a4012685c908259f615601102aace4751aeccec64154ba145c0"
-        },
-        new()
-        {
             FileName = "pipeline_data.json",
             SizeBytes = 12226,
             Sha256 = "e3132c3ef0c65d8613615f9278ffe23bbd9363ddcd87f1cc6f18456bcc9efe5c"
@@ -65,11 +53,65 @@ public static class ModelAssetManager
         }
     };
 
+    private static readonly Asset Fp32CoarseAsset = new()
+    {
+        FileName = "coarse_model.onnx",
+        SizeBytes = 22497125,
+        Sha256 = "d6ca15b21b2e35d5e594a9ac7a4249a2376590c0ad2b5b49a1e6e2d033450008"
+    };
+
+    private static readonly Asset Fp32BaseAsset = new()
+    {
+        FileName = "base_model.onnx",
+        SizeBytes = 2029994361,
+        Sha256 = "543de788f73d0a4012685c908259f615601102aace4751aeccec64154ba145c0"
+    };
+
     private static readonly Asset Fp32DecoderAsset = new()
     {
         FileName = "decoder_model.onnx",
         SizeBytes = 223854143,
         Sha256 = "6473ae47ca6ec4d743d30fe4f5d381fe4158899714eff09b762005bdbdef68c1"
+    };
+
+    /// <summary>An asset published by one of this repository's model releases.</summary>
+    private static string ReleaseUrl(string tag, string fileName) =>
+        $"https://github.com/Techmo2/VS-Terrain-Diffusion/releases/download/{tag}/{fileName}";
+
+    /// <summary>
+    /// Half-precision exports for GPU providers: float32 in and out, narrower maths inside. Each is
+    /// a separate export, not a conversion of the file above, because a naive conversion of the base
+    /// model overflows its conditioning normalisation. Built by the *-fp16-release workflows, whose
+    /// pinned hashes and these are updated together.
+    /// </summary>
+    private static readonly Asset Fp16CoarseAsset = new()
+    {
+        FileName = "coarse_model.fp16.onnx",
+        SizeBytes = 5686151,
+        Sha256 = "f971de460284fe8d0e2a4467f2d5ec6673c16b6f4222b8a5f340e14c125fd44e",
+        // No release yet: the coarse model is not worth shipping in fp16 until its
+        // layernorms are re-exported, so this points at the tag it would use.
+        UrlOverride = ReleaseUrl("coarse-fp16-v1", "coarse_model.fp16.onnx")
+    };
+
+    private static readonly Asset Fp16BaseAsset = new()
+    {
+        FileName = "base_model.fp16.onnx",
+        SizeBytes = 507810847,
+        Sha256 = "fcb4ddd9a9f4b6aebcfc9663d40173128c2c0f1a105bf10a286321cf4a521647",
+        UrlOverride = ReleaseUrl("base-fp16-v1", "base_model.fp16.onnx")
+    };
+
+    /// <summary>
+    /// H/W are fixed at export, so the file name and release tag carry the window. 256 is what the
+    /// decoder stage asks for (<see cref="WorldPipeline.DecoderTileSize"/>).
+    /// </summary>
+    private static readonly Asset Fp16DecoderAsset = new()
+    {
+        FileName = "decoder_model.fp16.256.onnx",
+        SizeBytes = 56264771,
+        Sha256 = "2429cf246bf8905b17763bb91edd0adbe5a8dc09be7c2228a62e3ad968f0fb8e",
+        UrlOverride = ReleaseUrl("decoder-fp16-256-v1", "decoder_model.fp16.256.onnx")
     };
 
     private static readonly Asset Int8DecoderAsset = new()
@@ -84,8 +126,18 @@ public static class ModelAssetManager
     private static readonly object Gate = new();
     private static bool _ready;
 
-    private static Asset SelectedDecoderAsset =>
-        DiffusionConfig.Instance.DecoderPrecision == "int8" ? Int8DecoderAsset : Fp32DecoderAsset;
+    private static Asset SelectedDecoderAsset => DiffusionConfig.Instance.DecoderPrecision switch
+    {
+        "int8" => Int8DecoderAsset,
+        "fp16" => Fp16DecoderAsset,
+        _ => Fp32DecoderAsset
+    };
+
+    private static Asset SelectedCoarseAsset =>
+        DiffusionConfig.Instance.CoarsePrecision == "fp16" ? Fp16CoarseAsset : Fp32CoarseAsset;
+
+    private static Asset SelectedBaseAsset =>
+        DiffusionConfig.Instance.BasePrecision == "fp16" ? Fp16BaseAsset : Fp32BaseAsset;
 
     public static string OfflineHelpUrl => $"https://huggingface.co/{RepositorySlug}/tree/{Revision}";
 
@@ -113,6 +165,8 @@ public static class ModelAssetManager
     private static IEnumerable<Asset> RequiredAssets()
     {
         foreach (Asset asset in CommonAssets) yield return asset;
+        yield return SelectedCoarseAsset;
+        yield return SelectedBaseAsset;
         yield return SelectedDecoderAsset;
     }
 
@@ -158,18 +212,28 @@ public static class ModelAssetManager
     /// strict: silently changing precision after a download failure would change newly generated
     /// terrain on the next successful start.
     /// </summary>
-    public static string ResolveDecoderPath(ILogger logger)
+    public static string ResolveDecoderPath(ILogger logger) =>
+        ResolveSelectedModel(SelectedDecoderAsset, "Decoder", DiffusionConfig.Instance.DecoderPrecision, logger);
+
+    /// <summary>The coarse model at the configured precision.</summary>
+    public static string ResolveCoarsePath(ILogger logger) =>
+        ResolveSelectedModel(SelectedCoarseAsset, "Coarse model", DiffusionConfig.Instance.CoarsePrecision, logger);
+
+    /// <summary>The base (latent) model at the configured precision.</summary>
+    public static string ResolveBasePath(ILogger logger) =>
+        ResolveSelectedModel(SelectedBaseAsset, "Base model", DiffusionConfig.Instance.BasePrecision, logger);
+
+    private static string ResolveSelectedModel(Asset asset, string label, string precision, ILogger logger)
     {
         if (!_ready)
             throw new InvalidOperationException("Terrain Diffusion model assets have not been prepared");
 
-        Asset decoder = SelectedDecoderAsset;
-        string path = ResolveAssetPath(decoder.FileName);
-        if (!File.Exists(path) || new FileInfo(path).Length != decoder.SizeBytes)
-            throw new ModelAssetException($"The selected decoder '{decoder.FileName}' is unavailable");
+        string path = ResolveAssetPath(asset.FileName);
+        if (!File.Exists(path) || new FileInfo(path).Length != asset.SizeBytes)
+            throw new ModelAssetException($"The selected {label.ToLowerInvariant()} '{asset.FileName}' is unavailable");
 
-        logger.Notification("[{0}] Decoder precision: {1} ({2})", DiffusionPaths.ModId,
-            DiffusionConfig.Instance.DecoderPrecision.ToUpperInvariant(), HumanBytes(decoder.SizeBytes));
+        logger.Notification("[{0}] {1} precision: {2} ({3})", DiffusionPaths.ModId,
+            label, precision.ToUpperInvariant(), HumanBytes(asset.SizeBytes));
         return path;
     }
 

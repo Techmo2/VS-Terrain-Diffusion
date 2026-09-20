@@ -16,19 +16,24 @@ does not allow comments** — copy values out of it, do not paste the whole thin
 [Ranges](#ranges) at the end gives every numeric field's hard limit, the narrower range worth
 staying inside, and its default.
 
-Settings under `WorldGen`, the inference device, and the decoder precision can change what the world
-looks like. INT8 and OpenVINO must be selected explicitly; keep both machine settings fixed after
-exploration so new chunks do not disagree slightly with the ones already on disk.
+Settings under `WorldGen`, the inference device, and the three model precisions can change what the
+world looks like. OpenVINO, TensorRT RTX and every precision other than FP32 must be selected
+explicitly; keep those machine settings fixed after exploration so new chunks do not disagree
+slightly with the ones already on disk.
 
 ```jsonc
 {
-  // Which execution provider runs the model: "auto", "cpu", "openvino", "cuda", "directml"
-  // or "coreml". OpenVINO can accelerate the decoder on 64-bit Linux CPUs; the coarse and base
-  // stages remain on ONNX Runtime CPU to keep memory use predictable. It runs in an isolated
-  // helper and falls back to ONNX Runtime CPU if the native compiler is not usable on the host.
-  // That fallback is logged because changing provider can alter newly generated terrain slightly.
-  // OpenVINO is opt-in: "auto" never selects it. Auto picks CoreML on macOS, DirectML on 64-bit
-  // Windows, CUDA on Linux with an NVIDIA driver present, and CPU everywhere else.
+  // Which execution provider runs the model: "auto", "cpu", "openvino", "cuda", "tensorrt-rtx",
+  // "directml" or "coreml". OpenVINO can accelerate the decoder on 64-bit Linux CPUs; the coarse
+  // and base stages remain on ONNX Runtime CPU to keep memory use predictable. It runs in an
+  // isolated helper and falls back to ONNX Runtime CPU if the native compiler is not usable on the
+  // host. TensorRT RTX needs a GeForce RTX 30xx or newer on 64-bit Linux, downloads about 300 MB
+  // of NVIDIA runtime once, builds an engine per model on first start (seconds, then cached under
+  // TerrainDiffusionModels/onnx-cache/tensorrt-rtx), and falls back to CUDA if any of that fails.
+  // Those fallbacks are logged because changing provider can alter newly generated terrain
+  // slightly. OpenVINO and TensorRT RTX are opt-in: "auto" never selects them. Auto picks CoreML
+  // on macOS, DirectML on 64-bit Windows, CUDA on Linux with an NVIDIA driver present, and CPU
+  // everywhere else.
   "InferenceDevice": "auto",
 
   // Where ONNX Runtime loads model graphs from: "memory", "file", or "auto". Memory makes GPU
@@ -61,12 +66,25 @@ exploration so new chunks do not disagree slightly with the ones already on disk
   // automatically. Turn off to supply them yourself under TerrainDiffusionModels/onnxruntime/.
   "DownloadRuntime": true,
 
-  // Decoder model precision: "fp32" or "int8". The matching decoder is downloaded automatically;
-  // the unselected decoder is not required. INT8 uses decoder_model.int8.onnx with either OpenVINO
-  // or ONNX Runtime. It is never selected automatically because it can change newly generated
-  // terrain slightly. If the selected decoder cannot be downloaded or verified, loading stops
-  // instead of silently changing precision.
+  // Decoder model precision: "fp32", "fp16" or "int8". The matching decoder is downloaded
+  // automatically; the others are not required. FP16 is for GPU providers, INT8 for the CPU and
+  // OpenVINO. Neither is ever selected automatically because both change newly generated terrain
+  // slightly. If the selected decoder cannot be downloaded or verified, loading stops instead of
+  // silently changing precision.
   "DecoderPrecision": "fp32",
+
+  // Base (latent) model precision: "fp32" or "fp16". The base model is most of a tile's work, so
+  // this is the GPU speed setting. On an RTX 3060 over ten 128x128 regions: CUDA FP32 19.0 s,
+  // TensorRT RTX FP32 12.5 s (~0.3 m elevation difference), TensorRT RTX with FP16 base and
+  // decoder 7.6 s (~4 m mean, 23 m worst) — against ~2.6 m for the same world on a CPU rather than
+  // this GPU. Needs a GPU provider: ORT's CPU kernels widen fp16 back to float, which is slower
+  // than FP32 and still changes the terrain. The mod warns if you ask for that.
+  "BasePrecision": "fp32",
+
+  // Coarse model precision: "fp32" or "fp16". Worth its own setting because the trade is poor:
+  // the coarse sampler runs twenty steps per tile and compounds small differences, so on the same
+  // bench FP16 here saved 0.3 s and moved elevation a further 2 m. FP32 unless you measure better.
+  "CoarsePrecision": "fp32",
 
   // Total megabytes of decoded tensor windows kept across all pipeline stages.
   "TileCacheMegabytes": 256,
@@ -409,12 +427,24 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `ScaleOverride` | 0, or 1 – 16 | 0, or 1 – 6 | 0 |
 | `VerticalExaggerationOverride` | 0, or 0.05 – 20 | 0, or 0.5 – 2 | 0 |
 
-An unrecognised `InferenceDevice`, `ModelLoadMode`, `DecoderPrecision`, `HeightMode`,
-`RainfallBasis`, `OceanMap` or `ClimateMode` falls back to its default rather than failing to load.
+An unrecognised `InferenceDevice`, `ModelLoadMode`, `CoarsePrecision`, `BasePrecision`,
+`DecoderPrecision`, `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls back to its
+default rather than failing to load.
 
-The selected decoder is downloaded automatically. The optional mixed-precision decoder is stored at
-`TerrainDiffusionModels/decoder_model.int8.onnx`; its SHA-256 is
-`0ae464c884593b3016a19365caf3ae43a7e26743c8ef1234814e10bbbd9b5b74`; the exact recipe and
-calibration hashes are under `scripts/`. Keep `InferenceDevice` and `DecoderPrecision` fixed for an
-established world: changing either can introduce small numerical differences in newly generated
-terrain at chunk boundaries.
+Only the selected models are downloaded, into `TerrainDiffusionModels/`:
+
+| setting | file |
+|---|---|
+| `decoderPrecision: "int8"` | `decoder_model.int8.onnx` |
+| `decoderPrecision: "fp16"` | `decoder_model.fp16.256.onnx` |
+| `basePrecision: "fp16"` | `base_model.fp16.onnx` |
+| `coarsePrecision: "fp16"` | `coarse_model.fp16.onnx` |
+
+The decoder's half-precision file carries a window size because a decoder graph is exported for one
+height and width and loads at no other. 256x256 is fixed in the pipeline; `TerrainTileSizeBlocks`
+changes how many windows run per tile, not their shape.
+
+Recipes are under `scripts/`; each model is built and published by a workflow in
+`.github/workflows/` that verifies its exact size and SHA-256. Keep
+`InferenceDevice` and the three precision settings fixed for an established world: changing any of
+them can introduce small numerical differences in newly generated terrain at chunk boundaries.

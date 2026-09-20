@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Threading;
+using Microsoft.ML.OnnxRuntime;
 using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
 
@@ -20,7 +21,13 @@ public enum InferenceProvider
     Cuda,
     DirectMl,
     CoreMl,
-    OpenVino
+    OpenVino,
+
+    /// <summary>
+    /// NVIDIA's TensorRT for RTX, an ONNX Runtime plugin provider. Ampere and later; builds its
+    /// engines on the machine, in seconds, and caches them.
+    /// </summary>
+    TensorRtRtx
 }
 
 /// <summary>
@@ -76,12 +83,60 @@ public static class OnnxRuntimeBootstrap
             "45bb98cee3bf8d8c51499c7e9a3ad789b181a8878e7919cca866e52175782cb2")
     };
 
+    /// <summary>TensorRT RTX version carried by the plugin wheel below.</summary>
+    public const string TensorRtRtxVersion = "1.6.1";
+
+    private const string TensorRtRtxPluginVersion = "0.4.0";
+    private const string TensorRtRtxWheelUrl =
+        "https://files.pythonhosted.org/packages/9c/68/093626a054300fa7f4f1a6d18b775d185034c6bb7fb056ac4f9d1e9b50d4/" +
+        "onnxruntime_ep_nv_tensorrt_rtx_cu13-0.4.0-py3-none-manylinux_2_28_x86_64.whl";
+    private const string TensorRtRtxWheelSha256 =
+        "68b8f7306b50cf76daf997b8be24ec3813498c15d48e0ddd211db14f2a9daa19";
+    private const string TensorRtRtxVerificationFileName = ".sources.sha256";
+    private const string TensorRtRtxVerificationContents =
+        TensorRtRtxWheelSha256 + "  onnxruntime-ep-nv-tensorrt-rtx-cu13.whl\n";
+
+    /// <summary>The EP's registration name, which is also the EpName it reports back to ORT.</summary>
+    internal const string TensorRtRtxEpName = "NvTensorRTRTX";
+
+    /// <summary>The plugin .so ORT loads, plus the libraries it links against, from that wheel.</summary>
+    private static readonly (string Name, long Size, string Sha256)[] TensorRtRtxRuntimeFiles =
+    {
+        ("libonnxruntime_providers_nv_tensorrt_rtx.so", 5441968,
+            "f07c9ea8f9ea9eabc80f24c8532a11308d17069ea7d5975b6a12e18b82972a44"),
+        ("libtensorrt_rtx.so.1.6.1", 227372352,
+            "42cb00a71e684828cdb3a7af029a9328463df0f8d2163bed12cb3cf7a98cd5da"),
+        ("libtensorrt_onnxparser_rtx.so.1.6.1", 3856320,
+            "297ab8bae3622d5751e8ed15898088340c697af19364abcfddc0e2add6437d60"),
+        ("libtensorrt_plugins.so", 69602904,
+            "6d0fabea24978f57f9e6bb9eff18d2f35b5b6d4799a7092947895d4ee905f2b8"),
+        ("libtensorrt_shim.so", 1525840,
+            "6780468474c8b1af44e964d22c06b290398334a656b2ce76bef62d4b7255379a"),
+        ("libcudart.so.13.4.36", 798496,
+            "82d50fc923566a86ff5449cb190d58007a26280669b4f62be2c284cacb51ed24")
+    };
+
+    /// <summary>
+    /// dlopened by absolute path before the plugin, so the loader resolves them by SONAME without
+    /// LD_LIBRARY_PATH.
+    /// </summary>
+    private static readonly string[] TensorRtRtxDependencies =
+    {
+        "libcudart.so.13.4.36",
+        "libtensorrt_rtx.so.1.6.1",
+        "libtensorrt_onnxparser_rtx.so.1.6.1"
+    };
+
     private static readonly object Gate = new();
     private static readonly object OpenVinoGate = new();
+    private static readonly object TensorRtRtxGate = new();
+    private static readonly List<IntPtr> TensorRtRtxHandles = new();
     private static bool _initialised;
     private static bool _openVinoInitialised;
+    private static bool _tensorRtRtxInitialised;
     private static string _nativeDirectory;
     private static string _openVinoDirectory;
+    private static string _tensorRtRtxDirectory;
 
     /// <summary>The provider that was actually resolved, available after <see cref="Initialize"/>.</summary>
     public static InferenceProvider Provider { get; private set; } = InferenceProvider.Cpu;
@@ -96,9 +151,14 @@ public static class OnnxRuntimeBootstrap
     public static string ActiveRuntimeVersion => OnnxRuntimeVersion;
 
     /// <summary>Human-readable runtime combination used in the status command.</summary>
-    public static string ActiveRuntimeDescription => Provider == InferenceProvider.OpenVino
-        ? $"OpenVINO {OpenVinoVersion} decoder, ONNX Runtime {OnnxRuntimeVersion} coarse/base"
-        : $"ONNX Runtime {ActiveRuntimeVersion}";
+    public static string ActiveRuntimeDescription => Provider switch
+    {
+        InferenceProvider.OpenVino =>
+            $"OpenVINO {OpenVinoVersion} decoder, ONNX Runtime {OnnxRuntimeVersion} coarse/base",
+        InferenceProvider.TensorRtRtx =>
+            $"TensorRT RTX {TensorRtRtxVersion} on ONNX Runtime {OnnxRuntimeVersion}",
+        _ => $"ONNX Runtime {ActiveRuntimeVersion}"
+    };
 
     /// <summary>Directory containing the standalone OpenVINO C runtime, if initialised.</summary>
     public static string OpenVinoDirectory => _openVinoDirectory;
@@ -155,6 +215,67 @@ public static class OnnxRuntimeBootstrap
     }
 
     /// <summary>
+    /// Downloads the plugin provider, loads its libraries and registers it. Must run after the ONNX
+    /// Runtime resolver is installed: registering a plugin goes through the native runtime.
+    /// </summary>
+    public static string InitializeTensorRtRtx(ILogger logger, CancellationToken cancellation = default)
+    {
+        if (_tensorRtRtxInitialised) return _tensorRtRtxDirectory;
+        lock (TensorRtRtxGate)
+        {
+            if (_tensorRtRtxInitialised) return _tensorRtRtxDirectory;
+            if (!OperatingSystem.IsLinux() || RuntimeInformation.OSArchitecture != Architecture.X64)
+                throw new PlatformNotSupportedException("The TensorRT RTX provider requires 64-bit Linux");
+
+            string directory = Path.Combine(
+                DiffusionPaths.RuntimeDirectory, "tensorrt-rtx", TensorRtRtxPluginVersion, "linux-x64");
+            bool filesPresent = HasTensorRtRtxRuntime(directory);
+            if (!filesPresent || !HasVerifiedTensorRtRtxRuntime(directory))
+            {
+                if (!DiffusionConfig.Instance.DownloadRuntime)
+                {
+                    if (!filesPresent || File.Exists(Path.Combine(directory, TensorRtRtxVerificationFileName)))
+                    {
+                        throw new InvalidOperationException(
+                            "Runtime downloads are disabled and no verified TensorRT RTX provider was found in " +
+                            directory);
+                    }
+                }
+                else
+                {
+                    Downloaded = true;
+                    LoadingNotice.Post(logger,
+                        "Downloading the TensorRT RTX inference runtime (about 300 MB). This happens once.");
+                    using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+                    InstallTensorRtRtx(client, directory, logger, cancellation);
+                }
+            }
+
+            if (!HasTensorRtRtxRuntime(directory))
+                throw new FileNotFoundException("TensorRT RTX native libraries are missing in " + directory);
+
+            foreach (string dependency in TensorRtRtxDependencies)
+                TensorRtRtxHandles.Add(NativeLibrary.Load(Path.Combine(directory, dependency)));
+
+            OrtEnv.Instance().RegisterExecutionProviderLibrary(
+                TensorRtRtxEpName, Path.Combine(directory, "libonnxruntime_providers_nv_tensorrt_rtx.so"));
+
+            _tensorRtRtxDirectory = directory;
+            _tensorRtRtxInitialised = true;
+            logger.Notification("[{0}] TensorRT RTX {1} provider registered from {2}",
+                DiffusionPaths.ModId, TensorRtRtxVersion, directory);
+            return directory;
+        }
+    }
+
+    /// <summary>Directory holding the TensorRT RTX plugin provider, once initialised.</summary>
+    public static string TensorRtRtxDirectory => _tensorRtRtxDirectory;
+
+    /// <summary>Where TensorRT RTX keeps the engines it builds for this machine.</summary>
+    public static string TensorRtRtxCacheDirectory =>
+        Path.Combine(DiffusionPaths.OptimizedModelDirectory, "tensorrt-rtx", TensorRtRtxVersion);
+
+    /// <summary>
     /// Resolves the native runtime and installs the DllImport resolver. Blocking; may download
     /// tens of megabytes (or a few hundred for CUDA). Safe to call more than once.
     /// </summary>
@@ -166,25 +287,38 @@ public static class OnnxRuntimeBootstrap
             if (_initialised) return;
 
             InferenceProvider provider = ResolveRequestedProvider(DiffusionConfig.Instance.InferenceDevice, logger);
-            InferenceProvider onnxProvider = provider == InferenceProvider.OpenVino
-                ? InferenceProvider.Cpu
-                : provider;
+            // OpenVINO runs beside an ORT CPU build; TensorRT RTX is a plugin on the CUDA build.
+            InferenceProvider onnxProvider = provider switch
+            {
+                InferenceProvider.OpenVino => InferenceProvider.Cpu,
+                InferenceProvider.TensorRtRtx => InferenceProvider.Cuda,
+                _ => provider
+            };
             string directory;
 
             try
             {
                 directory = EnsureNativeFiles(onnxProvider, logger, cancellation);
                 if (provider == InferenceProvider.OpenVino) InitializeOpenVino(logger, cancellation);
+                if (provider == InferenceProvider.TensorRtRtx)
+                {
+                    InstallResolver(directory);   // the plugin registers through the native runtime
+                    InitializeTensorRtRtx(logger, cancellation);
+                }
             }
             catch (Exception e) when (provider != InferenceProvider.Cpu && e is not OperationCanceledException)
             {
-                logger.Warning("[{0}] Could not prepare the {1} runtime ({2}); falling back to CPU. " +
+                // TensorRT RTX sits on CUDA, so its failure leaves a GPU path one step down.
+                InferenceProvider fallback = provider == InferenceProvider.TensorRtRtx
+                    ? InferenceProvider.Cuda
+                    : InferenceProvider.Cpu;
+                logger.Warning("[{0}] Could not prepare the {1} runtime ({2}); falling back to {3}. " +
                                "Keep the effective provider fixed for an established world because provider changes " +
                                "can alter newly generated terrain slightly.",
-                    DiffusionPaths.ModId, provider, e.Message);
-                provider = InferenceProvider.Cpu;
-                onnxProvider = InferenceProvider.Cpu;
-                directory = EnsureNativeFiles(provider, logger, cancellation);
+                    DiffusionPaths.ModId, provider, e.Message, fallback);
+                provider = fallback;
+                onnxProvider = fallback;
+                directory = EnsureNativeFiles(onnxProvider, logger, cancellation);
             }
 
             _nativeDirectory = directory;
@@ -220,6 +354,11 @@ public static class OnnxRuntimeBootstrap
                 logger.Warning("[{0}] inference device 'openvino' is only available on 64-bit Linux.",
                     DiffusionPaths.ModId);
                 return InferenceProvider.Cpu;
+            case "tensorrt-rtx":
+                if (linux && x64 && HasNvidiaDriver()) return InferenceProvider.TensorRtRtx;
+                logger.Warning("[{0}] inference device 'tensorrt-rtx' needs 64-bit Linux with an NVIDIA driver " +
+                               "and a GeForce RTX 30xx or newer GPU.", DiffusionPaths.ModId);
+                return linux && x64 && HasNvidiaDriver() ? InferenceProvider.Cuda : InferenceProvider.Cpu;
             case "gpu":
             case "auto":
             default:
@@ -418,6 +557,90 @@ public static class OnnxRuntimeBootstrap
         finally
         {
             TryDeleteDirectory(staging);
+        }
+    }
+
+    private static void InstallTensorRtRtx(HttpClient client, string directory, ILogger logger,
+                                           CancellationToken cancellation)
+    {
+        string parent = Path.GetDirectoryName(directory)
+                        ?? throw new InvalidOperationException("TensorRT RTX directory has no parent");
+        Directory.CreateDirectory(parent);
+
+        string staging = directory + ".install-" + Guid.NewGuid().ToString("N");
+        Directory.CreateDirectory(staging);
+        try
+        {
+            var entries = new string[TensorRtRtxRuntimeFiles.Length];
+            var names = new string[TensorRtRtxRuntimeFiles.Length];
+            for (int i = 0; i < TensorRtRtxRuntimeFiles.Length; i++)
+            {
+                names[i] = TensorRtRtxRuntimeFiles[i].Name;
+                entries[i] = "onnxruntime_ep_nv_tensorrt_rtx/" + names[i];
+            }
+
+            ExtractVerifiedZip(client, new NativeSource
+            {
+                Name = $"TensorRT RTX {TensorRtRtxVersion} provider (NVIDIA)",
+                Url = TensorRtRtxWheelUrl,
+                Kind = ArchiveKind.Zip,
+                Sha256 = TensorRtRtxWheelSha256,
+                EntryPaths = entries,
+                TargetFileNames = names
+            }, staging, logger, cancellation);
+
+            if (!HasTensorRtRtxRuntime(staging))
+                throw new FileNotFoundException("The verified TensorRT RTX wheel did not contain a complete runtime");
+
+            File.WriteAllText(
+                Path.Combine(staging, TensorRtRtxVerificationFileName), TensorRtRtxVerificationContents);
+            if (!HasVerifiedTensorRtRtxRuntime(staging))
+                throw new InvalidDataException(
+                    "The extracted TensorRT RTX runtime did not match the pinned file manifest");
+            ReplaceDirectory(staging, directory);
+        }
+        finally
+        {
+            TryDeleteDirectory(staging);
+        }
+    }
+
+    private static bool HasTensorRtRtxRuntime(string directory)
+    {
+        foreach ((string name, _, _) in TensorRtRtxRuntimeFiles)
+        {
+            if (!File.Exists(Path.Combine(directory, name))) return false;
+        }
+        return true;
+    }
+
+    private static bool HasVerifiedTensorRtRtxRuntime(string directory)
+    {
+        string marker = Path.Combine(directory, TensorRtRtxVerificationFileName);
+        try
+        {
+            if (!File.Exists(marker) ||
+                !string.Equals(File.ReadAllText(marker), TensorRtRtxVerificationContents, StringComparison.Ordinal))
+                return false;
+
+            foreach ((string name, long size, string expectedSha256) in TensorRtRtxRuntimeFiles)
+            {
+                string path = Path.Combine(directory, name);
+                var info = new FileInfo(path);
+                if (!info.Exists || info.Length != size) return false;
+                using FileStream input = File.OpenRead(path);
+                string actualSha256 = Convert.ToHexString(SHA256.HashData(input)).ToLowerInvariant();
+                if (!string.Equals(actualSha256, expectedSha256, StringComparison.Ordinal)) return false;
+            }
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 

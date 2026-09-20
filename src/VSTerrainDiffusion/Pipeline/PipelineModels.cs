@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
@@ -81,6 +82,27 @@ public sealed class PipelineModels : IDisposable
         _loadThread.Start();
     }
 
+    /// <summary>
+    /// ONNX Runtime's CPU kernels widen fp16 back to float, so on a CPU provider it costs speed and
+    /// still changes the terrain.
+    /// </summary>
+    private static void WarnIfHalfPrecisionOnCpu(ILogger logger)
+    {
+        if (OnnxRuntimeBootstrap.Provider is not (InferenceProvider.Cpu or InferenceProvider.OpenVino)) return;
+
+        DiffusionConfig config = DiffusionConfig.Instance;
+        var half = new List<string>();
+        if (config.CoarsePrecision == "fp16") half.Add("coarse");
+        if (config.BasePrecision == "fp16") half.Add("base");
+        if (config.DecoderPrecision == "fp16") half.Add("decoder");
+        if (half.Count == 0) return;
+
+        logger.Warning(
+            "[{0}] FP16 is selected for the {1} model(s) but inference runs on {2}, which widens half precision " +
+            "back to float: slower than FP32 and still different terrain. Use a GPU provider, or set these back to fp32.",
+            DiffusionPaths.ModId, string.Join(" and ", half), OnnxRuntimeBootstrap.Provider);
+    }
+
     private static void Load(ILogger logger, int generation, CancellationTokenSource cancellation)
     {
         PipelineModels loading = null;
@@ -100,6 +122,9 @@ public sealed class PipelineModels : IDisposable
 
             loading = new PipelineModels();
             string decoderPath = ModelAssetManager.ResolveDecoderPath(logger);
+            string coarsePath = ModelAssetManager.ResolveCoarsePath(logger);
+            string basePath = ModelAssetManager.ResolveBasePath(logger);
+            WarnIfHalfPrecisionOnCpu(logger);
             if (OnnxRuntimeBootstrap.Provider == InferenceProvider.OpenVino)
             {
                 loading.Decoder = LoadOpenVinoOrCpu(
@@ -110,19 +135,15 @@ public sealed class PipelineModels : IDisposable
                 // graphs, while compiling the 1.9 GB base graph needs substantially more memory.
                 // Load the decoder first so its temporary compilation work does not overlap the
                 // base model's resident CPU session.
-                loading.Coarse = new OnnxModel(
-                    ModelAssetManager.ResolveAssetPath("coarse_model.onnx"), "coarse", logger);
+                loading.Coarse = new OnnxModel(coarsePath, "coarse", logger);
                 token.ThrowIfCancellationRequested();
-                loading.Base = new OnnxModel(
-                    ModelAssetManager.ResolveAssetPath("base_model.onnx"), "base", logger);
+                loading.Base = new OnnxModel(basePath, "base", logger);
             }
             else
             {
-                loading.Coarse = new OnnxModel(
-                    ModelAssetManager.ResolveAssetPath("coarse_model.onnx"), "coarse", logger);
+                loading.Coarse = new OnnxModel(coarsePath, "coarse", logger);
                 token.ThrowIfCancellationRequested();
-                loading.Base = new OnnxModel(
-                    ModelAssetManager.ResolveAssetPath("base_model.onnx"), "base", logger);
+                loading.Base = new OnnxModel(basePath, "base", logger);
                 token.ThrowIfCancellationRequested();
                 loading.Decoder = new OnnxModel(decoderPath, "decoder", logger);
             }

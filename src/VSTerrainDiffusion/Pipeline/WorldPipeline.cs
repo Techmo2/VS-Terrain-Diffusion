@@ -16,11 +16,11 @@ namespace VSTerrainDiffusion.Pipeline;
 /// </summary>
 public sealed class WorldPipeline
 {
-    private const int CoarseTileSize = 64;
+    internal const int CoarseTileSize = 64;
     private const int CoarseTileStride = 48;
-    private const int LatentTileSize = 64;
+    internal const int LatentTileSize = 64;
     private const int LatentTileStride = 32;
-    private const int DecoderTileSize = 256;
+    internal const int DecoderTileSize = 256;
     private const int DecoderTileStride = 192;
 
     private const float SigmaData = EdmScheduler.SigmaData;
@@ -137,14 +137,23 @@ public sealed class WorldPipeline
         _syntheticMapFactory = new SyntheticMapFactory(seed, _landmask, _landmaskStrength, _climate, _latitude);
         long cacheLimitBytes = Math.Max(32L, DiffusionConfig.Instance.TileCacheMegabytes) * 1024 * 1024;
         _tileStore = new MemoryTileStore(cacheLimitBytes);
-        int configuredBatchSize = DiffusionConfig.Instance.LatentBatchSize;
-        _latentBatchSize = configuredBatchSize > 0
-            ? configuredBatchSize
-            : OnnxModel.ActiveProvider is InferenceProvider.Cpu or InferenceProvider.OpenVino ? 1 : 4;
+        _latentBatchSize = ResolveLatentBatchSize();
 
         _coarse = BuildCoarseStage();
         _latents = BuildLatentStage();
         _residual = BuildDecoderStage();
+    }
+
+    /// <summary>
+    /// Latent windows per base-model call. Also decides the widest batch a TensorRT RTX engine has
+    /// to be built for, so it lives here rather than inline in the constructor.
+    /// </summary>
+    internal static int ResolveLatentBatchSize()
+    {
+        int configured = DiffusionConfig.Instance.LatentBatchSize;
+        return configured > 0
+            ? configured
+            : OnnxModel.ActiveProvider is InferenceProvider.Cpu or InferenceProvider.OpenVino ? 1 : 4;
     }
 
     public ulong Seed => _seed;
