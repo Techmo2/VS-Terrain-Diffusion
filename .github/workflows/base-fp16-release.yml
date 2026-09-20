@@ -1,0 +1,149 @@
+name: Build FP16 base release
+
+# Builds the half-precision base (latent) model with terraindistill and publishes it, the same way
+# decoder-int8-release.yml publishes the INT8 decoder: pinned inputs, exact output hash, no
+# hand-uploaded binaries. The exported graph takes float32 in and out, so nothing upstream of the
+# model changes; only the maths inside is narrower.
+
+on:
+  workflow_dispatch:
+    inputs:
+      terraindistill_ref:
+        description: terraindistill commit to build with (defaults to the pinned one)
+        required: false
+  push:
+    branches:
+      - main
+    tags:
+      - base-fp16-v1
+    paths:
+      - .github/workflows/base-fp16-release.yml
+      - scripts/base-fp16-release-notes.md
+      - scripts/MODEL-LICENSE.txt
+
+permissions:
+  contents: write
+
+concurrency:
+  group: base-fp16-release
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: base-fp16-v1
+  ASSET_NAME: base_model.fp16.onnx
+  # What terraindistill writes, before it is renamed to the name the mod downloads.
+  BUILT_PATH: artifacts/base/base.fp16.onnx
+  # The exact artifact this release is pinned to. It must match the values in
+  # ModelAssetManager.Fp16BaseAsset: the mod refuses any file that does not.
+  EXPECTED_SIZE: 507810847
+  EXPECTED_SHA256: fcb4ddd9a9f4b6aebcfc9663d40173128c2c0f1a105bf10a286321cf4a521647
+  # The recipe. TODO: point at the pushed repository and pin a commit before cutting the release;
+  # a moving ref makes the build unreproducible, which is the one thing this workflow exists to avoid.
+  TERRAINDISTILL_REPO: https://github.com/Techmo2/terraindistill
+  TERRAINDISTILL_REF: 7f0711571d9993df105b34fd5c0fdbfe6d3b95d0
+  TEACHER_REPO: xandergos/terrain-diffusion-30m
+  # The toolchain the pinned artifact was built with.
+  TORCH_VERSION: "2.14.0"
+  ONNX_VERSION: "1.23.0"
+  ONNXRUNTIME_VERSION: "1.30.0"
+
+jobs:
+  build-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install terraindistill
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${{ github.event.inputs.terraindistill_ref || env.TERRAINDISTILL_REF }}"
+          echo "Building with terraindistill@$ref"
+          # CPU wheels only: the runner has no GPU, the export and the fp16 conversion do not need
+          # one (verified: building with --device cpu reproduces the pinned artifact byte for byte,
+          # which was built on CUDA), and the CUDA wheels are several gigabytes.
+          #
+          # The versions are pinned to the ones the pinned artifact was built with. The hash check
+          # below is what enforces this, but drifting toolchains are the likeliest way to trip it,
+          # so say the expected versions out loud rather than discovering them from a failure.
+          python -m pip install --disable-pip-version-check \
+            torch==${TORCH_VERSION} --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check \
+            onnx==${ONNX_VERSION} onnxruntime-gpu==${ONNXRUNTIME_VERSION} \
+            "terraindistill @ git+${TERRAINDISTILL_REPO}@${ref}"
+          python -m pip freeze > build-environment.txt
+
+      - name: Build the FP16 base model
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The command that produced the pinned artifact, with two changes for a runner that
+          # has no GPU: the PyTorch reference runs on the CPU, and timing is skipped because CPU
+          # numbers would say nothing about the hardware this model is for. Neither affects the
+          # exported graph - that is what the hash check below is for.
+          #
+          # Treat the accuracy figures this prints as a smoke test only. ONNX Runtime's CPU kernels
+          # widen float16 back to float, which hides the range problems these graphs are prone to;
+          # the numbers quoted in the release notes were measured on the GPU.
+          terraindistill matrix base -f fp32 -f fp16 -o artifacts \
+            --repo "$TEACHER_REPO" \
+            --provider cpu --device cpu --no-benchmark
+          ls -l artifacts/base
+
+      - name: Verify the built model
+        shell: bash
+        run: |
+          set -euo pipefail
+          size=$(stat -c%s "$BUILT_PATH")
+          sha=$(sha256sum "$BUILT_PATH" | cut -d' ' -f1)
+          echo "built: $size bytes, SHA-256 $sha"
+          if [ "$size" != "$EXPECTED_SIZE" ] || [ "$sha" != "$EXPECTED_SHA256" ]; then
+            echo "::error::The build does not match the pinned artifact ($EXPECTED_SIZE bytes," \
+                 "SHA-256 $EXPECTED_SHA256). Either the recipe moved or the environment did." \
+                 "Do not publish silently: update EXPECTED_* here and the matching hash in" \
+                 "ModelAssetManager.Fp16BaseAsset together, so the mod and the release agree."
+            exit 1
+          fi
+
+      - name: Assemble release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/release
+          cp "$BUILT_PATH" "build/release/$ASSET_NAME"
+          cp scripts/MODEL-LICENSE.txt build/release/
+          cp build-environment.txt build/release/
+          # The measurements terraindistill took while building, for provenance.
+          for extra in artifacts/base/report.json artifacts/base/report.txt; do
+            if [ -f "$extra" ]; then cp "$extra" "build/release/base-fp16-$(basename "$extra")"; fi
+          done
+          (cd build/release && sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256")
+          ls -l build/release
+
+      - name: Create or update prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "Terrain Diffusion FP16 base model v1" \
+              --notes-file scripts/base-fp16-release-notes.md \
+              --prerelease
+            gh release upload "$RELEASE_TAG" build/release/* --clobber
+          else
+            gh release create "$RELEASE_TAG" build/release/* \
+              --target "$GITHUB_SHA" \
+              --title "Terrain Diffusion FP16 base model v1" \
+              --notes-file scripts/base-fp16-release-notes.md \
+              --prerelease --latest=false
+          fi
