@@ -380,6 +380,17 @@ public class WorldGenConfig
     public float SeasonalPrecipitationStrength { get; set; } = 1f;
 
     /// <summary>
+    /// Least share of a place's annual rainfall the dry season is allowed to fall to.
+    ///
+    /// A safety rail rather than a tuning knob: at the default strength it only binds above a
+    /// coefficient of variation of roughly 100%. There the driest weeks would otherwise see no rain
+    /// at all, and Vintage Story's farmland integrates precipitation into a moisture level that
+    /// stalls crops below 10%, so an absolute drought parks every unirrigated field for months.
+    /// Zero restores the undamped swing.
+    /// </summary>
+    public float SeasonalPrecipitationFloor { get; set; } = 0.4f;
+
+    /// <summary>
     /// Swing the year the opposite way south of the equator.
     ///
     /// On by default, and not really optional: Vintage Story already does this. Its calendar takes
@@ -561,6 +572,7 @@ public class WorldGenConfig
 
         SeasonalTemperatureStrength = Clamp(SeasonalTemperatureStrength, 0f, 4f, 1f);
         SeasonalPrecipitationStrength = Clamp(SeasonalPrecipitationStrength, 0f, 4f, 1f);
+        SeasonalPrecipitationFloor = Clamp(SeasonalPrecipitationFloor, 0f, 1f, 0.4f);
 
         OceanMap = (OceanMap ?? "input").Trim().ToLowerInvariant();
         if (OceanMap != "output") OceanMap = "input";

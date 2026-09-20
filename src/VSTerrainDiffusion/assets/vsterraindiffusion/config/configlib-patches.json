@@ -516,6 +516,17 @@
       }
     },
     {
+      "code": "WorldGen/SeasonalPrecipitationFloor",
+      "type": "number",
+      "default": 0.4,
+      "ingui": "setting-WorldGenSeasonalPrecipitationFloor",
+      "comment": "setting-WorldGenSeasonalPrecipitationFloor-hover",
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    {
       "code": "WorldGen/SeasonHemispheres",
       "type": "boolean",
       "default": true,

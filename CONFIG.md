@@ -9,7 +9,8 @@ With [ConfigLib](https://mods.vintagestory.at/configlib) installed the same file
 settings screen, with every field below on it. ConfigLib edits this file in place rather than
 keeping one of its own, so the two ways of setting things stay the same thing. Only
 `GpuUtilizationPercent` and `VerboseInference` take effect the moment they are saved; the rest are
-read when the world generator starts.
+read when the world generator starts. `InferenceDevice` is the exception: the native runtime loads
+once per process, so it needs the game restarted, not just a new world.
 
 The listing below is the file exactly as the mod generates it, with a comment on every field. **JSON
 does not allow comments** — copy values out of it, do not paste the whole thing over your config.
@@ -258,6 +259,12 @@ slightly with the ones already on disk.
     // Multiplies the modelled wet/dry season contrast.
     "SeasonalPrecipitationStrength": 1.0,
 
+    // Least share of a place's yearly rainfall the dry season falls to. A safety rail rather
+    // than a tuning knob: at the default strength it only binds where the model's seasonality is
+    // extreme (BIO15 above roughly 100%). 0 removes it, and those places then go months with no
+    // rain at all, which stalls unirrigated crops until the rains return.
+    "SeasonalPrecipitationFloor": 0.4,
+
     // Swing the year the opposite way south of the equator. On by default, and not really
     // optional: Vintage Story already does this. Its calendar takes the hemisphere from the sign of
     // the same latitude this mod reads, and shifts the year half a turn for the southern one, which
@@ -417,6 +424,7 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `ForestDensityMultiplier` | 0 – 4 | 0.7 – 1.5 (squared on the ground) | 1 |
 | `ShrubDensityMultiplier` | 0 – 4 | 0.5 – 2 (squared on the ground) | 1 |
 | `SeasonalTemperatureStrength`, `SeasonalPrecipitationStrength` | 0 – 4 | 0.5 – 1.5 | 1 |
+| `SeasonalPrecipitationFloor` | 0 – 1 | 0.3 – 0.6 | 0.4 |
 | `LandmaskStrength` | 0 – 1 | 0.8 – 1 | 1 |
 | `LandmaskNoiseLevel` | 0, or 0.01 – 8 | 0.05 – 0.5 | 0.1 |
 | `GlobalClimateStrength` | 0 – 1 | 0.5 – 1 | 1 |

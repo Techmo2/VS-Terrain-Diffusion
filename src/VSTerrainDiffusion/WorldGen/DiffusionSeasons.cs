@@ -37,9 +37,18 @@ public class DiffusionSeasons : ModSystem
     private const float SwingPerSigma = 2.8284271f;
 
     /// <summary>
-    /// Relative amplitude of the wet season per unit coefficient of variation, again for a sine.
+    /// Relative amplitude of the wet season per unit coefficient of variation.
+    ///
+    /// Not the sine value sqrt(2) the temperature swing above uses, because rainfall does not reach
+    /// the ground linearly. Vanilla turns it into <c>wgenRain</c> and then into
+    /// <c>max(0, noise + wgenRain - 0.5)</c>, a rectified threshold that amplifies a relative
+    /// rainfall swing about 2.4 times in precipitation terms. Measured against the game's own noise
+    /// field over 30-year monthly normals, the gain is 1.70 CV per unit of relative swing and is
+    /// near enough independent of the rainfall itself, so inverting it puts BIO15 back on the
+    /// ground: a place the model gives 57% comes out at 50-56%. sqrt(2) gave every climate an
+    /// 80% monsoon regardless of what was asked for.
     /// </summary>
-    private const float WetSeasonPerCv = 1.4142136f;
+    private const float WetSeasonPerCv = 1f / 1.70f;
 
     /// <summary>
     /// Loads on the client as well as the server. Only the climate hook runs there; everything that
@@ -66,13 +75,24 @@ public class DiffusionSeasons : ModSystem
         _yearlyNoise = SimplexNoise.FromDefaultOctaves(3, 0.001, 0.95, api.World.Seed + 41221);
         _dailyNoise = SimplexNoise.FromDefaultOctaves(3, 1.0, 0.95, api.World.Seed + 41222);
 
-        api.Event.OnGetClimate += OnGetClimate;
+        // Temperature only. The handler fires for the "now" modes alone, and GetPrecipitation -
+        // what farmland and most rain-aware mods call - asks with WorldGenValues, so rainfall is
+        // swung further down in SeasonalPrecipitationCompat where both paths meet.
+        if (_config.SeasonalTemperature) api.Event.OnGetClimate += OnGetClimate;
+        if (_config.SeasonalPrecipitation) SeasonalPrecipitationCompat.Install(api, this);
     }
 
+    public override void Dispose()
+    {
+        if (_config != null && _config.SeasonalPrecipitation) SeasonalPrecipitationCompat.Uninstall(_api);
+    }
+
+    /// <summary>
+    /// Swings the temperature into the season. World generation wants annual averages, so only the
+    /// "now" and "for this date" modes are asking what the weather is actually doing.
+    /// </summary>
     private void OnGetClimate(ref ClimateCondition climate, BlockPos pos, EnumGetClimateMode mode, double totalDays)
     {
-        // World generation wants annual averages; only the "now" and "for this date" modes are
-        // asking what the weather is actually doing.
         if (mode == EnumGetClimateMode.WorldGenValues) return;
 
         SeasonalityMap.Sample? sample = SeasonalityMap.At(_api.World.BlockAccessor, pos);
@@ -82,41 +102,53 @@ public class DiffusionSeasons : ModSystem
         double yearRel = totalDays / calendar.DaysPerYear % 1.0;
         double summer = SummerWeight(yearRel, pos);
 
-        if (_config.SeasonalTemperature)
-        {
-            float swing = SwingPerSigma * sample.Value.TemperatureSigmaC * _config.SeasonalTemperatureStrength;
-            double temperature = climate.WorldGenTemperature - swing / 2.0 + swing * summer;
+        float swing = SwingPerSigma * sample.Value.TemperatureSigmaC * _config.SeasonalTemperatureStrength;
+        double temperature = climate.WorldGenTemperature - swing / 2.0 + swing * summer;
 
-            // Day and night, on vanilla's shape: clear desert air swings far more than damp air,
-            // and the coldest hour is just before dawn.
-            double hourOfDay = totalDays % 1.0 * calendar.HoursPerDay;
-            double diurnalRange = 18.0 - climate.WorldgenRainfall * 13.0;
-            double dayPhase = GameMath.SmoothStep(Math.Abs(GameMath.CyclicValueDistance(4.0, hourOfDay, 24.0) / 12.0));
-            temperature += (dayPhase - 0.5) * diurnalRange;
+        // Day and night, on vanilla's shape: clear desert air swings far more than damp air,
+        // and the coldest hour is just before dawn.
+        double hourOfDay = totalDays % 1.0 * calendar.HoursPerDay;
+        double diurnalRange = 18.0 - climate.WorldgenRainfall * 13.0;
+        double dayPhase = GameMath.SmoothStep(Math.Abs(GameMath.CyclicValueDistance(4.0, hourOfDay, 24.0) / 12.0));
+        temperature += (dayPhase - 0.5) * diurnalRange;
 
-            temperature += _yearlyNoise.Noise(totalDays, 0.0) * 3.0;
-            temperature += _dailyNoise.Noise(totalDays, 0.0);
+        temperature += _yearlyNoise.Noise(totalDays, 0.0) * 3.0;
+        temperature += _dailyNoise.Noise(totalDays, 0.0);
 
-            climate.Temperature = (float)temperature;
-        }
+        climate.Temperature = (float)temperature;
+    }
 
-        if (_config.SeasonalPrecipitation)
-        {
-            climate.Rainfall = GameMath.Clamp(
-                climate.Rainfall * RainfallFactor(sample.Value.PrecipitationCv, summer), 0f, 1f);
-        }
+    /// <summary>
+    /// The seasonal rainfall multiplier at a world position, for
+    /// <see cref="SeasonalPrecipitationCompat"/>. 1 where this world has no seasonality map.
+    /// </summary>
+    internal float SeasonalRainfallFactor(double posX, double posZ, double totalDays)
+    {
+        if (!_config.SeasonalPrecipitation) return 1f;
+
+        var pos = new BlockPos((int)posX, 0, (int)posZ);
+        SeasonalityMap.Sample? sample = SeasonalityMap.At(_api.World.BlockAccessor, pos);
+        if (sample == null) return 1f;
+
+        return RainfallFactor(sample.Value.PrecipitationCv,
+            SummerWeight(totalDays / _api.World.Calendar.DaysPerYear % 1.0, pos));
     }
 
     /// <summary>
     /// How much of a place's usual rain is falling at this point in the year. Wet season in
-    /// summer, which is where monsoons and continental convective rain sit. Clamped at zero rather
-    /// than allowed to go negative: a dry season is no rain, not anti-rain, and a coefficient of
-    /// variation much above 70% would otherwise overshoot.
+    /// summer, which is where monsoons and continental convective rain sit.
+    ///
+    /// Zero-mean over the year, and deliberately not capped above: the wet season is meant to
+    /// carry more than the annual average, and clamping it at a factor of one was cutting the
+    /// wettest months off. The dry season is held above
+    /// <see cref="WorldGenConfig.SeasonalPrecipitationFloor"/> instead, because a real drought
+    /// stalls every unirrigated crop rather than merely slowing it.
     /// </summary>
     private float RainfallFactor(float precipitationCv, double summer)
     {
         float cv = precipitationCv / 100f * _config.SeasonalPrecipitationStrength;
-        return (float)Math.Max(0.0, 1.0 + WetSeasonPerCv * cv * (2.0 * summer - 1.0));
+        return (float)Math.Max(_config.SeasonalPrecipitationFloor,
+            1.0 + WetSeasonPerCv * cv * (2.0 * summer - 1.0));
     }
 
     /// <summary>

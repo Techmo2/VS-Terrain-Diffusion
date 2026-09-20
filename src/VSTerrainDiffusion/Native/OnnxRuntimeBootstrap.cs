@@ -134,6 +134,7 @@ public static class OnnxRuntimeBootstrap
     private static bool _initialised;
     private static bool _openVinoInitialised;
     private static bool _tensorRtRtxInitialised;
+    private static bool _deviceChangeReported;
     private static string _nativeDirectory;
     private static string _openVinoDirectory;
     private static string _tensorRtRtxDirectory;
@@ -281,10 +282,18 @@ public static class OnnxRuntimeBootstrap
     /// </summary>
     public static void Initialize(ILogger logger, CancellationToken cancellation = default)
     {
-        if (_initialised) return;
+        if (_initialised)
+        {
+            WarnIfDeviceChanged(logger);
+            return;
+        }
         lock (Gate)
         {
-            if (_initialised) return;
+            if (_initialised)
+            {
+                WarnIfDeviceChanged(logger);
+                return;
+            }
 
             InferenceProvider provider = ResolveRequestedProvider(DiffusionConfig.Instance.InferenceDevice, logger);
             // OpenVINO runs beside an ORT CPU build; TensorRT RTX is a plugin on the CUDA build.
@@ -329,6 +338,25 @@ public static class OnnxRuntimeBootstrap
             logger.Notification("[{0}] ONNX Runtime {1} ({2}) loaded from {3}",
                 DiffusionPaths.ModId, OnnxRuntimeVersion, onnxProvider, directory);
         }
+    }
+
+    /// <summary>
+    /// The native runtime is resolved once per process: its library directory is fixed the moment
+    /// the P/Invoke resolver is installed. A device changed between two worlds in one session
+    /// therefore does nothing until the game restarts, which is worth saying rather than leaving
+    /// the player to infer it from <c>/tdiff status</c>.
+    /// </summary>
+    private static void WarnIfDeviceChanged(ILogger logger)
+    {
+        if (_deviceChangeReported) return;
+        InferenceProvider requested = ResolveRequestedProvider(DiffusionConfig.Instance.InferenceDevice, logger);
+        if (requested == Provider) return;
+
+        _deviceChangeReported = true;
+        logger.Warning(
+            "[{0}] inference device is now '{1}' but this session already started on {2}. The native runtime is " +
+            "loaded once per process, so restart the game for the change to take effect; this world will use {2}.",
+            DiffusionPaths.ModId, DiffusionConfig.Instance.InferenceDevice, Provider);
     }
 
     private static InferenceProvider ResolveRequestedProvider(string configured, ILogger logger)

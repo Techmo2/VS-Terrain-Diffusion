@@ -124,7 +124,13 @@ public static class ModelAssetManager
     };
 
     private static readonly object Gate = new();
-    private static bool _ready;
+
+    /// <summary>
+    /// The set of files the last successful preparation covered, or null. Keyed on the selection
+    /// rather than a flag because precision can change between two worlds in one session - ConfigLib
+    /// edits the config live - and the newly selected model then still has to be fetched.
+    /// </summary>
+    private static string _preparedSelection;
 
     private static Asset SelectedDecoderAsset => DiffusionConfig.Instance.DecoderPrecision switch
     {
@@ -176,11 +182,13 @@ public static class ModelAssetManager
     /// </summary>
     public static void EnsureAssetsReady(ILogger logger, CancellationToken cancellation = default)
     {
-        if (_ready) return;
+        string selection = CurrentSelection();
+        if (_preparedSelection == selection) return;
         lock (Gate)
         {
-            if (_ready) return;
+            if (_preparedSelection == selection) return;
 
+            Downloaded = false;
             Directory.CreateDirectory(DiffusionPaths.ModelDirectory);
             bool validate = DiffusionConfig.Instance.ValidateModelHashes;
 
@@ -201,8 +209,16 @@ public static class ModelAssetManager
             progress.Complete();
 
             logger.Notification("[{0}] Model assets ready", DiffusionPaths.ModId);
-            _ready = true;
+            _preparedSelection = selection;
         }
+    }
+
+    /// <summary>The files the current configuration asks for, as a comparable key.</summary>
+    private static string CurrentSelection()
+    {
+        var names = new List<string>();
+        foreach (Asset asset in RequiredAssets()) names.Add(asset.FileName);
+        return string.Join('|', names);
     }
 
     public static string ResolveAssetPath(string fileName) => DiffusionPaths.ResolveAsset(fileName);
@@ -225,7 +241,7 @@ public static class ModelAssetManager
 
     private static string ResolveSelectedModel(Asset asset, string label, string precision, ILogger logger)
     {
-        if (!_ready)
+        if (_preparedSelection == null)
             throw new InvalidOperationException("Terrain Diffusion model assets have not been prepared");
 
         string path = ResolveAssetPath(asset.FileName);
