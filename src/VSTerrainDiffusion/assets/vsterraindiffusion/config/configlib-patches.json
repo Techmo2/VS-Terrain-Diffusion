@@ -527,6 +527,39 @@
       }
     },
     {
+      "code": "WorldGen/TranslocatorSearchTimeoutSeconds",
+      "type": "integer",
+      "default": 120,
+      "ingui": "setting-WorldGenTranslocatorSearchTimeoutSeconds",
+      "comment": "setting-WorldGenTranslocatorSearchTimeoutSeconds-hover",
+      "range": {
+        "min": 0,
+        "max": 1800
+      }
+    },
+    {
+      "code": "WorldGen/TranslocatorPeekPauseSeconds",
+      "type": "integer",
+      "default": 30,
+      "ingui": "setting-WorldGenTranslocatorPeekPauseSeconds",
+      "comment": "setting-WorldGenTranslocatorPeekPauseSeconds-hover",
+      "range": {
+        "min": 0,
+        "max": 120
+      }
+    },
+    {
+      "code": "WorldGen/TranslocatorMaxRangeBlocks",
+      "type": "integer",
+      "default": 0,
+      "ingui": "setting-WorldGenTranslocatorMaxRangeBlocks",
+      "comment": "setting-WorldGenTranslocatorMaxRangeBlocks-hover",
+      "range": {
+        "min": 0,
+        "max": 8000
+      }
+    },
+    {
       "code": "WorldGen/SeasonHemispheres",
       "type": "boolean",
       "default": true,

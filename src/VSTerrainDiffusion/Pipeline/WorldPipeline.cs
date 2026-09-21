@@ -274,6 +274,7 @@ public sealed class WorldPipeline
             float[] scaledIn = EdmScheduler.PreconditionInputs(sample, sigma);
             Array.Copy(scaledIn, 0, xIn, 0, 6 * plane);
 
+            InferencePreemption.ThrowIfPreempted();
             float[] modelOut = _coarseModel.RunModel(
                 xIn, new long[] { 1, 11, s, s }, new[] { cNoise }, condInputs, condShapes);
             sample = scheduler.Step(modelOut, sample);
@@ -370,6 +371,7 @@ public sealed class WorldPipeline
         var noiseLabels = new float[batch];
         for (int b = 0; b < batch; b++) noiseLabels[b] = t;
 
+        InferencePreemption.ThrowIfPreempted();
         float[] predictionBatch = _baseModel.RunModel(
             modelInBatch, new long[] { batch, 5, s, s },
             noiseLabels, new[] { condInputBatch }, new[] { new long[] { batch, 58 } });
@@ -504,6 +506,7 @@ public sealed class WorldPipeline
         // a megabyte of copying for every window the decoder produces.
         NearestUpsampleInto(latents, 4, sl, sl, s, s, modelIn, plane);
 
+        InferencePreemption.ThrowIfPreempted();
         float[] rawPrediction = _decoderModel.RunModel(modelIn, new long[] { 1, 5, s, s }, new[] { t }, null, null);
 
         var result = new FloatTensor(new[] { 2, s, s });

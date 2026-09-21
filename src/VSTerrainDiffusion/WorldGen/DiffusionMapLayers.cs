@@ -45,6 +45,17 @@ public abstract class DiffusionMapLayer : MapLayerBase
             {
                 int blockX = (xCoord + x) * BlocksPerPixel;
 
+                // The game asks for a whole 512-block map region at a time. A chunk peek only ever
+                // reads the few samples around the column it is inspecting, and then throws the
+                // region away, so modelling the rest of it is terrain generated for nobody - and
+                // the peeked region covers nine terrain tiles where the peek itself needs one.
+                // Outside a peek this is always false and nothing changes.
+                if (!ChunkPeekScope.Covers(blockX, blockZ))
+                {
+                    result[z * sizeX + x] = 0;
+                    continue;
+                }
+
                 Provider.GetTileAt(blockX, blockZ, ref tile);
                 int index = tile.Index(
                     Mod(blockX - tile.BlockX, tile.Size),
