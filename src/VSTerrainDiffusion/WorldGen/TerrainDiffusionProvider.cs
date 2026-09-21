@@ -271,6 +271,30 @@ public sealed class TerrainDiffusionProvider : IDisposable
         return current;
     }
 
+    /// <summary>
+    /// Drops every generated tile, for when the metre-to-block mapping changes underneath them.
+    ///
+    /// A tile stores block heights, not metres - <c>SurfaceY</c> is
+    /// <see cref="DiffusionWorldSettings.ElevationToBlockY"/> applied at the moment it was built -
+    /// so a tile that survives a change to that mapping records a different landscape from its
+    /// neighbours, and the join between them is a cliff. The pipeline's own windows are in metres
+    /// and are not affected, so this throws away the cheap half of the work and keeps the model
+    /// inference that produced it.
+    /// </summary>
+    public void InvalidateTiles()
+    {
+        int dropped = _tiles.Count;
+        _tiles.Clear();
+        _lastAccess.Clear();
+
+        if (dropped > 0)
+        {
+            _logger.Notification(
+                "[{0}] Dropped {1} terrain tile(s) generated before the height mapping was settled.",
+                DiffusionPaths.ModId, dropped);
+        }
+    }
+
     public TerrainTile GetTile(int tileX, int tileZ)
     {
         long key = ((long)tileX << 32) ^ (uint)tileZ;

@@ -346,6 +346,11 @@ public class TerrainDiffusionModSystem : ModSystem
 
         _settings.ApplyCalibration(peak.Value);
 
+        // The spawn search above may already have built a tile, and a tile stores block heights
+        // rather than metres. Calibration has just changed what a metre is worth, so anything
+        // generated before now describes a different landscape from everything after it.
+        _provider.InvalidateTiles();
+
         try
         {
             _api.WorldManager.SaveGame.StoreData(CalibrationSaveKey, BitConverter.GetBytes(peak.Value));
