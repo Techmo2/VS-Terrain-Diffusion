@@ -795,11 +795,47 @@ public class TerrainDiffusionModSystem : ModSystem
                 .WithArgs(api.ChatCommands.Parsers.Int("x"), api.ChatCommands.Parsers.Int("z"))
                 .HandleWith(OnSeasonCommand)
             .EndSubCommand()
+            .BeginSubCommand("rivers")
+                .WithDescription("Report the Rivers network around a position, for working out why rivers come up short")
+                .WithArgs(api.ChatCommands.Parsers.OptionalInt("x"), api.ChatCommands.Parsers.OptionalInt("z"))
+                .HandleWith(OnRiversCommand)
+            .EndSubCommand()
             .BeginSubCommand("column")
                 .WithDescription("Read back the generated block column at a position, for diagnosing world generation")
                 .WithArgs(api.ChatCommands.Parsers.Int("x"), api.ChatCommands.Parsers.Int("z"))
                 .HandleWith(OnColumnCommand)
             .EndSubCommand();
+    }
+
+    private Vintagestory.API.Common.TextCommandResult OnRiversCommand(
+        Vintagestory.API.Common.TextCommandCallingArgs args)
+    {
+        if (!RiversCompat.Installed)
+        {
+            return Vintagestory.API.Common.TextCommandResult.Success(
+                "Rivers is not generating this world's rivers.");
+        }
+
+        // Defaults to where the caller is standing, which is the usual thing to ask about.
+        int x, z;
+        if (args.Parsers[0].IsMissing || args.Parsers[1].IsMissing)
+        {
+            Entity caller = args.Caller?.Entity;
+            if (caller == null)
+            {
+                return Vintagestory.API.Common.TextCommandResult.Error(
+                    "Give an x and z, or run this as a player.");
+            }
+            x = (int)caller.Pos.X;
+            z = (int)caller.Pos.Z;
+        }
+        else
+        {
+            x = (int)args[0];
+            z = (int)args[1];
+        }
+
+        return Vintagestory.API.Common.TextCommandResult.Success(RiversCompat.DescribeRegion(x, z));
     }
 
     private Vintagestory.API.Common.TextCommandResult OnStatusCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
