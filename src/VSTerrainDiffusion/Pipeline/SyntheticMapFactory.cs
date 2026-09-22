@@ -89,6 +89,19 @@ public sealed class SyntheticMapFactory
     private readonly float _aTempStd, _bTempStd, _tempStdP1, _tempStdP99;
 
     private readonly ILandmaskSource _landmask;
+    private readonly IRiverBasinSource _riverBasins;
+
+    /// <summary>
+    /// How far a fully-river cell's land rank is pulled down towards sea level.
+    ///
+    /// Measured, not guessed (tools/RiverBasinResponse, 48x48 coarse cells, a 3-cell corridor, at
+    /// the shipped landmaskNoiseLevel of 0.1): 0.5 takes a corridor from 466 m to 251 m against
+    /// ~500 m either side - a 45% drop, with every cell still land. 1.0 takes it to 28 m, a 94%
+    /// drop, but a fifth of the corridor ends up under water, which turns rivers into inlets.
+    /// Binding the conditioning tighter than 0.1 is worth about five more points and costs more
+    /// drowned cells, so the coastline setting is left alone.
+    /// </summary>
+    private readonly float _riverBasinDepth;
     private readonly float _landmaskStrength;
 
     /// <summary>Puts each row of the map in its latitude band, or null for an unbanded world.</summary>
@@ -112,8 +125,11 @@ public sealed class SyntheticMapFactory
     /// <param name="landmaskStrength">How completely the landmask overrides the noise, 0 to 1.</param>
     /// <param name="climate">The world's global temperature and precipitation settings.</param>
     /// <param name="latitude">Bands the climate channels north to south, or null to leave them flat.</param>
+    /// <param name="riverBasins">Lowers the land where a river network runs, or null for none.</param>
+    /// <param name="riverBasinDepth">How far a fully-river cell is pulled towards sea level, 0 to 1.</param>
     public SyntheticMapFactory(ulong worldSeed, ILandmaskSource landmask = null, float landmaskStrength = 1f,
-                               ClimateShift climate = default, ILatitudeSource latitude = null)
+                               ClimateShift climate = default, ILatitudeSource latitude = null,
+                               IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f)
     {
         PipelineData data = LoadData();
         _dataQuantiles = data.DataQuantileTables;
@@ -124,6 +140,8 @@ public sealed class SyntheticMapFactory
 
         _landmask = landmaskStrength > 0f ? landmask : null;
         _landmaskStrength = Math.Clamp(landmaskStrength, 0f, 1f);
+        _riverBasinDepth = Math.Clamp(riverBasinDepth, 0f, 1f);
+        _riverBasins = _riverBasinDepth > 0f ? riverBasins : null;
         _seaPosition = FindSeaPosition(_dataQuantiles[0]);
         _latitude = latitude != null && !latitude.IsNeutral ? latitude : null;
 
@@ -229,6 +247,14 @@ public sealed class SyntheticMapFactory
                 $"the {w}x{h} coarse window at ({x1}, {y1}), where {plane} were needed.");
         }
 
+        float[] basins = _riverBasins?.BasinStrength(x1, y1, x2, y2);
+        if (basins != null && basins.Length != plane)
+        {
+            throw DiffusionFailure.Fatal(
+                $"The river basin map returned {basins.Length} values for the {w}x{h} coarse window " +
+                $"at ({x1}, {y1}), where {plane} were needed.");
+        }
+
         // Rows run along Z, which is the axis latitude is measured on, so a band is one climate per
         // row. Resolved up front because the two banded channels want the same rows.
         float[] bandTemperature = null, bandPrecipitation = null;
@@ -267,7 +293,18 @@ public sealed class SyntheticMapFactory
                 {
                     float noise = fnl.GetNoise(x1 + c, y1 + r);
                     if (masked)
-                        channel[k] = SampleTable(dq, ApplyLandmask(TablePosition(noise, nq), sea[k], dq.Length));
+                    {
+                        float rank = ApplyLandmask(TablePosition(noise, nq), sea[k], dq.Length);
+                        if (basins != null) rank = ApplyRiverBasin(rank, basins[k], dq.Length);
+                        channel[k] = SampleTable(dq, rank);
+                    }
+                    else if (ch == 0 && basins != null)
+                    {
+                        // No landmask, so the model picks its own coastline - but a river still
+                        // wants low ground under it.
+                        channel[k] = SampleTable(dq,
+                            ApplyRiverBasin(TablePosition(noise, nq), basins[k], dq.Length));
+                    }
                     else if (bandedTemperature)
                         channel[k] = Math.Clamp(
                             band + (Interp(noise, nq, dq) - median) * TemperatureAnomaly,
@@ -404,6 +441,31 @@ public sealed class SyntheticMapFactory
 
         float wanted = sea * (u * uSea) + (1f - sea) * (uSea + u * (1f - uSea));
         return (u + _landmaskStrength * (wanted - u)) * span;
+    }
+
+    /// <summary>
+    /// Lowers a land rank towards sea level where a river system runs.
+    ///
+    /// Only ever pulls downwards, and only within the land half: a valley is low ground, not sea,
+    /// and a river that came out under water would be no river at all. Ordering inside the land
+    /// half is preserved, so a mountainous region with a river through it still reads as higher
+    /// than a plain with one - it is the whole cell that settles, not the landscape that flattens.
+    ///
+    /// This is the only thing the model can be told about a river. One coarse pixel is 512 blocks
+    /// at the default scale, so what arrives is "somewhere in this half kilometre there is a river
+    /// system", and what comes back is ground low enough to have carried one.
+    /// </summary>
+    private float ApplyRiverBasin(float position, float basinStrength, int tableLength)
+    {
+        float basin = Math.Clamp(basinStrength, 0f, 1f) * _riverBasinDepth;
+        if (basin <= 0f) return position;
+
+        float span = tableLength - 1f;
+        float u = position / span;
+        float uSea = _seaPosition / span;
+        if (u <= uSea) return position;
+
+        return (uSea + (u - uSea) * (1f - basin)) * span;
     }
 
     /// <summary>

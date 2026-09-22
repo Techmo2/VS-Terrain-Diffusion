@@ -72,6 +72,17 @@ public sealed class GenDiffusionTerra
         // keeps that to one cache lookup instead of one per block column.
         TerrainTile tile = null;
 
+        // Rivers, when it is installed and has been told to leave the terrain to us. This also
+        // writes the flow vectors and river distances its boats and rendering read back, so it has
+        // to happen for every chunk, not only the ones a river runs through.
+        Array riverSamples = RiversCompat.SamplesForChunk(chunkX, chunkZ, chunks);
+        int valleyFloorY = riverSamples == null ? 0 : RiversCompat.ValleyFloorY(_seaLevel);
+        RiversCompat.Sample[] riverColumn = riverSamples == null ? null : new RiversCompat.Sample[1024];
+
+        // The lowest river bed in this chunk. The bulk fill below cannot look at individual
+        // columns, so it has to stop underneath every channel that will be cut out of them.
+        int minChannelFloor = int.MaxValue;
+
         for (int lz = 0; lz < ChunkSize; lz++)
         {
             int worldZ = chunkZ * ChunkSize + lz;
@@ -93,6 +104,32 @@ public sealed class GenDiffusionTerra
                     }
                 }
 
+                if (riverColumn != null)
+                {
+                    RiversCompat.Sample sample = RiversCompat.At(riverSamples, index2d);
+                    riverColumn[index2d] = sample;
+
+                    // A river sits just above sea level wherever it runs, so the ground has to come
+                    // down to meet it. Outside the valley the weight is 1 and the model's own
+                    // landscape is untouched.
+                    //
+                    // Only ever downwards. Ground already below the valley floor is sea bed, and
+                    // pulling it *towards* the floor raises it: that walled every river mouth off
+                    // from the ocean with a bar of sand at exactly sea level, a valley's width
+                    // wide, and left the river ending in a lagoon.
+                    if (sample.InValley(RiversCompat.MaxValleyWidth) && y > valleyFloorY)
+                    {
+                        float keep = RiversCompat.ModelWeight(sample, worldX, worldZ);
+                        y = (int)Math.Round(valleyFloorY + (y - valleyFloorY) * keep);
+                    }
+
+                    if (sample.Distance <= 0.0)
+                    {
+                        minChannelFloor = Math.Min(minChannelFloor,
+                            RiversCompat.ChannelFloorY(sample, _seaLevel, _mapSizeY));
+                    }
+                }
+
                 y = GameMath.Clamp(y, 1, _mapSizeY - 2);
                 surfaceY[index2d] = y;
                 isOcean[index2d] = tile.ElevationMeters[tileIndex] < 0f;
@@ -108,6 +145,10 @@ public sealed class GenDiffusionTerra
 
         // Bulk-fill every layer that is solid across the whole chunk column.
         int solidTo = Math.Max(1, minSurface);
+
+        // A channel cut below that level would be filled in again here and never reopened, since
+        // the per-column pass below only starts above it.
+        if (minChannelFloor != int.MaxValue) solidTo = Math.Max(1, Math.Min(solidTo, minChannelFloor));
         IChunkBlocks data = chunks[0].Data;
         for (int y = 1; y <= solidTo; y++)
         {
@@ -132,6 +173,18 @@ public sealed class GenDiffusionTerra
 
                     if (y <= surface)
                     {
+                        // Inside a channel the rock is left out, which is what makes the river a
+                        // river rather than a damp line on a hillside.
+                        if (riverColumn != null &&
+                            RiversCompat.Carved(riverColumn[index2d], y, _seaLevel, _mapSizeY))
+                        {
+                            if (y < _seaLevel)
+                            {
+                                blocks.SetFluid(index3d, freshWaterId);
+                            }
+                            continue;
+                        }
+
                         blocks[index3d] = defaultRockId;
                     }
                     else if (y < _seaLevel)
@@ -142,6 +195,15 @@ public sealed class GenDiffusionTerra
                             : waterId;
                         blocks.SetFluid(index3d, fluid);
                     }
+                }
+
+                // In a channel the ground stops at the bed; laying soil and grass at the valley
+                // floor would leave them hanging over the water.
+                if (riverColumn != null && riverColumn[index2d].Distance <= 0.0)
+                {
+                    surface = Math.Clamp(
+                        Math.Min(surface, RiversCompat.ChannelFloorY(riverColumn[index2d], _seaLevel, _mapSizeY)),
+                        1, _mapSizeY - 2);
                 }
 
                 // Rain lands on the water surface where there is water, and on the ground otherwise.

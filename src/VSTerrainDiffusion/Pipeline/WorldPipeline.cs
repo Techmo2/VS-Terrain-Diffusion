@@ -57,6 +57,8 @@ public sealed class WorldPipeline
     private readonly InfiniteTensor _residual;
 
     private readonly ILandmaskSource _landmask;
+    private readonly IRiverBasinSource _riverBasins;
+    private readonly float _riverBasinDepth;
     private readonly float _landmaskStrength;
     private readonly ClimateShift _climate;
     private readonly ILatitudeSource _latitude;
@@ -78,8 +80,12 @@ public sealed class WorldPipeline
     /// implementation's behaviour.
     /// </param>
     public WorldPipeline(ulong seed, PipelineModels models, ILandmaskSource landmask = null,
-                         ClimateShift climate = default, ILatitudeSource latitude = null)
+                         ClimateShift climate = default, ILatitudeSource latitude = null,
+                         IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f)
     {
+        _riverBasins = riverBasins;
+        _riverBasinDepth = riverBasinDepth;
+
         _seed = seed;
         _config = WorldPipelineModelConfig.Instance;
 
@@ -134,7 +140,8 @@ public sealed class WorldPipeline
         _baseModel = models.Base;
         _decoderModel = models.Decoder;
 
-        _syntheticMapFactory = new SyntheticMapFactory(seed, _landmask, _landmaskStrength, _climate, _latitude);
+        _syntheticMapFactory = new SyntheticMapFactory(seed, _landmask, _landmaskStrength, _climate, _latitude,
+                                                      _riverBasins, _riverBasinDepth);
         long cacheLimitBytes = Math.Max(32L, DiffusionConfig.Instance.TileCacheMegabytes) * 1024 * 1024;
         _tileStore = new MemoryTileStore(cacheLimitBytes);
         _latentBatchSize = ResolveLatentBatchSize();
@@ -179,7 +186,8 @@ public sealed class WorldPipeline
     {
         if (newSeed == _seed) return;
         _seed = newSeed;
-        _syntheticMapFactory = new SyntheticMapFactory(newSeed, _landmask, _landmaskStrength, _climate, _latitude);
+        _syntheticMapFactory = new SyntheticMapFactory(newSeed, _landmask, _landmaskStrength, _climate, _latitude,
+                                                      _riverBasins, _riverBasinDepth);
         _tileStore.ClearAllCaches();
     }
 

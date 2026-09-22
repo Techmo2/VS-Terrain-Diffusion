@@ -422,7 +422,7 @@
     {
       "code": "WorldGen/RainfallBias",
       "type": "number",
-      "default": 0.05,
+      "default": 0.0,
       "ingui": "setting-WorldGenRainfallBias",
       "comment": "setting-WorldGenRainfallBias-hover",
       "range": {
@@ -535,6 +535,17 @@
       "range": {
         "min": 0,
         "max": 1800
+      }
+    },
+    {
+      "code": "WorldGen/RiverBasinDepth",
+      "type": "number",
+      "default": 0.5,
+      "ingui": "setting-WorldGenRiverBasinDepth",
+      "comment": "setting-WorldGenRiverBasinDepth-hover",
+      "range": {
+        "min": 0.0,
+        "max": 1.0
       }
     },
     {

@@ -47,6 +47,22 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     public override void StartPre(ICoreAPI api)
     {
+        // Rivers generates terrain itself unless told not to, and it does that by stopping vanilla's
+        // generator from ever registering - which is the handler this mod takes the place of. Asking
+        // it to stand aside has to happen before any StartServerSide runs, and gives this mod the
+        // terrain while Rivers keeps its river network. See RiversCompat.
+        // Not when Watersheds is here: that takes terrain generation from both of us and already
+        // arranges things with Rivers itself, and the two working together is not ours to disturb.
+        bool watersheds = api.ModLoader.IsModEnabled("watersheds");
+
+        if (api.Side == EnumAppSide.Server && !watersheds &&
+            RiversCompat.IsPresent(api) && RiversCompat.StandDown(api))
+        {
+            api.Logger.Notification(
+                "[{0}] Rivers is installed; this mod will generate the terrain and carve its rivers " +
+                "into it.", DiffusionPaths.ModId);
+        }
+
         InferenceThrottle.UtilizationPercent = DiffusionConfig.Load(api).GpuUtilizationPercent;
     }
 
@@ -117,7 +133,16 @@ public class TerrainDiffusionModSystem : ModSystem
         }
 
         _provider?.Dispose();
-        _provider = new TerrainDiffusionProvider(WorldSeed(), models, _settings, _api.Logger, BuildLandmask());
+        // Before the provider, because the first coarse window is built during the spawn search and
+        // a window generated without the rivers would be cached and then seam against every one
+        // after it.
+        bool rivers = !WatershedsCompat.IsPresent(_api) && RiversCompat.IsPresent(_api);
+        if (rivers) RiversCompat.TryInstall(_api);
+
+        _provider = new TerrainDiffusionProvider(
+            WorldSeed(), models, _settings, _api.Logger, BuildLandmask(),
+            rivers && RiversCompat.CanSampleNetwork ? new RiverBasinMap(_settings, _api.Logger) : null,
+            DiffusionConfig.Instance.WorldGen.RiverBasinDepth);
 
         // The spawn search can run before the height mapping is settled - and it should, because
         // the survey wants to be centred on where people will actually play.
@@ -423,8 +448,13 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     private void InstallTerrain()
     {
-        if (WatershedsCompat.IsPresent(_api)) InstallWatershedsHandover();
-        else InstallTerrainHandler();
+        if (WatershedsCompat.IsPresent(_api))
+        {
+            InstallWatershedsHandover();
+            return;
+        }
+
+        InstallTerrainHandler();
     }
 
     /// <summary>
@@ -455,6 +485,11 @@ public class TerrainDiffusionModSystem : ModSystem
     {
         IWorldGenHandler handlers = _api.Event.GetRegisteredWorldGenHandlers("standard");
         List<ChunkColumnGenerationDelegate> terrainPass = handlers.OnChunkColumnGen[(int)EnumWorldGenPass.Terrain];
+
+        // Rivers leaves its own generator registered even when asked to stand aside, and two
+        // generators filling one column produce the union of both landscapes. Before anything else,
+        // so the vanilla slot below is the only one left to take.
+        if (RiversCompat.Installed) RiversCompat.RemoveTerrainHandler(_api, terrainPass);
 
         ChunkColumnGenerationDelegate replacement = OnTerrainPass;
 
@@ -1122,6 +1157,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _debugMap?.Dispose();
         _debugMap = null;
         WatershedsCompat.Uninstall();
+        RiversCompat.Uninstall();
         SurfaceClimateCompat.Uninstall();
         TranslocatorSearchCompat.Uninstall();
         ClimateScale.Uninstall();

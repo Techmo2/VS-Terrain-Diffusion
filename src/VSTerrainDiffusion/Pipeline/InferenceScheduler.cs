@@ -39,7 +39,17 @@ public sealed class InferenceScheduler : IDisposable
         public PreemptionToken Token = new();
     }
 
+    /// <summary>
+    /// Least time between one tile being dropped and the next. Every preemption throws away
+    /// whatever that tile had computed, so without a floor a player moving steadily can have each
+    /// arrival interrupt the last and the device spends its time redoing work rather than
+    /// finishing any of it.
+    /// </summary>
+    private const long PreemptionCooldownMs = 2000;
+
     private readonly object _lock = new();
+    // Zero, not long.MinValue: TickCount64 minus that overflows and the cooldown never expires.
+    private long _lastPreemptionMs;
     private readonly List<Waiter> _queue = new();
     private Waiter _running;
     private long _preemptionCount;
@@ -135,9 +145,12 @@ public sealed class InferenceScheduler : IDisposable
             _queue.Add(waiter);
 
             // Is the tile holding the device now far enough behind this one to be worth dropping?
+            long now = Environment.TickCount64;
             if (_running.Preemptions < MaxPreemptions &&
-                _running.Priority - waiter.Priority > PreemptionMarginBlocks)
+                _running.Priority - waiter.Priority > PreemptionMarginBlocks &&
+                now - _lastPreemptionMs >= PreemptionCooldownMs)
             {
+                _lastPreemptionMs = now;
                 _running.Token.Preempt();
             }
         }

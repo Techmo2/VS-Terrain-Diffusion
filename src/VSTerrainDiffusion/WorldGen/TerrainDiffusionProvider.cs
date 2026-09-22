@@ -237,9 +237,11 @@ public sealed class TerrainDiffusionProvider : IDisposable
     private long _totalInferenceMillis;
 
     public TerrainDiffusionProvider(ulong seed, PipelineModels models, DiffusionWorldSettings settings,
-                                    ILogger logger, ILandmaskSource landmask = null)
+                                    ILogger logger, ILandmaskSource landmask = null,
+                                    IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f)
     {
-        _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude);
+        _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude,
+                                      riverBasins, riverBasinDepth);
         _settings = settings;
         _logger = logger;
         int configuredTileSize = DiffusionConfig.Instance.TerrainTileSizeBlocks;
