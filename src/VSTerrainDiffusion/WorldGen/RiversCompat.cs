@@ -110,6 +110,8 @@ public static class RiversCompat
             object config = AccessTools.Property(configType, "Loaded")?.GetValue(null);
             if (_samplesForChunk == null || _riverDistance == null || _bankFactor == null || config == null) return;
 
+            ScaleOceanThresholdForWorldHeight(api, configType, config);
+
             _maxValleyWidth = Read<double>(config, "maxValleyWidth");
             _valleyStrengthMin = Read<float>(config, "valleyStrengthMin");
             _valleyStrengthMax = Read<float>(config, "valleyStrengthMax");
@@ -146,6 +148,36 @@ public static class RiversCompat
                 "[{0}] Rivers is installed but could not be read, so this world will have no rivers: {1}",
                 DiffusionPaths.ModId, e.Message);
         }
+    }
+
+    /// <summary>
+    /// Undoes the world-height scaling in Rivers' test for where the sea begins, so rivers reach it.
+    ///
+    /// <c>RiverRegion.SetZoneOceanicity</c> calls a 256-block zone sea, and stops routing through
+    /// it, when the ocean map there passes <c>oceanThreshold</c> (30) after being multiplied by
+    /// <c>(MapSizeY / 256) * 0.33333</c> - an integer division that grows with world height. At 256
+    /// blocks tall that needs an ocean map value of 90 out of 255; at 1024 it needs 22, so a zone
+    /// nine tenths land counts as sea and the river stops a whole zone short of the water. The
+    /// threshold is calibrated for a 256-tall world, and this mod encourages much taller ones.
+    ///
+    /// Scaling the threshold by the same factor puts the test back where it was written, whatever
+    /// the world height. A value the player has changed is scaled too, so their intent survives.
+    /// </summary>
+    private static void ScaleOceanThresholdForWorldHeight(ICoreServerAPI api, Type configType, object config)
+    {
+        FieldInfo threshold = AccessTools.Field(configType, "oceanThreshold");
+        if (threshold == null) return;
+
+        int steps = Math.Max(1, api.WorldManager.MapSizeY / 256);
+        if (steps == 1) return;
+
+        float shipped = (float)threshold.GetValue(config);
+        threshold.SetValue(config, shipped * steps);
+
+        api.Logger.Notification(
+            "[{0}] Rivers reaches the sea at an ocean map value of {1:0} however tall the world is; " +
+            "at this height its own test would have settled for {2:0} and left rivers ending inland.",
+            DiffusionPaths.ModId, shipped * steps / ((float)steps * 0.33333f), shipped / ((float)steps * 0.33333f));
     }
 
     /// <summary>Compiles a field getter once, so reading a sample is not a reflection call.</summary>
