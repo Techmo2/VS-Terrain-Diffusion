@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
 using Vintagestory.API.Util;
@@ -46,6 +47,22 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     public override void StartPre(ICoreAPI api)
     {
+        // Rivers generates terrain itself unless told not to, and it does that by stopping vanilla's
+        // generator from ever registering - which is the handler this mod takes the place of. Asking
+        // it to stand aside has to happen before any StartServerSide runs, and gives this mod the
+        // terrain while Rivers keeps its river network. See RiversCompat.
+        // Not when Watersheds is here: that takes terrain generation from both of us and already
+        // arranges things with Rivers itself, and the two working together is not ours to disturb.
+        bool watersheds = api.ModLoader.IsModEnabled("watersheds");
+
+        if (api.Side == EnumAppSide.Server && !watersheds &&
+            RiversCompat.IsPresent(api) && RiversCompat.StandDown(api))
+        {
+            api.Logger.Notification(
+                "[{0}] Rivers is installed; this mod will generate the terrain and carve its rivers " +
+                "into it.", DiffusionPaths.ModId);
+        }
+
         InferenceThrottle.UtilizationPercent = DiffusionConfig.Load(api).GpuUtilizationPercent;
     }
 
@@ -116,7 +133,16 @@ public class TerrainDiffusionModSystem : ModSystem
         }
 
         _provider?.Dispose();
-        _provider = new TerrainDiffusionProvider(WorldSeed(), models, _settings, _api.Logger, BuildLandmask());
+        // Before the provider, because the first coarse window is built during the spawn search and
+        // a window generated without the rivers would be cached and then seam against every one
+        // after it.
+        bool rivers = !WatershedsCompat.IsPresent(_api) && RiversCompat.IsPresent(_api);
+        if (rivers) RiversCompat.TryInstall(_api);
+
+        _provider = new TerrainDiffusionProvider(
+            WorldSeed(), models, _settings, _api.Logger, BuildLandmask(),
+            rivers && RiversCompat.CanSampleNetwork ? new RiverBasinMap(_settings, _api.Logger) : null,
+            DiffusionConfig.Instance.WorldGen.RiverBasinDepth);
 
         // The spawn search can run before the height mapping is settled - and it should, because
         // the survey wants to be centred on where people will actually play.
@@ -128,11 +154,20 @@ public class TerrainDiffusionModSystem : ModSystem
 
         StartDebugMap();
 
+        // Order terrain generation by how far it is from somebody. After a translocator hop the
+        // queue is full of tiles for where the player used to be, and without this the ground they
+        // are standing on is generated only once all of that has drained.
+        _provider.TileUrgency = DistanceToNearestPlayer;
+
         _generator = new GenDiffusionTerra(_api, _provider, _settings);
         _surface = new DiffusionSurface(_api, _provider);
 
         InstallTerrain();
         InstallMapLayers();
+
+        // Unrelated to the climate patches below: this one only makes the static translocator
+        // search affordable, and never changes what the world contains.
+        TranslocatorSearchCompat.Install(_api);
 
         // Both only while the model owns the climate map. Left to vanilla the stored byte is a
         // sea-level temperature already read at the game's own lapse rate, and correcting either
@@ -186,6 +221,31 @@ public class TerrainDiffusionModSystem : ModSystem
         var server = new DebugMapServer(_api.Logger, _provider, _settings);
         if (server.Start(DiffusionConfig.Instance.DebugMapBindAddress, port)) _debugMap = server;
         else server.Dispose();
+    }
+
+    /// <summary>
+    /// Blocks from a world position to the nearest player, or 0 when nobody is connected - during
+    /// world creation everything is equally urgent. Squared distance would overflow at map scale,
+    /// so this is a plain Chebyshev-ish sum that is monotone in what matters.
+    /// </summary>
+    private long DistanceToNearestPlayer(int blockX, int blockZ)
+    {
+        IPlayer[] players = _api?.World?.AllOnlinePlayers;
+        if (players == null || players.Length == 0) return 0;
+
+        long best = long.MaxValue;
+        foreach (IPlayer player in players)
+        {
+            Entity entity = player?.Entity;
+            if (entity == null) continue;
+
+            long dx = Math.Abs((long)entity.Pos.X - blockX);
+            long dz = Math.Abs((long)entity.Pos.Z - blockZ);
+            long distance = dx > dz ? dx : dz;
+            if (distance < best) best = distance;
+        }
+
+        return best == long.MaxValue ? 0 : best;
     }
 
     /// <summary>
@@ -262,6 +322,21 @@ public class TerrainDiffusionModSystem : ModSystem
     {
         if (_provider == null || _settings is not { Enabled: true }) return;
         if (_settings.ClimateMode == DiffusionClimateMode.Off) return;
+
+        // A chunk peek that lands on virgin ground makes a whole map region to throw away with the
+        // rest of the peek, and this walks a 512x512 block region through the model - four to nine
+        // terrain tiles, against the one to four the peek's own 96-block footprint needs. It is the
+        // largest single cost in a translocator search.
+        //
+        // Nothing in the Terrain or TerrainFeatures pass reads seasonality: it is map region mod
+        // data, read at play time by DiffusionSeasons and the /tdiff readout. The peeked region is
+        // discarded, and if the search does pick this column the region is generated again for
+        // real, with the scope clear, and gets its map then.
+        if (ChunkPeekScope.Active)
+        {
+            TranslocatorSearchCompat.CountRegionMapSkipped();
+            return;
+        }
 
         try
         {
@@ -378,8 +453,13 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     private void InstallTerrain()
     {
-        if (WatershedsCompat.IsPresent(_api)) InstallWatershedsHandover();
-        else InstallTerrainHandler();
+        if (WatershedsCompat.IsPresent(_api))
+        {
+            InstallWatershedsHandover();
+            return;
+        }
+
+        InstallTerrainHandler();
     }
 
     /// <summary>
@@ -410,6 +490,11 @@ public class TerrainDiffusionModSystem : ModSystem
     {
         IWorldGenHandler handlers = _api.Event.GetRegisteredWorldGenHandlers("standard");
         List<ChunkColumnGenerationDelegate> terrainPass = handlers.OnChunkColumnGen[(int)EnumWorldGenPass.Terrain];
+
+        // Rivers leaves its own generator registered even when asked to stand aside, and two
+        // generators filling one column produce the union of both landscapes. Before anything else,
+        // so the vanilla slot below is the only one left to take.
+        if (RiversCompat.Installed) RiversCompat.RemoveTerrainHandler(_api, terrainPass);
 
         ChunkColumnGenerationDelegate replacement = OnTerrainPass;
 
@@ -725,6 +810,8 @@ public class TerrainDiffusionModSystem : ModSystem
             $"Pipeline cache: {_provider.PipelineCachedBytes / 1048576.0:0.#} / " +
             $"{DiffusionConfig.Instance.TileCacheMegabytes} MB",
             $"Pipeline windows computed: {_provider.PipelineComputedWindows}",
+            $"Translocator search: {TranslocatorSearchCompat.Describe()}",
+            $"Tiles dropped for closer work: {_provider.PreemptionCount}",
             $"Device limit: {InferenceThrottle.Describe()}",
             $"Settings screen: {(ConfigLibCompat.IsPresent(_api) ? "ConfigLib" : "not installed")}",
             $"Debug map: {(_debugMap?.IsRunning == true ? _debugMap.Url : "off")}",
@@ -1075,7 +1162,9 @@ public class TerrainDiffusionModSystem : ModSystem
         _debugMap?.Dispose();
         _debugMap = null;
         WatershedsCompat.Uninstall();
+        RiversCompat.Uninstall();
         SurfaceClimateCompat.Uninstall();
+        TranslocatorSearchCompat.Uninstall();
         ClimateScale.Uninstall();
         ConfigLibCompat.Uninstall();
         _provider?.Dispose();

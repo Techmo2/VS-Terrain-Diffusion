@@ -334,12 +334,20 @@ public class WorldGenConfig
     public float RainfallSpread { get; set; } = 0.8f;
 
     /// <summary>
-    /// Added to the final rainfall as a fraction of full scale. The climate map cancels Vintage
-    /// Story's own "higher ground is wetter" bonus, because the model already models orography
-    /// properly, and vanilla's thresholds were tuned with that bonus present; this puts its average
-    /// back. Raise for a lusher world, drop to zero for the model's unmodified answer.
+    /// Added to the final rainfall as a fraction of full scale, so the model's own answer stands
+    /// unless this says otherwise.
+    ///
+    /// The climate map cancels Vintage Story's own "higher ground is wetter" bonus, because the
+    /// model already models orography properly, and this used to default to 0.05 to put that
+    /// bonus's average back - vanilla's thresholds were tuned with it present. In practice it read
+    /// as a world that was too lush everywhere, so the compensation is now opt-in: raise it for a
+    /// wetter world, lower it for a drier one.
+    ///
+    /// It is an *additive* trim, which is what makes it the right knob for "a bit too wet": it
+    /// moves every column by the same amount. <see cref="MoistureMedian"/> shifts a log-normal and
+    /// so bites hardest in places that are already dry, which turns arid regions into desert.
     /// </summary>
-    public float RainfallBias { get; set; } = 0.05f;
+    public float RainfallBias { get; set; }
 
     /// <summary>Degrees Celsius added to every model temperature, for a warmer or colder world.</summary>
     public float TemperatureOffsetC { get; set; }
@@ -389,6 +397,56 @@ public class WorldGenConfig
     /// Zero restores the undamped swing.
     /// </summary>
     public float SeasonalPrecipitationFloor { get; set; } = 0.4f;
+
+    /// <summary>
+    /// How long a translocator may wait for a chunk peek that never came back before starting its
+    /// search again, in seconds. 0 disables the watchdog. Held to at least
+    /// <see cref="TranslocatorPeekPauseSeconds"/> plus a minute, so it cannot fire while a peek is
+    /// still waiting its turn, and each restart waits longer than the last.
+    ///
+    /// The server drops a queued peek if it cannot pause every worldgen thread within 3.6 seconds,
+    /// and a worldgen thread waiting on the model can take longer than that. The translocator has
+    /// already cleared the flag that would make it try again, so without this it stays on "Warping
+    /// spacetime..." until its chunk is unloaded and read back from disk.
+    /// </summary>
+    public int TranslocatorSearchTimeoutSeconds { get; set; } = 120;
+
+    /// <summary>
+    /// How far the land is lowered where sneeze's Rivers runs a river, from 0 (leave the model's
+    /// own landscape alone) to 1. Does nothing without that mod.
+    ///
+    /// The rivers are routed before the terrain is generated - they come from the world's ocean
+    /// map, not from its height - so the model can be told where they will be and put a valley
+    /// there rather than a ridge for one to be cut through afterwards.
+    ///
+    /// Measured at the default conditioning strength: 0.5 takes a corridor from 466 m to 251 m
+    /// against 500 m either side, a 45% drop with every cell still dry land. 1.0 reaches 94% but
+    /// drowns a fifth of the corridor, which turns rivers into sea inlets.
+    /// </summary>
+    public float RiverBasinDepth { get; set; } = 0.5f;
+
+    /// <summary>
+    /// How long the server may wait for world generation to pause before a chunk peek, in seconds.
+    /// 0 keeps Vintage Story's own 3.6.
+    ///
+    /// Worldgen threads only park between chunk columns, and a column here waits on the model
+    /// behind a single inference gate, so several queued threads routinely take longer than 3.6 s
+    /// to come to rest. The server then throws the peek away - after the terrain was generated -
+    /// and the translocator has to start over. Nothing can cut a column short, so the only
+    /// remaining option is to wait for it.
+    /// </summary>
+    public int TranslocatorPeekPauseSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Caps how far a translocator looks for its partner, in blocks. 0 keeps Vintage Story's own
+    /// 8000.
+    ///
+    /// Each attempt generates nine chunk columns and throws them away, four times a second, until
+    /// it finds a ruin. A smaller ring keeps those attempts inside terrain that is already
+    /// generated and still cached. It also makes translocator hops shorter, and it changes which
+    /// translocator links to which, which is why it is off by default. Links already made are kept.
+    /// </summary>
+    public int TranslocatorMaxRangeBlocks { get; set; }
 
     /// <summary>
     /// Swing the year the opposite way south of the equator.
@@ -564,7 +622,7 @@ public class WorldGenConfig
         MoistureSpread = Clamp(MoistureSpread, 0.1f, 4f, 1f);
         RainfallMedianMm = Clamp(RainfallMedianMm, 10f, 10000f, 540f);
         RainfallSpread = Clamp(RainfallSpread, 0.1f, 4f, 0.8f);
-        RainfallBias = Clamp(RainfallBias, -1f, 1f, 0.05f);
+        RainfallBias = Clamp(RainfallBias, -1f, 1f, 0f);
         TemperatureOffsetC = Clamp(TemperatureOffsetC, -40f, 40f, 0f);
 
         ForestDensityMultiplier = Clamp(ForestDensityMultiplier, 0f, 4f, 1f);
@@ -573,6 +631,10 @@ public class WorldGenConfig
         SeasonalTemperatureStrength = Clamp(SeasonalTemperatureStrength, 0f, 4f, 1f);
         SeasonalPrecipitationStrength = Clamp(SeasonalPrecipitationStrength, 0f, 4f, 1f);
         SeasonalPrecipitationFloor = Clamp(SeasonalPrecipitationFloor, 0f, 1f, 0.4f);
+        TranslocatorSearchTimeoutSeconds = (int)Clamp(TranslocatorSearchTimeoutSeconds, 0f, 1800f, 120f);
+        TranslocatorPeekPauseSeconds = (int)Clamp(TranslocatorPeekPauseSeconds, 0f, 120f, 30f);
+        RiverBasinDepth = Clamp(RiverBasinDepth, 0f, 1f, 0.5f);
+        TranslocatorMaxRangeBlocks = (int)Clamp(TranslocatorMaxRangeBlocks, 0f, 8000f, 0f);
 
         OceanMap = (OceanMap ?? "input").Trim().ToLowerInvariant();
         if (OceanMap != "output") OceanMap = "input";

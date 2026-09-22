@@ -105,6 +105,24 @@ public sealed class TerrainDiffusionProvider : IDisposable
     private long _accessClock;
 
     /// <summary>
+    /// Tiles first generated to serve a chunk peek. Evicted before anything a player's own chunk
+    /// loading brought in, but only down to <see cref="PeekReserve"/>, because a peek that evicts
+    /// its own working set regenerates it several times over.
+    /// </summary>
+    private readonly ConcurrentDictionary<long, byte> _peekTiles = new();
+
+    /// <summary>
+    /// Peeked tiles kept regardless of age. One peek needs about three at the default tile size,
+    /// since its map layers are held to the ground it actually reads.
+    ///
+    /// Deliberately small. The reserve is what stops a peek evicting its own working set between
+    /// one map layer's walk and the next, but every slot it holds is one a player's terrain cannot
+    /// use, and too large a reserve stops the policy engaging at all once the cache is nearly full
+    /// - measured at 24 with a 142 tile cache, the player lost every tile they had.
+    /// </summary>
+    private const int PeekReserve = 4;
+
+    /// <summary>
     /// One column's climate as the model produced it, before the world's own corrections. Only the
     /// diagnostic commands ask for this; a tile keeps the finished numbers and not the workings.
     /// </summary>
@@ -150,7 +168,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         int j = FloorDiv(worldBlockX - _settings.OriginBlockX, scale);
 
         WorldPipeline.Sample sample;
-        _inferenceGate.Wait();
+        _scheduler.Enter();
         try
         {
             sample = _pipeline.Get(i, j, i + 1, j + 1, true);
@@ -162,7 +180,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         }
         finally
         {
-            _inferenceGate.Release();
+            _scheduler.Exit();
         }
 
         if (sample.Climate == null) return null;
@@ -185,15 +203,45 @@ public sealed class TerrainDiffusionProvider : IDisposable
     public event Action<TerrainTile> TileGenerated;
 
     /// <summary>Serialises all pipeline work; the tile store is not thread safe.</summary>
-    private readonly SemaphoreSlim _inferenceGate = new(1, 1);
+    private readonly InferenceScheduler _scheduler = new();
+
+    /// <summary>
+    /// How far a tile is from the nearest player, in blocks, which is what decides the order tiles
+    /// are generated in. Supplied by the mod system, which is the part that can see the players.
+    /// Until it is set everything ranks alike and the order is arrival order, as it used to be.
+    /// </summary>
+    public System.Func<int, int, long> TileUrgency { get; set; }
+
+    /// <summary>How many tiles have been dropped part way through for something closer.</summary>
+    public long PreemptionCount => _scheduler.PreemptionCount;
+
+    private long UrgencyOf(int tileX, int tileZ)
+    {
+        // Terrain generated to serve a chunk peek is speculative and thrown away. It always yields.
+        if (ChunkPeekScope.Active) return long.MaxValue / 4;
+
+        System.Func<int, int, long> urgency = TileUrgency;
+        if (urgency == null) return 0;
+
+        try
+        {
+            return urgency(tileX * _tileSize + _tileSize / 2, tileZ * _tileSize + _tileSize / 2);
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
 
     private long _tilesGenerated;
     private long _totalInferenceMillis;
 
     public TerrainDiffusionProvider(ulong seed, PipelineModels models, DiffusionWorldSettings settings,
-                                    ILogger logger, ILandmaskSource landmask = null)
+                                    ILogger logger, ILandmaskSource landmask = null,
+                                    IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f)
     {
-        _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude);
+        _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude,
+                                      riverBasins, riverBasinDepth);
         _settings = settings;
         _logger = logger;
         int configuredTileSize = DiffusionConfig.Instance.TerrainTileSizeBlocks;
@@ -298,8 +346,28 @@ public sealed class TerrainDiffusionProvider : IDisposable
     public TerrainTile GetTile(int tileX, int tileZ)
     {
         long key = ((long)tileX << 32) ^ (uint)tileZ;
+        bool created = false;
         Lazy<TerrainTile> lazy = _tiles.GetOrAdd(key, _ =>
-            new Lazy<TerrainTile>(() => GenerateTile(tileX, tileZ), LazyThreadSafetyMode.ExecutionAndPublication));
+        {
+            created = true;
+            return new Lazy<TerrainTile>(() => GenerateTile(tileX, tileZ), LazyThreadSafetyMode.ExecutionAndPublication);
+        });
+
+        // The translocator search peeks four times a second at points up to 8000 blocks away. Left
+        // to a plain LRU that walk pushes the ground a player is standing on out of the cache, to
+        // be generated again the moment they move, so tiles a peek brought into being are marked
+        // and spent first - see EvictLeastRecentlyUsed. The stamp itself stays on the ordinary
+        // clock: an earlier version put peeked tiles in a band below it, which made them always
+        // the victim and had a peek evicting its own tiles between one map layer's walk and the
+        // next, regenerating them three times over.
+        if (created)
+        {
+            if (ChunkPeekScope.Active) _peekTiles[key] = 0;
+        }
+        else if (!ChunkPeekScope.Active)
+        {
+            _peekTiles.TryRemove(key, out _);
+        }
 
         _lastAccess[key] = Interlocked.Increment(ref _accessClock);
         TerrainTile tile = lazy.Value;
@@ -320,6 +388,10 @@ public sealed class TerrainDiffusionProvider : IDisposable
         {
             while (_tiles.Count > _maxCachedTiles)
             {
+                // Spend the peeked tiles first, down to the reserve one peek needs to finish
+                // without tripping over itself. Below that, fall back to a plain global LRU.
+                bool peekedOnly = _peekTiles.Count > PeekReserve;
+
                 long oldestKey = 0;
                 long oldestAccess = long.MaxValue;
                 bool found = false;
@@ -327,22 +399,41 @@ public sealed class TerrainDiffusionProvider : IDisposable
                 foreach (KeyValuePair<long, long> entry in _lastAccess)
                 {
                     if (entry.Key == protectedKey || entry.Value >= oldestAccess) continue;
+                    if (peekedOnly && !_peekTiles.ContainsKey(entry.Key)) continue;
                     oldestKey = entry.Key;
                     oldestAccess = entry.Value;
                     found = true;
                 }
 
+                if (!found && peekedOnly)
+                {
+                    foreach (KeyValuePair<long, long> entry in _lastAccess)
+                    {
+                        if (entry.Key == protectedKey || entry.Value >= oldestAccess) continue;
+                        oldestKey = entry.Key;
+                        oldestAccess = entry.Value;
+                        found = true;
+                    }
+                }
+
                 if (!found) return;
                 _tiles.TryRemove(oldestKey, out _);
                 _lastAccess.TryRemove(oldestKey, out _);
+                _peekTiles.TryRemove(oldestKey, out _);
             }
         }
     }
 
     private TerrainTile GenerateTile(int tileX, int tileZ)
+        => _scheduler.Run(UrgencyOf(tileX, tileZ), () => GenerateTileMeasured(tileX, tileZ));
+
+    /// <summary>
+    /// One attempt at a tile. May be abandoned part way through for something closer to a player,
+    /// in which case the scheduler calls it again; nothing is published until a window is whole, so
+    /// an abandoned attempt leaves only work to redo.
+    /// </summary>
+    private TerrainTile GenerateTileMeasured(int tileX, int tileZ)
     {
-        _inferenceGate.Wait();
-        try
         {
             var stopwatch = Stopwatch.StartNew();
             TerrainTile tile = GenerateTileUnsynchronized(tileX, tileZ);
@@ -379,10 +470,6 @@ public sealed class TerrainDiffusionProvider : IDisposable
             WarnIfThrashing(tileX, tileZ);
             TileGenerated?.Invoke(tile);
             return tile;
-        }
-        finally
-        {
-            _inferenceGate.Release();
         }
     }
 
@@ -433,6 +520,10 @@ public sealed class TerrainDiffusionProvider : IDisposable
     private void WarnIfThrashing(int tileX, int tileZ)
     {
         if (_thrashWarned) return;
+
+        // A chunk peek generates terrain nowhere near the player and throws it away. Counting that
+        // as thrashing would tell them to raise a cache size that is not the problem.
+        if (ChunkPeekScope.Active) return;
 
         long key = ((long)tileX << 32) ^ (uint)tileZ;
         int repeats = 0;
@@ -762,7 +853,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
     private List<(float Meters, int Row, int Col)> SurveyLandCells(int centerI, int centerJ, int half)
     {
         FloatTensor coarse;
-        _inferenceGate.Wait();
+        _scheduler.Enter();
         try
         {
             coarse = _pipeline.GetCoarseSlice(centerI - half, centerJ - half, centerI + half, centerJ + half);
@@ -774,7 +865,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         }
         finally
         {
-            _inferenceGate.Release();
+            _scheduler.Exit();
         }
 
         int size = 2 * half;
@@ -803,7 +894,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
     {
         int half = windowPixels / 2;
 
-        _inferenceGate.Wait();
+        _scheduler.Enter();
         try
         {
             return _pipeline.Get(centerI - half, centerJ - half, centerI + half, centerJ + half, false).Elevation;
@@ -815,7 +906,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         }
         finally
         {
-            _inferenceGate.Release();
+            _scheduler.Exit();
         }
     }
 
@@ -894,7 +985,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
             int half = boxSize / 2;
             FloatTensor coarse;
 
-            _inferenceGate.Wait();
+            _scheduler.Enter();
             try
             {
                 coarse = _pipeline.GetCoarseSlice(-half, -half, half, half);
@@ -906,7 +997,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
             }
             finally
             {
-                _inferenceGate.Release();
+                _scheduler.Exit();
             }
 
             int h = boxSize, w = boxSize;
@@ -1135,6 +1226,6 @@ public sealed class TerrainDiffusionProvider : IDisposable
     public void Dispose()
     {
         _tiles.Clear();
-        _inferenceGate.Dispose();
+        _scheduler.Dispose();
     }
 }

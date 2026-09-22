@@ -210,11 +210,17 @@ slightly with the ones already on disk.
     // precipitation: spread of the model's log precipitation over land.
     "RainfallSpread": 0.8,
 
-    // Added to the final rainfall as a fraction of full scale. The climate map cancels Vintage
-    // Story's own "higher ground is wetter" bonus, because the model already handles orography
-    // properly, and vanilla's thresholds were tuned with that bonus present; this puts its
-    // average back. Raise for a lusher world, drop to zero for the model's unmodified answer.
-    "RainfallBias": 0.05,
+    // Added to the final rainfall as a fraction of full scale. Zero leaves the model's own answer
+    // alone; raise for a wetter world, lower for a drier one.
+    //
+    // The climate map cancels Vintage Story's own "higher ground is wetter" bonus, because the
+    // model already handles orography properly, and this used to default to 0.05 to put that
+    // bonus's average back. It read as a world too lush everywhere, so the compensation is now
+    // opt-in.
+    //
+    // Reach for this before "MoistureMedian": it moves every column by the same amount, where the
+    // moisture calibration shifts a log-normal and so bites hardest where it is already dry.
+    "RainfallBias": 0.0,
 
     // Degrees Celsius added to every model temperature, for a warmer or colder world.
     "TemperatureOffsetC": 0.0,
@@ -264,6 +270,47 @@ slightly with the ones already on disk.
     // extreme (BIO15 above roughly 100%). 0 removes it, and those places then go months with no
     // rain at all, which stalls unirrigated crops until the rains return.
     "SeasonalPrecipitationFloor": 0.4,
+
+    // How far the land is lowered where the Rivers mod runs a river, from 0 to 1. Does nothing
+    // without that mod.
+    //
+    // Rivers are routed from the world's ocean map rather than from terrain height, so they can be
+    // worked out before the landscape and the model told where they will be - it then puts a
+    // valley there instead of a ridge for one to be cut through afterwards.
+    //
+    // Measured: 0.5 takes a river corridor from 466 m to 251 m against 500 m either side, a 45%
+    // drop with every cell still dry land. 1.0 reaches 94% but drowns a fifth of the corridor,
+    // turning rivers into sea inlets.
+    "RiverBasinDepth": 0.5,
+
+    // ---- Translocators -------------------------------------------------------------------------
+
+    // How long a translocator may wait for a chunk peek that never came back before starting its
+    // search again, in seconds. 0 turns the watchdog off.
+    //
+    // A repaired translocator hunts for its partner four times a second by generating nine chunk
+    // columns somewhere up to 8000 blocks away and throwing them away again. The server abandons
+    // one of those if it cannot pause every worldgen thread within 3.6 seconds - which a thread
+    // waiting on the model can easily exceed - and the translocator has already cleared the flag
+    // that would make it try again, so it stays on "Warping spacetime..." until its chunk is
+    // unloaded and read back from disk.
+    "TranslocatorSearchTimeoutSeconds": 120,
+
+    // How long the server may wait for terrain generation to stop before inspecting a candidate
+    // location, in seconds. 0 keeps the game's own 3.6.
+    //
+    // Worldgen threads only come to rest between chunk columns, and a column here waits on the
+    // model behind a single inference gate, so several queued threads routinely take longer than
+    // 3.6 s. The server then discards the peek - after generating its terrain - and the search
+    // starts over. Nothing can cut a column short, so waiting is the only option left.
+    "TranslocatorPeekPauseSeconds": 30,
+
+    // Caps how far a translocator looks for its partner, in blocks. 0 keeps the game's own 8000.
+    //
+    // A smaller ring searches ground that is more likely to be generated and still cached, so it
+    // links sooner, but its hops are shorter and it changes which translocator links to which.
+    // Links a world has already made are kept.
+    "TranslocatorMaxRangeBlocks": 0,
 
     // Swing the year the opposite way south of the equator. On by default, and not really
     // optional: Vintage Story already does this. Its calendar takes the hemisphere from the sign of
@@ -419,12 +466,16 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `MoistureMedian` | 0.01 – 100 | 0.4 – 0.9 | 0.62 |
 | `MoistureSpread`, `RainfallSpread` | 0.1 – 4 | 0.7 – 1.4, 0.6 – 1.2 | 1, 0.8 |
 | `RainfallMedianMm` | 10 – 10 000 | 300 – 900 | 540 |
-| `RainfallBias` | -1 – 1 | -0.1 – 0.2 | 0.05 |
+| `RainfallBias` | -1 – 1 | -0.1 – 0.1 | 0 |
 | `TemperatureOffsetC` | -40 – 40 | -5 – 5 | 0 |
 | `ForestDensityMultiplier` | 0 – 4 | 0.7 – 1.5 (squared on the ground) | 1 |
 | `ShrubDensityMultiplier` | 0 – 4 | 0.5 – 2 (squared on the ground) | 1 |
 | `SeasonalTemperatureStrength`, `SeasonalPrecipitationStrength` | 0 – 4 | 0.5 – 1.5 | 1 |
 | `SeasonalPrecipitationFloor` | 0 – 1 | 0.3 – 0.6 | 0.4 |
+| `RiverBasinDepth` | 0 – 1 | 0.3 – 0.6 | 0.5 |
+| `TranslocatorSearchTimeoutSeconds` | 0 – 1800 | 90 – 300 | 120 |
+| `TranslocatorPeekPauseSeconds` | 0 – 120 | 20 – 60 | 30 |
+| `TranslocatorMaxRangeBlocks` | 0, or up to 8000 | 0, or 1500 – 3000 | 0 |
 | `LandmaskStrength` | 0 – 1 | 0.8 – 1 | 1 |
 | `LandmaskNoiseLevel` | 0, or 0.01 – 8 | 0.05 – 0.5 | 0.1 |
 | `GlobalClimateStrength` | 0 – 1 | 0.5 – 1 | 1 |
