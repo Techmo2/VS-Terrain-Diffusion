@@ -419,11 +419,17 @@ public class WorldGenConfig
     /// map, not from its height - so the model can be told where they will be and put a valley
     /// there rather than a ridge for one to be cut through afterwards.
     ///
-    /// Measured at the default conditioning strength: 0.5 takes a corridor from 466 m to 251 m
-    /// against 500 m either side, a 45% drop with every cell still dry land. 1.0 reaches 94% but
-    /// drowns a fifth of the corridor, which turns rivers into sea inlets.
+    /// Measured at the default conditioning strength, a corridor against ~505 m either side:
+    /// 0.3 brings it to 334 m (a 28% drop), 0.5 to 251 m (45%), and 1.0 to 28 m (94%) but drowns a
+    /// fifth of the corridor, which turns rivers into sea inlets.
+    ///
+    /// The default is 0.3 rather than the 0.5 first shipped because the basin reaches a full coarse
+    /// cell either side of a river. At Rivers' own default density that sweeps roughly a third of
+    /// the world, and pressing all of it halfway to sea level reads as a plain rather than as river
+    /// valleys. Raise it for deeper valleys, or lower <c>riverSpawnChance</c> in Rivers' own config
+    /// for fewer of them.
     /// </summary>
-    public float RiverBasinDepth { get; set; } = 0.5f;
+    public float RiverBasinDepth { get; set; } = 0.3f;
 
     /// <summary>
     /// How long the server may wait for world generation to pause before a chunk peek, in seconds.
@@ -633,7 +639,7 @@ public class WorldGenConfig
         SeasonalPrecipitationFloor = Clamp(SeasonalPrecipitationFloor, 0f, 1f, 0.4f);
         TranslocatorSearchTimeoutSeconds = (int)Clamp(TranslocatorSearchTimeoutSeconds, 0f, 1800f, 120f);
         TranslocatorPeekPauseSeconds = (int)Clamp(TranslocatorPeekPauseSeconds, 0f, 120f, 30f);
-        RiverBasinDepth = Clamp(RiverBasinDepth, 0f, 1f, 0.5f);
+        RiverBasinDepth = Clamp(RiverBasinDepth, 0f, 1f, 0.3f);
         TranslocatorMaxRangeBlocks = (int)Clamp(TranslocatorMaxRangeBlocks, 0f, 8000f, 0f);
 
         OceanMap = (OceanMap ?? "input").Trim().ToLowerInvariant();

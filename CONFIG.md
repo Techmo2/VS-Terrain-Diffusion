@@ -278,10 +278,15 @@ slightly with the ones already on disk.
     // worked out before the landscape and the model told where they will be - it then puts a
     // valley there instead of a ridge for one to be cut through afterwards.
     //
-    // Measured: 0.5 takes a river corridor from 466 m to 251 m against 500 m either side, a 45%
-    // drop with every cell still dry land. 1.0 reaches 94% but drowns a fifth of the corridor,
-    // turning rivers into sea inlets.
-    "RiverBasinDepth": 0.5,
+    // Measured against ~505 m either side of a river corridor: 0.3 brings it to 334 m (a 28%
+    // drop), 0.5 to 251 m (45%), 1.0 to 28 m but drowns a fifth of the corridor and turns rivers
+    // into sea inlets.
+    //
+    // The basin reaches a full coarse cell either side of a river, which at Rivers' own default
+    // density covers roughly a third of the world - hence 0.3 rather than 0.5, so that ground
+    // reads as river valleys instead of a plain. For fewer, deeper valleys, raise this and lower
+    // "riverSpawnChance" in Rivers' own config.
+    "RiverBasinDepth": 0.3,
 
     // ---- Translocators -------------------------------------------------------------------------
 
@@ -472,7 +477,7 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `ShrubDensityMultiplier` | 0 – 4 | 0.5 – 2 (squared on the ground) | 1 |
 | `SeasonalTemperatureStrength`, `SeasonalPrecipitationStrength` | 0 – 4 | 0.5 – 1.5 | 1 |
 | `SeasonalPrecipitationFloor` | 0 – 1 | 0.3 – 0.6 | 0.4 |
-| `RiverBasinDepth` | 0 – 1 | 0.3 – 0.6 | 0.5 |
+| `RiverBasinDepth` | 0 – 1 | 0.2 – 0.5 | 0.3 |
 | `TranslocatorSearchTimeoutSeconds` | 0 – 1800 | 90 – 300 | 120 |
 | `TranslocatorPeekPauseSeconds` | 0 – 120 | 20 – 60 | 30 |
 | `TranslocatorMaxRangeBlocks` | 0, or up to 8000 | 0, or 1500 – 3000 | 0 |

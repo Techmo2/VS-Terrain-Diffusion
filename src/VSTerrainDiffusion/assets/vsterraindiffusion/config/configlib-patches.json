@@ -540,7 +540,7 @@
     {
       "code": "WorldGen/RiverBasinDepth",
       "type": "number",
-      "default": 0.5,
+      "default": 0.3,
       "ingui": "setting-WorldGenRiverBasinDepth",
       "comment": "setting-WorldGenRiverBasinDepth-hover",
       "range": {
