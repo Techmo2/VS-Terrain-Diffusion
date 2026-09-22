@@ -139,10 +139,13 @@ public class TerrainDiffusionModSystem : ModSystem
         bool rivers = !WatershedsCompat.IsPresent(_api) && RiversCompat.IsPresent(_api);
         if (rivers) RiversCompat.TryInstall(_api);
 
+        _riverBasins = rivers && RiversCompat.CanSampleNetwork
+            ? new RiverBasinMap(_settings, _api.Logger)
+            : null;
+
         _provider = new TerrainDiffusionProvider(
             WorldSeed(), models, _settings, _api.Logger, BuildLandmask(),
-            rivers && RiversCompat.CanSampleNetwork ? new RiverBasinMap(_settings, _api.Logger) : null,
-            DiffusionConfig.Instance.WorldGen.RiverBasinDepth);
+            _riverBasins, DiffusionConfig.Instance.WorldGen.RiverBasinDepth);
 
         // The spawn search can run before the height mapping is settled - and it should, because
         // the survey wants to be centred on where people will actually play.
@@ -218,9 +221,26 @@ public class TerrainDiffusionModSystem : ModSystem
         int port = DiffusionConfig.Instance.DebugMapPort;
         if (port == 0) return;
 
-        var server = new DebugMapServer(_api.Logger, _provider, _settings);
+        var server = new DebugMapServer(_api.Logger, _provider, _settings, _riverBasins, PlayerMarkers);
         if (server.Start(DiffusionConfig.Instance.DebugMapBindAddress, port)) _debugMap = server;
         else server.Dispose();
+    }
+
+    /// <summary>Where everyone is, in world blocks, for the debug map's markers.</summary>
+    private IReadOnlyList<(string Name, int X, int Z)> PlayerMarkers()
+    {
+        var markers = new List<(string, int, int)>();
+        IPlayer[] players = _api?.World?.AllOnlinePlayers;
+        if (players == null) return markers;
+
+        foreach (IPlayer player in players)
+        {
+            Entity entity = player?.Entity;
+            if (entity == null) continue;
+            markers.Add((player.PlayerName ?? "?", (int)entity.Pos.X, (int)entity.Pos.Z));
+        }
+
+        return markers;
     }
 
     /// <summary>
@@ -318,6 +338,9 @@ public class TerrainDiffusionModSystem : ModSystem
     /// Records the model's temperature and precipitation seasonality for the region, which the
     /// climate map has no room for and the seasons need at runtime.
     /// </summary>
+    /// <summary>What the model was told about rivers, kept so the debug map can show it.</summary>
+    private IRiverBasinSource _riverBasins;
+
     private void OnMapRegionGeneration(IMapRegion mapRegion, int regionX, int regionZ, ITreeAttribute chunkGenParams)
     {
         if (_provider == null || _settings is not { Enabled: true }) return;

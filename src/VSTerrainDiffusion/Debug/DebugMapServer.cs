@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using Vintagestory.API.Common;
+using VSTerrainDiffusion.Pipeline;
 using VSTerrainDiffusion.Core;
 using VSTerrainDiffusion.WorldGen;
 
@@ -33,6 +34,7 @@ public sealed class DebugMapServer : IDisposable
     public const int ThumbSize = 32;
 
     private readonly ILogger _log;
+    private readonly IRiverBasinSource _riverBasins;
     private readonly TerrainDiffusionProvider _provider;
     private readonly DiffusionWorldSettings _settings;
     private readonly Layer[] _layers;
@@ -54,7 +56,7 @@ public sealed class DebugMapServer : IDisposable
     public bool IsRunning => _listener != null && _listener.IsListening;
 
     /// <summary>One displayable quantity per column, in the order the wire format carries them.</summary>
-    private readonly record struct Layer(string Id, string Label, string Unit);
+    private readonly record struct Layer(string Id, string Label, string Unit, string Category);
 
     private sealed class RecordedTile
     {
@@ -66,23 +68,51 @@ public sealed class DebugMapServer : IDisposable
         public byte[] Data;
     }
 
-    public DebugMapServer(ILogger logger, TerrainDiffusionProvider provider, DiffusionWorldSettings settings)
+    /// <summary>Where everyone is, for the markers. Supplied by the mod system, which can see them.</summary>
+    private readonly System.Func<IReadOnlyList<(string Name, int X, int Z)>> _players;
+
+    public DebugMapServer(ILogger logger, TerrainDiffusionProvider provider, DiffusionWorldSettings settings,
+                          IRiverBasinSource riverBasins = null,
+                          System.Func<IReadOnlyList<(string Name, int X, int Z)>> players = null)
     {
+        _players = players;
         _log = logger;
         _provider = provider;
+        _riverBasins = riverBasins;
         _settings = settings;
         _historyLimit = DiffusionConfig.Instance.DebugMapHistoryTiles;
 
+        // Three groups, because the question worth asking of this map is whether the model did what
+        // it was told: what the coarse stage was handed, what it answered, and what came out the far
+        // end once the base and decoder had filled in everything below half a kilometre.
+        const string Input = "Coarse model input";
+        const string Coarse = "Coarse model output";
+        const string Final = "Full resolution";
+
         _layers = new[]
         {
-            new Layer("surfaceY", "Surface height", "blocks"),
-            new Layer("elevation", "Model elevation", "m"),
-            new Layer("slope", "Slope", "rise/run"),
-            new Layer("temperature", "Mean temperature", "°C"),
-            new Layer("tempSeasonality", "Temperature seasonality", "BIO4"),
-            new Layer("precipitation", "Annual precipitation", "mm"),
-            new Layer("precipCv", "Precipitation seasonality", "% CV"),
-            new Layer("rainfall", "Rainfall byte (as the game reads it)", "0-255")
+            new Layer("inElevation", "Elevation asked for", "m", Input),
+            new Layer("inTemperature", "Temperature asked for", "°C", Input),
+            new Layer("inTempSeasonality", "Temperature seasonality asked for", "BIO4", Input),
+            new Layer("inPrecipitation", "Precipitation asked for", "mm", Input),
+            new Layer("inPrecipCv", "Precipitation seasonality asked for", "% CV", Input),
+            new Layer("inSeaFraction", "Ocean map (the world's own)", "0-1", Input),
+            new Layer("riverBasin", "River basin conditioning", "0-1", Input),
+
+            new Layer("coarseElevation", "Elevation", "m", Coarse),
+            new Layer("coarseTemperature", "Mean temperature", "°C", Coarse),
+            new Layer("coarseTempSeasonality", "Temperature seasonality", "BIO4", Coarse),
+            new Layer("coarsePrecipitation", "Annual precipitation", "mm", Coarse),
+            new Layer("coarsePrecipCv", "Precipitation seasonality", "% CV", Coarse),
+
+            new Layer("surfaceY", "Surface height", "blocks", Final),
+            new Layer("elevation", "Model elevation", "m", Final),
+            new Layer("slope", "Slope", "rise/run", Final),
+            new Layer("temperature", "Mean temperature", "°C", Final),
+            new Layer("tempSeasonality", "Temperature seasonality", "BIO4", Final),
+            new Layer("precipitation", "Annual precipitation", "mm", Final),
+            new Layer("precipCv", "Precipitation seasonality", "% CV", Final),
+            new Layer("rainfall", "Rainfall byte (as the game reads it)", "0-255", Final)
         };
     }
 
@@ -139,6 +169,31 @@ public sealed class DebugMapServer : IDisposable
         }
     }
 
+    /// <summary>
+    /// What the model was told about rivers at a position, on the same 0 to 1 scale the
+    /// conditioning uses. Zero where this world has no river network.
+    /// </summary>
+    private float BasinAt(int blockX, int blockZ)
+    {
+        if (_riverBasins == null) return 0f;
+
+        try
+        {
+            int blocksPerCell = 32 * WorldPipelineModelConfig.Instance.LatentCompression
+                                * Math.Max(1, _settings.Scale);
+            int j = (int)Math.Floor((blockX - (double)_settings.OriginBlockX) / blocksPerCell);
+            int i = (int)Math.Floor((blockZ - (double)_settings.OriginBlockZ) / blocksPerCell);
+
+            // x then y, the same order the landmask and the synthetic map use.
+            float[] strength = _riverBasins.BasinStrength(j, i, j + 1, i + 1);
+            return strength is { Length: > 0 } ? strength[0] : 0f;
+        }
+        catch (Exception)
+        {
+            return 0f;
+        }
+    }
+
     private RecordedTile Downsample(TerrainTile tile)
     {
         int size = tile.Size;
@@ -148,6 +203,27 @@ public sealed class DebugMapServer : IDisposable
 
         var values = new float[layerCount * cells];
         RainfallScale rainfall = RainfallScale.FromConfig(DiffusionConfig.Instance.WorldGen);
+
+        // One reading for the whole tile: a coarse cell is wider than a tile, so there is no detail
+        // below this to lose.
+        int centreX = tile.BlockX + size / 2, centreZ = tile.BlockZ + size / 2;
+        TerrainDiffusionProvider.CoarseProbe? probe = _provider.ProbeCoarseAt(centreX, centreZ);
+        float basin = BasinAt(centreX, centreZ);
+
+        // Seven input layers then five coarse outputs, all flat across the tile.
+        var coarseValues = new float[12];
+        if (probe != null)
+        {
+            TerrainDiffusionProvider.CoarseProbe p = probe.Value;
+            for (int c = 0; c < 5; c++) coarseValues[c] = p.Conditioning[c];
+            coarseValues[5] = p.SeaFraction < 0f ? 0f : p.SeaFraction;
+            coarseValues[6] = basin;
+            for (int c = 0; c < 5; c++) coarseValues[7 + c] = p.Output[c];
+        }
+        else
+        {
+            coarseValues[6] = basin;
+        }
 
         for (int v = 0; v < ThumbSize; v++)
         {
@@ -185,18 +261,20 @@ public sealed class DebugMapServer : IDisposable
                 float meanPrecipitation = (float)(precipitation / n);
                 float meanCv = (float)(precipCv / n);
 
-                values[0 * cells + cell] = (float)(surfaceY / n);
-                values[1 * cells + cell] = (float)(elevation / n);
-                values[2 * cells + cell] = (float)(slope / n);
-                values[3 * cells + cell] = meanTemperature;
-                values[4 * cells + cell] = meanSeasonality;
-                values[5 * cells + cell] = meanPrecipitation;
-                values[6 * cells + cell] = meanCv;
+                values[12 * cells + cell] = (float)(surfaceY / n);
+                values[13 * cells + cell] = (float)(elevation / n);
+                values[14 * cells + cell] = (float)(slope / n);
+                values[15 * cells + cell] = meanTemperature;
+                values[16 * cells + cell] = meanSeasonality;
+                values[17 * cells + cell] = meanPrecipitation;
+                values[18 * cells + cell] = meanCv;
 
                 // Derived from the cell's averaged climate rather than per column: the quantile map
                 // costs a log and an error function, and this is an overview.
-                values[7 * cells + cell] = rainfall.ToRainfall(
+                values[19 * cells + cell] = rainfall.ToRainfall(
                     new Bioclim(meanTemperature, meanSeasonality, meanPrecipitation, meanCv));
+
+                for (int c = 0; c < coarseValues.Length; c++) values[c * cells + cell] = coarseValues[c];
             }
         }
 
@@ -307,6 +385,9 @@ public sealed class DebugMapServer : IDisposable
             case "/api/tiles":
                 WriteTiles(context);
                 return;
+            case "/api/players":
+                WritePlayers(context);
+                return;
             default:
                 context.Response.StatusCode = 404;
                 Write(context, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("Not found"));
@@ -331,6 +412,34 @@ public sealed class DebugMapServer : IDisposable
         Write(context, "text/html; charset=utf-8", buffer.ToArray());
     }
 
+    /// <summary>
+    /// Where each player is, in world blocks. Polled far more often than it changes, so it is kept
+    /// small and never cached.
+    /// </summary>
+    private void WritePlayers(HttpListenerContext context)
+    {
+        var json = new StringBuilder();
+        json.Append('[');
+
+        try
+        {
+            IReadOnlyList<(string Name, int X, int Z)> players = _players?.Invoke();
+            for (int i = 0; players != null && i < players.Count; i++)
+            {
+                if (i > 0) json.Append(',');
+                json.Append($"{{\"name\":\"{Escape(players[i].Name)}\",\"x\":{players[i].X},\"z\":{players[i].Z}}}");
+            }
+        }
+        catch (Exception)
+        {
+            // Somebody joining or leaving mid-read is not worth breaking the map over.
+        }
+
+        json.Append(']');
+        context.Response.Headers["Cache-Control"] = "no-store";
+        Write(context, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(json.ToString()));
+    }
+
     private void WriteInfo(HttpListenerContext context)
     {
         var json = new StringBuilder();
@@ -350,7 +459,8 @@ public sealed class DebugMapServer : IDisposable
         for (int i = 0; i < _layers.Length; i++)
         {
             if (i > 0) json.Append(',');
-            json.Append($"{{\"id\":\"{_layers[i].Id}\",\"label\":\"{Escape(_layers[i].Label)}\",\"unit\":\"{Escape(_layers[i].Unit)}\"}}");
+            json.Append($"{{\"id\":\"{_layers[i].Id}\",\"label\":\"{Escape(_layers[i].Label)}\","
+                        + $"\"unit\":\"{Escape(_layers[i].Unit)}\",\"category\":\"{Escape(_layers[i].Category)}\"}}");
         }
         json.Append("]}");
 

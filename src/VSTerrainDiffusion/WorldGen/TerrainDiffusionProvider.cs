@@ -343,6 +343,72 @@ public sealed class TerrainDiffusionProvider : IDisposable
         }
     }
 
+    /// <summary>
+    /// Everything the coarse stage was told and everything it answered at one world position, for
+    /// the debug map.
+    ///
+    /// Read in one go under a single turn on the device, because it is asked once per terrain tile
+    /// and a coarse cell - 512 blocks at the default scale - is wider than a tile, so there is no
+    /// detail below this to lose.
+    /// </summary>
+    public readonly struct CoarseProbe
+    {
+        /// <summary>What the model was asked for: elevation m, temperature C, BIO4, mm, BIO15.</summary>
+        public readonly float[] Conditioning;
+
+        /// <summary>What it produced, in the same order and units.</summary>
+        public readonly float[] Output;
+
+        /// <summary>How much of the cell the world's ocean map calls sea, or -1 without one.</summary>
+        public readonly float SeaFraction;
+
+        public CoarseProbe(float[] conditioning, float[] output, float seaFraction)
+        {
+            Conditioning = conditioning;
+            Output = output;
+            SeaFraction = seaFraction;
+        }
+    }
+
+    public CoarseProbe? ProbeCoarseAt(int blockX, int blockZ)
+    {
+        int coarseToNative = CoarseCellNativePixels;
+        int scale = Math.Max(1, _settings.Scale);
+        int i = FloorDiv((blockZ - _settings.OriginBlockZ) / scale, coarseToNative);
+        int j = FloorDiv((blockX - _settings.OriginBlockX) / scale, coarseToNative);
+
+        _scheduler.Enter();
+        try
+        {
+            FloatTensor coarse = _pipeline.GetCoarseSlice(i, j, i + 1, j + 1);
+
+            // Channel 6 is the blend weight every other channel has to be divided by.
+            float weight = coarse.Data[6];
+            if (weight <= 1e-6f) return null;
+
+            float elevation = coarse.Data[0] / weight;
+            var output = new[]
+            {
+                Math.Sign(elevation) * elevation * elevation,   // signed square-root space
+                coarse.Data[2] / weight,                        // BIO1 mean annual temperature
+                coarse.Data[3] / weight,                        // BIO4 temperature seasonality
+                coarse.Data[4] / weight,                        // BIO12 annual precipitation
+                coarse.Data[5] / weight                         // BIO15 precipitation CV
+            };
+
+            return new CoarseProbe(
+                _pipeline.CoarseConditioningAt(i, j), output, _pipeline.SeaFractionAt(i, j) ?? -1f);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+        finally
+        {
+            _scheduler.Exit();
+        }
+    }
+
     public TerrainTile GetTile(int tileX, int tileZ)
     {
         long key = ((long)tileX << 32) ^ (uint)tileZ;

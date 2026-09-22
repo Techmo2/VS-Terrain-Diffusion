@@ -23,6 +23,11 @@
   h1 { font-size: 13px; margin: 0; letter-spacing: .02em; }
   h1 small { display: block; color: var(--dim); font-weight: 400; letter-spacing: 0; }
   fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 0; padding: 9px 10px 10px; }
+  .group {
+    color: var(--accent); font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+    margin: 9px 0 3px; padding-top: 7px; border-top: 1px solid var(--line);
+  }
+  .group:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
   legend { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; padding: 0 4px; }
   label.row { display: flex; align-items: center; gap: 7px; padding: 2px 0; cursor: pointer; }
   label.row span { flex: 1; }
@@ -101,6 +106,7 @@ const THUMB_BYTES = 1; // one byte per column per layer
 const state = {
   info: null,
   layers: [],
+  players: [],
   layer: 0,
   tiles: new Map(),      // key -> {x, z, min[], max[], data:Uint8Array}
   seq: 0,
@@ -134,12 +140,6 @@ function ramp(stops) {
   };
 }
 
-// Hypsometric: deep water through shelf, lowland green, upland brown, snow.
-const terrainRamp = ramp([
-  [0.00, [ 12,  30,  62]], [0.30, [ 26,  74, 130]], [0.48, [ 66, 140, 190]],
-  [0.50, [214, 205, 162]], [0.56, [ 96, 142,  78]], [0.70, [148, 148,  76]],
-  [0.82, [138, 106,  70]], [0.92, [126, 118, 112]], [1.00, [246, 248, 250]],
-]);
 const greyRamp = ramp([[0, [16, 18, 22]], [1, [238, 242, 248]]]);
 const tempRamp = ramp([
   [0.00, [ 40,  70, 160]], [0.25, [ 90, 160, 215]], [0.45, [200, 225, 235]],
@@ -153,8 +153,19 @@ const seasonRamp = ramp([
   [0.00, [ 30,  60,  90]], [0.5, [190, 190, 200]], [1.00, [190,  70, 130]],
 ]);
 
+// Height is read in greyscale: the hypsometric ramp puts hard colour steps at its stops, which
+// read as terracing that is not in the data, and washes out relief inside a band. Climate keeps its
+// colours, where a hue says which way a value leans and there is no fine detail to lose.
 const RAMPS = {
-  surfaceY: terrainRamp, elevation: terrainRamp, slope: greyRamp,
+  // Coarse model input
+  inElevation: greyRamp, inTemperature: tempRamp, inTempSeasonality: seasonRamp,
+  inPrecipitation: wetRamp, inPrecipCv: seasonRamp,
+  inSeaFraction: greyRamp, riverBasin: greyRamp,
+  // Coarse model output
+  coarseElevation: greyRamp, coarseTemperature: tempRamp, coarseTempSeasonality: seasonRamp,
+  coarsePrecipitation: wetRamp, coarsePrecipCv: seasonRamp,
+  // Full resolution
+  surfaceY: greyRamp, elevation: greyRamp, slope: greyRamp,
   temperature: tempRamp, tempSeasonality: seasonRamp,
   precipitation: wetRamp, precipCv: seasonRamp, rainfall: wetRamp,
 };
@@ -178,6 +189,12 @@ async function poll() {
   } catch (e) {
     setStatus("stalled", "server not responding");
   }
+
+  // Separate and best effort: losing the markers should not stop the terrain arriving.
+  try {
+    const res = await fetch("api/players", { cache: "no-store" });
+    if (res.ok) state.players = await res.json();
+  } catch (e) { /* leave the last known positions up */ }
 }
 
 function ingest(view) {
@@ -279,7 +296,7 @@ function draw() {
   ctx.fillStyle = "#14161a";
   ctx.fillRect(0, 0, w, h);
 
-  if (!state.info || !state.tiles.size) return;
+  if (!state.info) return;
 
   const size = state.info.tileSize, s = state.view.scale;
   ctx.imageSmoothingEnabled = s * size < state.info.thumbSize;
@@ -290,6 +307,46 @@ function draw() {
     const side = size * s;
     if (px + side < 0 || py + side < 0 || px > w || py > h) continue;
     ctx.drawImage(tileCanvas(tile), px, py, side + 0.5, side + 0.5);
+  }
+
+  drawPlayers(w, h);
+}
+
+// A crosshair per player, drawn over everything. Red because every layer under it is either
+// greyscale or a climate ramp that never reaches a saturated red, and dark-outlined so it stays
+// legible over both ends of the greyscale.
+function drawPlayers(w, h) {
+  if (!state.players || !state.players.length) return;
+
+  const s = state.view.scale;
+  const arm = 9, gap = 3;
+
+  for (const player of state.players) {
+    const px = (player.x - state.view.x) * s + w / 2;
+    const py = (player.z - state.view.z) * s + h / 2;
+    if (px < -40 || py < -40 || px > w + 40 || py > h + 40) continue;
+
+    ctx.lineCap = "round";
+    for (const pass of [{ colour: "rgba(0,0,0,.65)", width: 3.5 }, { colour: "#ff4436", width: 1.5 }]) {
+      ctx.strokeStyle = pass.colour;
+      ctx.lineWidth = pass.width;
+      ctx.beginPath();
+      ctx.moveTo(px - arm, py); ctx.lineTo(px - gap, py);
+      ctx.moveTo(px + gap, py); ctx.lineTo(px + arm, py);
+      ctx.moveTo(px, py - arm); ctx.lineTo(px, py - gap);
+      ctx.moveTo(px, py + gap); ctx.lineTo(px, py + arm);
+      ctx.stroke();
+    }
+
+    if (player.name) {
+      ctx.font = "11px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,.7)";
+      ctx.strokeText(player.name, px, py - arm - 5);
+      ctx.fillStyle = "#ff8a80";
+      ctx.fillText(player.name, px, py - arm - 5);
+    }
   }
 }
 
@@ -320,7 +377,17 @@ function fmt(v) {
 function buildLayerList() {
   const host = document.getElementById("layers");
   host.innerHTML = "";
+  let shown = null;
   state.layers.forEach((layer, i) => {
+    // A heading whenever the group changes, so input, coarse output and full resolution read as
+    // three answers to the same question rather than one long list.
+    if (layer.category && layer.category !== shown) {
+      shown = layer.category;
+      const head = document.createElement("div");
+      head.className = "group";
+      head.textContent = layer.category;
+      host.appendChild(head);
+    }
     const label = document.createElement("label");
     label.className = "row";
     label.innerHTML =

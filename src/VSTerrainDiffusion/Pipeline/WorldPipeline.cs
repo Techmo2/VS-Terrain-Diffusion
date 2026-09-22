@@ -537,6 +537,31 @@ public sealed class WorldPipeline
     /// Coarse tensor slice with shape [7, ci1-ci0, cj1-cj0] in coarse index units
     /// (1 unit = 256 native pixels). Channel 6 is the blend weight.
     /// </summary>
+    /// <summary>
+    /// The conditioning the coarse stage is handed at one cell, in real units and before it is
+    /// normalised and stirred into noise: [elevation m, temperature C, BIO4, precipitation mm,
+    /// BIO15]. For the debug map, so what the model was asked for can be read against what it
+    /// produced.
+    ///
+    /// Coordinates are swapped on the way in, the same way <see cref="CoarseTile"/> swaps them.
+    /// </summary>
+    public float[] CoarseConditioningAt(int i, int j)
+    {
+        float[] synthetic = _syntheticMapFactory.Sample(j, i, j + 1, i + 1);
+
+        // Channel 0 arrives in signed square-root space, which is not a number anyone can read.
+        float e = synthetic[0];
+        synthetic[0] = Math.Sign(e) * e * e;
+        return synthetic;
+    }
+
+    /// <summary>How much of one coarse cell the world's ocean map calls sea, or null without one.</summary>
+    public float? SeaFractionAt(int i, int j)
+    {
+        float[] sea = _landmask?.SeaFraction(j, i, j + 1, i + 1);
+        return sea is { Length: > 0 } ? sea[0] : null;
+    }
+
     public FloatTensor GetCoarseSlice(int ci0, int cj0, int ci1, int cj1)
         => _coarse.GetSlice(new[] { 0, ci0, cj0 }, new[] { 7, ci1, cj1 });
 
