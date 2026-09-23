@@ -150,6 +150,38 @@ public class DiffusionConfig
         return config;
     }
 
+    /// <summary>
+    /// Records an inference device the mod had to choose for the player, in the file they chose the
+    /// original one in.
+    ///
+    /// The runtime is resolved once per process, so a provider that turns out to be unusable cannot
+    /// always be replaced in the session that found out. Writing the working one down means the next
+    /// start comes up on it without the player having to read the log and edit the file, and it
+    /// keeps the effective provider stable for the world afterwards, which matters because changing
+    /// provider moves newly generated terrain slightly.
+    /// </summary>
+    public static void PersistInferenceDevice(string device, ILogger logger)
+    {
+        if (string.Equals(Instance.InferenceDevice, device, System.StringComparison.Ordinal)) return;
+        Instance.InferenceDevice = device;
+
+        try
+        {
+            string path = DiffusionPaths.ConfigFile;
+            string directory = System.IO.Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory)) System.IO.Directory.CreateDirectory(directory);
+            System.IO.File.WriteAllText(
+                path, Newtonsoft.Json.JsonConvert.SerializeObject(Instance, Newtonsoft.Json.Formatting.Indented));
+        }
+        catch (System.Exception e)
+        {
+            // The device in memory is still the corrected one; only the record of it is lost, and
+            // the next start will work the same failure out again.
+            logger?.Warning("[{0}] Could not write the corrected inference device to {1}: {2}",
+                DiffusionPaths.ModId, DiffusionPaths.ConfigFile, e.Message);
+        }
+    }
+
     private void Sanitize()
     {
         (WorldGen ??= new WorldGenConfig()).Sanitize();

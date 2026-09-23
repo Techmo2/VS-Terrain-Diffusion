@@ -342,7 +342,7 @@ changing either can make newly generated terrain disagree slightly with existing
 
 | Key                          | Default | Useful range | Meaning                                 |
 | ---------------------------- | ------- | ------------ | ---------------------------------------- |
-| `inferenceDevice`            | `auto`  | `auto` `cpu` `openvino` `cuda` `tensorrt-rtx` `directml` `coreml` | OpenVINO and TensorRT RTX are opt-in. OpenVINO, on 64-bit Linux, accelerates the decoder while leaving the large stages on ORT CPU. TensorRT RTX needs a GeForce RTX 30xx or newer on 64-bit Linux, fetches ~300 MB of NVIDIA runtime once and builds a cached engine per model; it is about 1.5x faster than CUDA on the same FP32 models and 2.4x with FP16. Failures fall back (TensorRT RTX to CUDA, others to ORT CPU) and are logged, because changing provider can alter new terrain slightly. |
+| `inferenceDevice`            | `auto`  | `auto` `cpu` `openvino` `cuda` `tensorrt-rtx` `directml` `coreml` | OpenVINO and TensorRT RTX are opt-in. OpenVINO, on 64-bit Linux, accelerates the decoder while leaving the large stages on ORT CPU. TensorRT RTX needs a GeForce RTX 30xx or newer on 64-bit Windows or Linux, fetches the NVIDIA runtime once (105 MB on Windows, 140 MB on Linux) and builds a cached engine per model; it is about 1.5x faster than CUDA on the same FP32 models and 2.4x with FP16. A provider whose runtime cannot be prepared falls back to whatever the machine would have chosen for itself - DirectML on Windows, so an AMD or Intel card is still a GPU path, CUDA on Linux with an NVIDIA driver, ORT CPU otherwise - and that provider is written back to the config so the next start comes up on it. On Windows the replacement needs a different ONNX Runtime than TensorRT RTX loaded, so the game stops once and comes up on it when restarted. All of this is logged because changing provider can alter new terrain slightly. Only what the selected provider needs is fetched: TensorRT RTX skips the CUDA provider library it never loads, and `cuda` on Windows pulls the cuBLAS/cuFFT/NVRTC/cuDNN libraries it links against (~1 GB, once) only if no CUDA toolkit and cuDNN are installed; Linux and macOS use the system CUDA install. |
 | `modelLoadMode`              | `auto`  | `auto` `memory` `file` | Load model graphs from RAM or their optimised files. Auto uses files for CPU and memory-constrained hosts. |
 | `offloadModels`              | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
 | `gpuUtilizationPercent`      | 100     | 40 – 100     | Share of the time world generation may keep the device busy. Lower it if generating chunks makes the game stutter; see [Stuttering](#stuttering) below. World generation slows by the reciprocal. |
@@ -484,11 +484,18 @@ The two differ: "Forestation & shrubs" is *additive*, lifting deserts as much as
 ## Building
 
 ```bash
-./build.sh
+./build.sh          # Linux and macOS
 ```
 
-Needs the .NET 10 SDK and a Vintage Story install at `/opt/vintagestory` (override with
-`VINTAGE_STORY`). Produces `dist/vsterraindiffusion_<version>.zip`.
+```bat
+build.bat           :: Windows
+```
+
+Both take an optional configuration (`Release` by default) and produce
+`dist/vsterraindiffusion_<version>.zip`.
+
+Needs the .NET 10 SDK and a Vintage Story install: `/opt/vintagestory` or `~/Vintagestory` on Linux
+and macOS, `%APPDATA%\Vintagestory` on Windows. Override either with `VINTAGE_STORY`.
 
 ## Credits
 

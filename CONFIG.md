@@ -28,11 +28,21 @@ slightly with the ones already on disk.
   // "directml" or "coreml". OpenVINO can accelerate the decoder on 64-bit Linux CPUs; the coarse
   // and base stages remain on ONNX Runtime CPU to keep memory use predictable. It runs in an
   // isolated helper and falls back to ONNX Runtime CPU if the native compiler is not usable on the
-  // host. TensorRT RTX needs a GeForce RTX 30xx or newer on 64-bit Linux, downloads about 300 MB
-  // of NVIDIA runtime once, builds an engine per model on first start (seconds, then cached under
-  // TerrainDiffusionModels/onnx-cache/tensorrt-rtx), and falls back to CUDA if any of that fails.
+  // host. TensorRT RTX needs a GeForce RTX 30xx or newer on 64-bit Windows or Linux, downloads the
+  // NVIDIA runtime once (105 MB on Windows, 140 MB on Linux), builds an engine per model on first
+  // start (seconds, then cached under TerrainDiffusionModels/onnx-cache/tensorrt-rtx). A provider
+  // whose runtime cannot be prepared falls back to whatever this machine would have chosen for
+  // itself - DirectML on Windows, which runs on any vendor's card, CUDA on Linux with an NVIDIA
+  // driver, ONNX Runtime CPU otherwise - and that provider is written back to this file, so the
+  // next start comes up on the one that works. On Windows the replacement needs a different ONNX
+  // Runtime than TensorRT RTX loaded, so the game stops once after writing it and comes up on the
+  // new provider when you start it again.
   // Those fallbacks are logged because changing provider can alter newly generated terrain
-  // slightly. OpenVINO and TensorRT RTX are opt-in: "auto" never selects them. Auto picks CoreML
+  // slightly. Only what the selected provider actually needs is downloaded: TensorRT RTX does not
+  // fetch the CUDA provider library it never loads, and CUDA on Windows fetches the cuBLAS, cuFFT,
+  // NVRTC and cuDNN libraries it links against (about 1 GB, once) only when the machine does not
+  // already have them, which it will if a CUDA toolkit and cuDNN are installed. Linux and macOS
+  // use the system CUDA install, as before. OpenVINO and TensorRT RTX are opt-in: "auto" never selects them. Auto picks CoreML
   // on macOS, DirectML on 64-bit Windows, CUDA on Linux with an NVIDIA driver present, and CPU
   // everywhere else.
   "InferenceDevice": "auto",
