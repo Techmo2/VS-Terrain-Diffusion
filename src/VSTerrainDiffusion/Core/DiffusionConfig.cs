@@ -10,7 +10,8 @@ public class DiffusionConfig
 {
     /// <summary>
     /// "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "directml" or "coreml". OpenVINO and
-    /// TensorRT RTX are selected only when requested explicitly.
+    /// TensorRT RTX are selected only when requested explicitly. One this machine cannot run stops
+    /// the game at startup (<see cref="InferenceCompatibility"/>).
     /// </summary>
     public string InferenceDevice { get; set; } = "auto";
 
@@ -145,6 +146,12 @@ public class DiffusionConfig
 
         config ??= new DiffusionConfig();
         config.Sanitize();
+
+        // Before the file is written back, so a refused config is left exactly as the player wrote it.
+        InferenceCompatibility compatibility = InferenceCompatibility.Current;
+        compatibility.Log(api.Logger);
+        compatibility.Require(config, api.Logger);
+
         api.StoreModConfig(config, DiffusionPaths.ModId + ".json");
         _instance = config;
         return config;
@@ -181,28 +188,10 @@ public class DiffusionConfig
             TerrainTileSizeBlocks -= TerrainTileSizeBlocks % 32;
         }
 
-        InferenceDevice = (InferenceDevice ?? "auto").Trim().ToLowerInvariant();
-        switch (InferenceDevice)
-        {
-            case "auto":
-            case "cpu":
-            case "cuda":
-            case "directml":
-            case "dml":
-            case "coreml":
-            case "openvino":
-            case "tensorrt-rtx":
-            case "gpu":
-                break;
-            case "trt-rtx":
-            case "tensorrtrtx":
-            case "rtx":
-                InferenceDevice = "tensorrt-rtx";
-                break;
-            default:
-                InferenceDevice = "auto";
-                break;
-        }
+        // The device and the precisions are only spelled consistently here, never replaced: a value
+        // that is unknown or cannot run on this machine is refused by InferenceCompatibility, because
+        // quietly substituting another would change the terrain without the player choosing it.
+        InferenceDevice = NormalizeDevice(InferenceDevice);
 
         ModelLoadMode = (ModelLoadMode ?? "auto").Trim().ToLowerInvariant();
         switch (ModelLoadMode)
@@ -216,18 +205,27 @@ public class DiffusionConfig
                 break;
         }
 
-        DecoderPrecision = (DecoderPrecision ?? "fp32").Trim().ToLowerInvariant();
-        // Earlier development builds wrote "auto", which coupled OpenVINO to INT8. Treat it as
-        // the safe FP32 default when those configs are upgraded.
-        if (DecoderPrecision == "auto") DecoderPrecision = "fp32";
-        if (DecoderPrecision is not ("fp32" or "fp16" or "int8")) DecoderPrecision = "fp32";
-
-        BasePrecision = (BasePrecision ?? "fp32").Trim().ToLowerInvariant();
-        if (BasePrecision is not ("fp32" or "fp16")) BasePrecision = "fp32";
-
-        CoarsePrecision = (CoarsePrecision ?? "fp32").Trim().ToLowerInvariant();
-        if (CoarsePrecision is not ("fp32" or "fp16")) CoarsePrecision = "fp32";
+        // A missing key is the FP32 default. Anything else is left for InferenceCompatibility to
+        // accept or refuse, including the "auto" earlier development builds wrote for the decoder.
+        DecoderPrecision = NormalizePrecision(DecoderPrecision);
+        BasePrecision = NormalizePrecision(BasePrecision);
+        CoarsePrecision = NormalizePrecision(CoarsePrecision);
     }
+
+    /// <summary>One spelling per device, so "RTX" and "tensorrt-rtx" are the same choice. Missing is "auto".</summary>
+    internal static string NormalizeDevice(string device)
+    {
+        device = (device ?? "auto").Trim().ToLowerInvariant();
+        return device switch
+        {
+            "dml" => "directml",
+            "trt-rtx" or "tensorrtrtx" or "rtx" => "tensorrt-rtx",
+            _ => device
+        };
+    }
+
+    /// <summary>Lower case and trimmed. Missing is "fp32".</summary>
+    internal static string NormalizePrecision(string precision) => (precision ?? "fp32").Trim().ToLowerInvariant();
 }
 
 /// <summary>
@@ -301,6 +299,22 @@ public class WorldGenConfig
 
     /// <summary>Fraction of the space below sea level that the deepest ocean reaches.</summary>
     public float OceanDepthFraction { get; set; } = 0.9f;
+
+    /// <summary>
+    /// Extra block rows per unit of the model's own height (the square root of metres) at the
+    /// waterline, on land and sea floor alike. The model squares its heights on the way out, which
+    /// crushes the first few metres of every coast into one wide flat row; rows spaced in its own
+    /// units give coasts an even slope instead. 0 turns it off. Recorded in a world when it is
+    /// created; existing worlds keep what they were generated with.
+    /// </summary>
+    public float ShoreDetail { get; set; } = 2f;
+
+    /// <summary>
+    /// How far the shore detail reaches, in square-root-of-metres: it falls by a factor of e every
+    /// this many units, so at 3 it is mostly gone by 60 m. High ground and deep sea end up moved
+    /// by ShoreDetail x ShoreFade blocks (6 at the defaults), not reshaped.
+    /// </summary>
+    public float ShoreFade { get; set; } = 3f;
 
     /// <summary>
     /// Multiplies the Perlin detail added to sloped ground. The model resolves features down to one
@@ -621,6 +635,8 @@ public class WorldGenConfig
         LinearKneeFraction = Clamp(LinearKneeFraction, 0.1f, 0.99f, 0.85f);
         OceanDepthFraction = Clamp(OceanDepthFraction, 0.05f, 1f, 0.9f);
         SlopeDetailStrength = Clamp(SlopeDetailStrength, 0f, 8f, 1f);
+        ShoreDetail = Clamp(ShoreDetail, 0f, 8f, 2f);
+        ShoreFade = Clamp(ShoreFade, 0.5f, 20f, 3f);
 
         RainfallBasis = (RainfallBasis ?? "moisture").Trim().ToLowerInvariant();
         if (RainfallBasis != "precipitation") RainfallBasis = "moisture";

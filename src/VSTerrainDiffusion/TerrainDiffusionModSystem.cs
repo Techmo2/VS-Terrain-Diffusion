@@ -125,6 +125,8 @@ public class TerrainDiffusionModSystem : ModSystem
         try
         {
             _settings = DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.Instance.NativeResolution);
+            (float shoreDetail, float shoreFade) = ResolveShoreDetail();
+            _settings.ApplyShoreDetail(shoreDetail, shoreFade);
         }
         catch (Exception e)
         {
@@ -178,7 +180,7 @@ public class TerrainDiffusionModSystem : ModSystem
         // tall a block is, and before any chunk generates, because the map layer writes through it.
         if (_settings.ClimateMode != DiffusionClimateMode.Off)
         {
-            ClimateScale.Install(_api.Logger, ClimateScale.ScaleFor(_settings.MetersPerBlockVertical));
+            ClimateScale.Install(_api.Logger, ClimateScale.ScaleFor(_settings.MeanMetersPerBlockVertical));
             SurfaceClimateCompat.Install(_api);
         }
         else
@@ -384,6 +386,45 @@ public class TerrainDiffusionModSystem : ModSystem
         {
             throw DiffusionFailure.Fatal(_api.Logger,
                 $"The surface pass failed for chunk ({request.ChunkX}, {request.ChunkZ}).", e);
+        }
+    }
+
+    /// <summary>Save game key holding the world's shore detail and fade, two floats.</summary>
+    private const string ShoreDetailSaveKey = "vsterraindiffusion:shoredetail";
+
+    /// <summary>
+    /// The shore detail this world was created with. A new world takes the config's values and
+    /// keeps them; a world from before the setting existed was generated without it and stays that
+    /// way. Either way it is written down, because it decides the height of every coastal block,
+    /// and a world whose new chunks used a different value would have a step at every old border.
+    /// </summary>
+    private (float Detail, float Fade) ResolveShoreDetail()
+    {
+        ISaveGame save = _api.WorldManager.SaveGame;
+        try
+        {
+            byte[] stored = save.GetData(ShoreDetailSaveKey);
+            if (stored is { Length: 2 * sizeof(float) })
+                return (BitConverter.ToSingle(stored, 0), BitConverter.ToSingle(stored, sizeof(float)));
+
+            WorldGenConfig shaping = DiffusionConfig.Instance.WorldGen;
+            float detail = save.IsNew ? shaping.ShoreDetail : 0f;
+            float fade = shaping.ShoreFade;
+            var record = new byte[2 * sizeof(float)];
+            BitConverter.GetBytes(detail).CopyTo(record, 0);
+            BitConverter.GetBytes(fade).CopyTo(record, sizeof(float));
+            save.StoreData(ShoreDetailSaveKey, record);
+            if (!save.IsNew && shaping.ShoreDetail != 0f)
+            {
+                _api.Logger.Notification(
+                    "[{0}] This world was generated before shore detail existed, so its coasts keep the " +
+                    "plain metre mapping; shoreDetail applies to worlds created from now on.", DiffusionPaths.ModId);
+            }
+            return (detail, fade);
+        }
+        catch (Exception e)
+        {
+            throw DiffusionFailure.Fatal(_api.Logger, "This world's vertical scale could not be read or saved.", e);
         }
     }
 

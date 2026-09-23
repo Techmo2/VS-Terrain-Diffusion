@@ -103,6 +103,24 @@ public sealed class PipelineModels : IDisposable
             DiffusionPaths.ModId, string.Join(" and ", half), OnnxRuntimeBootstrap.Provider);
     }
 
+    /// <summary>
+    /// INT8 is never selected for anyone: it is a smaller decoder for CPU-only servers and has to
+    /// be asked for by name in the config. Finding it set on a machine that resolved a GPU provider
+    /// almost always means a value left behind by an older config or a stray edit in the settings
+    /// screen, so say so rather than quietly generating different terrain than FP32 would.
+    /// </summary>
+    private static void WarnIfInt8OnGpu(ILogger logger)
+    {
+        if (DiffusionConfig.Instance.DecoderPrecision != "int8") return;
+        if (OnnxRuntimeBootstrap.Provider is InferenceProvider.Cpu or InferenceProvider.OpenVino) return;
+
+        logger.Warning(
+            "[{0}] the decoder is set to INT8, which is meant for CPU-only servers, but inference runs on {1}. " +
+            "Nothing selects INT8 on its own: it is in {2}. Set decoderPrecision back to fp32 unless this world " +
+            "was generated with INT8, because decoder precision changes newly generated terrain slightly.",
+            DiffusionPaths.ModId, OnnxRuntimeBootstrap.Provider, DiffusionPaths.ModId + ".json");
+    }
+
     private static void Load(ILogger logger, int generation, CancellationTokenSource cancellation)
     {
         PipelineModels loading = null;
@@ -125,6 +143,7 @@ public sealed class PipelineModels : IDisposable
             string coarsePath = ModelAssetManager.ResolveCoarsePath(logger);
             string basePath = ModelAssetManager.ResolveBasePath(logger);
             WarnIfHalfPrecisionOnCpu(logger);
+            WarnIfInt8OnGpu(logger);
             if (OnnxRuntimeBootstrap.Provider == InferenceProvider.OpenVino)
             {
                 loading.Decoder = LoadOpenVinoOrCpu(

@@ -14,7 +14,7 @@ namespace VSTerrainDiffusion.WorldGen;
 /// vanilla and false here — a world calibrated to 4x stretch puts a 200 m hill at the height
 /// vanilla reserves for bare alpine rock, and the hill comes out as a gravel heap.
 ///
-/// So the bands are stretched by the same factor the terrain was, which keeps each one at the
+/// So the bands are moved through the same mapping the terrain was, which keeps each one at the
 /// real-world elevation it was written for. At 1x nothing changes; the more the terrain is
 /// exaggerated, the further up the bare-rock bands move, until in a heavily stretched world they
 /// stop applying at all — correctly, because such a world contains no real mountains.
@@ -34,7 +34,6 @@ public static class BlockLayerAltitude
 
         int mapHeight = settings.MapSizeY;
         int seaLevel = settings.SeaLevel;
-        float exaggeration = settings.EffectiveExaggeration;
         if (mapHeight <= 0) return;
 
         int changed = 0;
@@ -49,8 +48,8 @@ public static class BlockLayerAltitude
                 LayerOriginals[layer] = original;
             }
 
-            layer.MinY = Stretch(original.MinY, mapHeight, seaLevel, exaggeration);
-            layer.MaxY = Stretch(original.MaxY, mapHeight, seaLevel, exaggeration);
+            layer.MinY = Stretch(original.MinY, mapHeight, seaLevel, settings);
+            layer.MaxY = Stretch(original.MaxY, mapHeight, seaLevel, settings);
             if (layer.MinY != original.MinY || layer.MaxY != original.MaxY) changed++;
 
             if (layer.BlockCodeByMin == null) continue;
@@ -64,17 +63,17 @@ public static class BlockLayerAltitude
                     EntryOriginals[entry] = entryOriginal;
                 }
 
-                entry.MinY = Stretch(entryOriginal.MinY, mapHeight, seaLevel, exaggeration);
-                entry.MaxY = Stretch(entryOriginal.MaxY, mapHeight, seaLevel, exaggeration);
+                entry.MinY = Stretch(entryOriginal.MinY, mapHeight, seaLevel, settings);
+                entry.MaxY = Stretch(entryOriginal.MaxY, mapHeight, seaLevel, settings);
             }
         }
 
         if (changed > 0)
         {
             api.Logger.Notification(
-                "[{0}] Stretched the altitude bands of {1} surface block layers by {2:0.##}x to match the " +
-                "terrain height, so exaggerated hills are not treated as bare mountaintops.",
-                DiffusionPaths.ModId, changed, exaggeration);
+                "[{0}] Moved the altitude bands of {1} surface block layers to match the terrain height " +
+                "({2}), so hills are not treated as bare mountaintops.",
+                DiffusionPaths.ModId, changed, settings.DescribeHeight());
         }
     }
 
@@ -83,12 +82,12 @@ public static class BlockLayerAltitude
     /// real-world elevation once terrain has been stretched. Depths below sea level are left
     /// alone: the sea floor has its own mapping and none of these bands describe it.
     /// </summary>
-    private static float Stretch(float fraction, int mapHeight, int seaLevel, float exaggeration)
+    private static float Stretch(float fraction, int mapHeight, int seaLevel, DiffusionWorldSettings settings)
     {
         float aboveSea = fraction * mapHeight - seaLevel;
         if (aboveSea <= 0f) return fraction;
 
-        float stretched = (seaLevel + aboveSea * exaggeration) / mapHeight;
+        float stretched = (seaLevel + settings.RescaleLayerHeight(aboveSea)) / mapHeight;
         return stretched > 1f ? 1f : stretched;
     }
 }

@@ -132,18 +132,32 @@ public static class ModelAssetManager
     /// </summary>
     private static string _preparedSelection;
 
+    // Every precision is matched by name. The config is validated at startup, so the default arms are
+    // unreachable; they throw rather than pick a file, because a model nobody selected must never load.
     private static Asset SelectedDecoderAsset => DiffusionConfig.Instance.DecoderPrecision switch
     {
-        "int8" => Int8DecoderAsset,
+        "fp32" => Fp32DecoderAsset,
         "fp16" => Fp16DecoderAsset,
-        _ => Fp32DecoderAsset
+        "int8" => Int8DecoderAsset,
+        var other => throw UnknownPrecision(nameof(DiffusionConfig.DecoderPrecision), other)
     };
 
-    private static Asset SelectedCoarseAsset =>
-        DiffusionConfig.Instance.CoarsePrecision == "fp16" ? Fp16CoarseAsset : Fp32CoarseAsset;
+    private static Asset SelectedCoarseAsset => DiffusionConfig.Instance.CoarsePrecision switch
+    {
+        "fp32" => Fp32CoarseAsset,
+        "fp16" => Fp16CoarseAsset,
+        var other => throw UnknownPrecision(nameof(DiffusionConfig.CoarsePrecision), other)
+    };
 
-    private static Asset SelectedBaseAsset =>
-        DiffusionConfig.Instance.BasePrecision == "fp16" ? Fp16BaseAsset : Fp32BaseAsset;
+    private static Asset SelectedBaseAsset => DiffusionConfig.Instance.BasePrecision switch
+    {
+        "fp32" => Fp32BaseAsset,
+        "fp16" => Fp16BaseAsset,
+        var other => throw UnknownPrecision(nameof(DiffusionConfig.BasePrecision), other)
+    };
+
+    private static ModelAssetException UnknownPrecision(string setting, string value) =>
+        new($"{setting} \"{value}\" does not name a model");
 
     public static string OfflineHelpUrl => $"https://huggingface.co/{RepositorySlug}/tree/{Revision}";
 
