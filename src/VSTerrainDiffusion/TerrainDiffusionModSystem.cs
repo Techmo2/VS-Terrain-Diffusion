@@ -125,7 +125,8 @@ public class TerrainDiffusionModSystem : ModSystem
         try
         {
             _settings = DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.Instance.NativeResolution);
-            _settings.ApplyLowlandDetail(ResolveLowlandDetail());
+            (float shoreDetail, float shoreFade) = ResolveShoreDetail();
+            _settings.ApplyShoreDetail(shoreDetail, shoreFade);
         }
         catch (Exception e)
         {
@@ -388,32 +389,38 @@ public class TerrainDiffusionModSystem : ModSystem
         }
     }
 
-    /// <summary>Save game key holding the world's lowland detail, the ratio of its top and waterline block heights.</summary>
-    private const string LowlandDetailSaveKey = "vsterraindiffusion:lowlanddetail";
+    /// <summary>Save game key holding the world's shore detail and fade, two floats.</summary>
+    private const string ShoreDetailSaveKey = "vsterraindiffusion:shoredetail";
 
     /// <summary>
-    /// The lowland detail this world was created with. A new world takes the config's value and
-    /// keeps it; a world from before the setting existed was generated at a uniform scale and stays
-    /// at one. Either way it is written down, because the scale decides the height of every block
-    /// and a world whose new chunks used a different one would have a step at every old border.
+    /// The shore detail this world was created with. A new world takes the config's values and
+    /// keeps them; a world from before the setting existed was generated without it and stays that
+    /// way. Either way it is written down, because it decides the height of every coastal block,
+    /// and a world whose new chunks used a different value would have a step at every old border.
     /// </summary>
-    private float ResolveLowlandDetail()
+    private (float Detail, float Fade) ResolveShoreDetail()
     {
         ISaveGame save = _api.WorldManager.SaveGame;
         try
         {
-            byte[] stored = save.GetData(LowlandDetailSaveKey);
-            if (stored is { Length: sizeof(float) }) return BitConverter.ToSingle(stored, 0);
+            byte[] stored = save.GetData(ShoreDetailSaveKey);
+            if (stored is { Length: 2 * sizeof(float) })
+                return (BitConverter.ToSingle(stored, 0), BitConverter.ToSingle(stored, sizeof(float)));
 
-            float detail = save.IsNew ? DiffusionConfig.Instance.WorldGen.LowlandDetail : 1f;
-            save.StoreData(LowlandDetailSaveKey, BitConverter.GetBytes(detail));
-            if (!save.IsNew && DiffusionConfig.Instance.WorldGen.LowlandDetail != 1f)
+            WorldGenConfig shaping = DiffusionConfig.Instance.WorldGen;
+            float detail = save.IsNew ? shaping.ShoreDetail : 0f;
+            float fade = shaping.ShoreFade;
+            var record = new byte[2 * sizeof(float)];
+            BitConverter.GetBytes(detail).CopyTo(record, 0);
+            BitConverter.GetBytes(fade).CopyTo(record, sizeof(float));
+            save.StoreData(ShoreDetailSaveKey, record);
+            if (!save.IsNew && shaping.ShoreDetail != 0f)
             {
                 _api.Logger.Notification(
-                    "[{0}] This world was generated before lowland detail existed, so it keeps a uniform " +
-                    "vertical scale; lowlandDetail applies to worlds created from now on.", DiffusionPaths.ModId);
+                    "[{0}] This world was generated before shore detail existed, so its coasts keep the " +
+                    "plain metre mapping; shoreDetail applies to worlds created from now on.", DiffusionPaths.ModId);
             }
-            return detail;
+            return (detail, fade);
         }
         catch (Exception e)
         {

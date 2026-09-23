@@ -301,12 +301,20 @@ public class WorldGenConfig
     public float OceanDepthFraction { get; set; } = 0.9f;
 
     /// <summary>
-    /// How many times finer the vertical scale is at sea level than at the top of the world. At the
-    /// default 3 and 15 m a block, a block is 5 m tall at the waterline, rising linearly to 15 m at
-    /// the ceiling, so lowland relief is not flattened into one row. 1 is a uniform scale. Recorded
-    /// in a world when it is created; existing worlds keep the scale they were generated with.
+    /// Extra block rows per unit of the model's own height (the square root of metres) at the
+    /// waterline, on land and sea floor alike. The model squares its heights on the way out, which
+    /// crushes the first few metres of every coast into one wide flat row; rows spaced in its own
+    /// units give coasts an even slope instead. 0 turns it off. Recorded in a world when it is
+    /// created; existing worlds keep what they were generated with.
     /// </summary>
-    public float LowlandDetail { get; set; } = 3f;
+    public float ShoreDetail { get; set; } = 2f;
+
+    /// <summary>
+    /// How far the shore detail reaches, in square-root-of-metres: it falls by a factor of e every
+    /// this many units, so at 3 it is mostly gone by 60 m. High ground and deep sea end up moved
+    /// by ShoreDetail x ShoreFade blocks (6 at the defaults), not reshaped.
+    /// </summary>
+    public float ShoreFade { get; set; } = 3f;
 
     /// <summary>
     /// Multiplies the Perlin detail added to sloped ground. The model resolves features down to one
@@ -627,7 +635,8 @@ public class WorldGenConfig
         LinearKneeFraction = Clamp(LinearKneeFraction, 0.1f, 0.99f, 0.85f);
         OceanDepthFraction = Clamp(OceanDepthFraction, 0.05f, 1f, 0.9f);
         SlopeDetailStrength = Clamp(SlopeDetailStrength, 0f, 8f, 1f);
-        LowlandDetail = Clamp(LowlandDetail, 1f, 8f, 3f);
+        ShoreDetail = Clamp(ShoreDetail, 0f, 8f, 2f);
+        ShoreFade = Clamp(ShoreFade, 0.5f, 20f, 3f);
 
         RainfallBasis = (RainfallBasis ?? "moisture").Trim().ToLowerInvariant();
         if (RainfallBasis != "precipitation") RainfallBasis = "moisture";
