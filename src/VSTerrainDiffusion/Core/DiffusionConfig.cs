@@ -301,6 +301,14 @@ public class WorldGenConfig
     public float OceanDepthFraction { get; set; } = 0.9f;
 
     /// <summary>
+    /// How many times finer the vertical scale is at sea level than at the top of the world. At the
+    /// default 3 and 15 m a block, a block is 5 m tall at the waterline, rising linearly to 15 m at
+    /// the ceiling, so lowland relief is not flattened into one row. 1 is a uniform scale. Recorded
+    /// in a world when it is created; existing worlds keep the scale they were generated with.
+    /// </summary>
+    public float LowlandDetail { get; set; } = 3f;
+
+    /// <summary>
     /// Multiplies the Perlin detail added to sloped ground. The model resolves features down to one
     /// native pixel, so hillsides need roughness of their own; raise for craggier slopes.
     /// </summary>
@@ -619,6 +627,7 @@ public class WorldGenConfig
         LinearKneeFraction = Clamp(LinearKneeFraction, 0.1f, 0.99f, 0.85f);
         OceanDepthFraction = Clamp(OceanDepthFraction, 0.05f, 1f, 0.9f);
         SlopeDetailStrength = Clamp(SlopeDetailStrength, 0f, 8f, 1f);
+        LowlandDetail = Clamp(LowlandDetail, 1f, 8f, 3f);
 
         RainfallBasis = (RainfallBasis ?? "moisture").Trim().ToLowerInvariant();
         if (RainfallBasis != "precipitation") RainfallBasis = "moisture";

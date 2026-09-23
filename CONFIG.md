@@ -216,6 +216,14 @@ precision itself; all three precisions default to `fp32`.
     // one native pixel, so hillsides need roughness of their own; raise for craggier slopes.
     "SlopeDetailStrength": 1.0,
 
+    // How many times finer the vertical scale is at sea level than at the top of the world. At 3
+    // and 15 m a block, a block is 5 m tall at the waterline, rising linearly to 15 m at the
+    // ceiling, so low plains keep their relief instead of collapsing into one row at the water.
+    // Mountains keep the coarse scale, but the world holds less height: at 512 tall, terrain is
+    // to scale up to 2272 m instead of 3685 m. 1 is a uniform scale. Recorded in a world when it
+    // is created; existing worlds keep the scale they were generated with.
+    "LowlandDetail": 3.0,
+
     // ---- Climate and vegetation --------------------------------------------------------------
 
     // What the game's 0-255 rainfall byte is built from.
@@ -497,6 +505,7 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `LinearKneeFraction` | 0.1 – 0.99 | 0.7 – 0.95 | 0.85 |
 | `OceanDepthFraction` | 0.05 – 1 | 0.6 – 1 | 0.9 |
 | `SlopeDetailStrength` | 0 – 8 | 0.5 – 2 | 1 |
+| `LowlandDetail` | 1 – 8 | 1 – 4 | 3 |
 | `MoistureMedian` | 0.01 – 100 | 0.4 – 0.9 | 0.62 |
 | `MoistureSpread`, `RainfallSpread` | 0.1 – 4 | 0.7 – 1.4, 0.6 – 1.2 | 1, 0.8 |
 | `RainfallMedianMm` | 10 – 10 000 | 300 – 900 | 540 |

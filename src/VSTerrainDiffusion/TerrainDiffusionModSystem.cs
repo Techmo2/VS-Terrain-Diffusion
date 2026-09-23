@@ -125,6 +125,7 @@ public class TerrainDiffusionModSystem : ModSystem
         try
         {
             _settings = DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.Instance.NativeResolution);
+            _settings.ApplyLowlandDetail(ResolveLowlandDetail());
         }
         catch (Exception e)
         {
@@ -178,7 +179,7 @@ public class TerrainDiffusionModSystem : ModSystem
         // tall a block is, and before any chunk generates, because the map layer writes through it.
         if (_settings.ClimateMode != DiffusionClimateMode.Off)
         {
-            ClimateScale.Install(_api.Logger, ClimateScale.ScaleFor(_settings.MetersPerBlockVertical));
+            ClimateScale.Install(_api.Logger, ClimateScale.ScaleFor(_settings.MeanMetersPerBlockVertical));
             SurfaceClimateCompat.Install(_api);
         }
         else
@@ -384,6 +385,39 @@ public class TerrainDiffusionModSystem : ModSystem
         {
             throw DiffusionFailure.Fatal(_api.Logger,
                 $"The surface pass failed for chunk ({request.ChunkX}, {request.ChunkZ}).", e);
+        }
+    }
+
+    /// <summary>Save game key holding the world's lowland detail, the ratio of its top and waterline block heights.</summary>
+    private const string LowlandDetailSaveKey = "vsterraindiffusion:lowlanddetail";
+
+    /// <summary>
+    /// The lowland detail this world was created with. A new world takes the config's value and
+    /// keeps it; a world from before the setting existed was generated at a uniform scale and stays
+    /// at one. Either way it is written down, because the scale decides the height of every block
+    /// and a world whose new chunks used a different one would have a step at every old border.
+    /// </summary>
+    private float ResolveLowlandDetail()
+    {
+        ISaveGame save = _api.WorldManager.SaveGame;
+        try
+        {
+            byte[] stored = save.GetData(LowlandDetailSaveKey);
+            if (stored is { Length: sizeof(float) }) return BitConverter.ToSingle(stored, 0);
+
+            float detail = save.IsNew ? DiffusionConfig.Instance.WorldGen.LowlandDetail : 1f;
+            save.StoreData(LowlandDetailSaveKey, BitConverter.GetBytes(detail));
+            if (!save.IsNew && DiffusionConfig.Instance.WorldGen.LowlandDetail != 1f)
+            {
+                _api.Logger.Notification(
+                    "[{0}] This world was generated before lowland detail existed, so it keeps a uniform " +
+                    "vertical scale; lowlandDetail applies to worlds created from now on.", DiffusionPaths.ModId);
+            }
+            return detail;
+        }
+        catch (Exception e)
+        {
+            throw DiffusionFailure.Fatal(_api.Logger, "This world's vertical scale could not be read or saved.", e);
         }
     }
 

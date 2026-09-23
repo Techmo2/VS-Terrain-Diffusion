@@ -143,8 +143,28 @@ public sealed class DiffusionWorldSettings
     /// <summary>Total height multiplier relative to true real-world scale.</summary>
     public float EffectiveExaggeration => _blocksPerMeter * MetersPerBlock;
 
-    /// <summary>Metres of elevation per block of height, the inverse of the vertical gain.</summary>
+    /// <summary>
+    /// Metres of elevation per block of height at the top of the world, the inverse of the vertical
+    /// gain. Near sea level a block is <see cref="LowlandDetail"/> times finer.
+    /// </summary>
     public float MetersPerBlockVertical => _blocksPerMeter > 0f ? 1f / _blocksPerMeter : 0f;
+
+    /// <summary>
+    /// How many times finer the vertical scale is at the waterline than at the world ceiling. One is
+    /// a uniform scale. Recorded in each world when it is created (see
+    /// <see cref="ApplyLowlandDetail"/>), so chunks generated before and after a config change agree.
+    /// </summary>
+    public float LowlandDetail { get; private set; } = 1f;
+
+    /// <summary>Metres of elevation per block of height at the waterline.</summary>
+    public float MetersPerBlockAtSeaLevel => MetersPerBlockVertical / LowlandDetail;
+
+    /// <summary>
+    /// Metres per block averaged from the waterline to the ceiling: the one per-block figure that
+    /// is exact at both ends, for the parts of the game that can only apply a single lapse rate.
+    /// </summary>
+    public float MeanMetersPerBlockVertical =>
+        HeadroomBlocks > 0 ? MetersPerBlockVertical * ShapeMeters(HeadroomBlocks) / HeadroomBlocks : MetersPerBlockVertical;
 
     /// <summary>Multiplies the Perlin roughness added to sloped ground.</summary>
     public float SlopeDetailStrength { get; private set; } = 1f;
@@ -303,7 +323,7 @@ public sealed class DiffusionWorldSettings
     /// True when a block is exactly as tall as it is wide — the Minecraft mod's geometry, and the
     /// case in which vanilla's altitude-keyed surface rules already line up with the terrain.
     /// </summary>
-    public bool IsIsotropic => Math.Abs(EffectiveExaggeration - 1f) < 0.001f;
+    public bool IsIsotropic => Math.Abs(EffectiveExaggeration - 1f) < 0.001f && LowlandDetail == 1f;
 
     /// <summary>Half-width in blocks of the area calibration should survey.</summary>
     public int CalibrationRadiusBlocks => _shaping.CalibrationRadiusBlocks;
@@ -319,6 +339,16 @@ public sealed class DiffusionWorldSettings
     /// <c>targetPeakFillFraction</c> of the way from sea level to the world ceiling. Everything
     /// derived from the mapping is recomputed, so this must run before the first tile is built.
     /// </summary>
+    /// <summary>
+    /// Sets <see cref="LowlandDetail"/> and recomputes the mapping. Must run before the first tile is
+    /// built, like <see cref="ApplyCalibration"/>.
+    /// </summary>
+    public void ApplyLowlandDetail(float detail)
+    {
+        LowlandDetail = Math.Clamp(float.IsFinite(detail) ? detail : 1f, 1f, 8f);
+        RecomputeMapping();
+    }
+
     public void ApplyCalibration(float peakMeters)
     {
         if (peakMeters <= 1f || float.IsNaN(peakMeters) || float.IsInfinity(peakMeters)) return;
@@ -338,7 +368,7 @@ public sealed class DiffusionWorldSettings
         if (IsCalibrated)
         {
             float targetBlocks = _shaping.TargetPeakFillFraction * HeadroomBlocks;
-            float wanted = targetBlocks / CalibratedPeakMeters * MetersPerBlock;
+            float wanted = ShapeMeters(targetBlocks) / CalibratedPeakMeters * MetersPerBlock;
             float allowed = Math.Clamp(wanted, _shaping.MinAutoExaggeration, _shaping.MaxAutoExaggeration);
             CalibrationClamped = allowed < wanted;
             _baseBlocksPerMeter = allowed * trueScaleBlocksPerMeter;
@@ -356,7 +386,7 @@ public sealed class DiffusionWorldSettings
 
         _blocksPerMeter = VerticalExaggeration * _baseBlocksPerMeter;
 
-        float naturalPeakBlocks = ModelMaxElevationMeters * _blocksPerMeter;
+        float naturalPeakBlocks = LandBlocks(ModelMaxElevationMeters);
         if (naturalPeakBlocks <= HeadroomBlocks)
         {
             // Everything the model can produce already fits; no compression needed.
@@ -366,7 +396,7 @@ public sealed class DiffusionWorldSettings
         else
         {
             _kneeBlocks = HeadroomBlocks * _shaping.LinearKneeFraction;
-            LinearRangeMeters = _kneeBlocks / _blocksPerMeter;
+            LinearRangeMeters = ShapeMeters(_kneeBlocks) / _blocksPerMeter;
         }
 
         // Measured from the curve's own value at the shore, not from zero, because that is where
@@ -375,6 +405,44 @@ public sealed class DiffusionWorldSettings
         _oceanScale = _shaping.OceanDepthFraction * Math.Max(8, SeaLevel - 4)
                       / (DepthCurve(ModelMaxDepthMeters) - DepthCurve(0f));
     }
+
+    /// <summary>
+    /// Height of land above the waterline, in blocks and before the knee, for an elevation in metres.
+    ///
+    /// A block is <see cref="MetersPerBlockVertical"/> tall at the ceiling and <see cref="LowlandDetail"/>
+    /// times finer at the waterline, changing linearly with height in between. Low ground is where
+    /// a uniform scale fails: at 15 m a block, every plain the model draws under 15 m is one flat row
+    /// level with the water, and a finer block there gives lowland relief room to show. Mountains
+    /// keep the coarse scale, which is what keeps them inside the world.
+    /// </summary>
+    private float LandBlocks(float meters) => ShapeBlocks(meters * _blocksPerMeter);
+
+    /// <summary>
+    /// Elevation of the ground <paramref name="blocks"/> above the waterline, in units of the ceiling's
+    /// metres per block. With a block <c>1/r</c> of that at the waterline and the full amount
+    /// <see cref="HeadroomBlocks"/> up, this is the integral <c>y/r + (1 - 1/r) y^2 / 2H</c>, which is
+    /// just y when r is 1: a uniform scale is exactly the old linear mapping.
+    /// </summary>
+    private float ShapeMeters(float blocks)
+    {
+        float h = Math.Max(1f, HeadroomBlocks);
+        return blocks / LowlandDetail + (1f - 1f / LowlandDetail) * blocks * blocks / (2f * h);
+    }
+
+    /// <summary>The inverse of <see cref="ShapeMeters"/>: the positive root of its quadratic.</summary>
+    private float ShapeBlocks(float shapeMeters)
+    {
+        float a = (1f - 1f / LowlandDetail) / (2f * Math.Max(1f, HeadroomBlocks));
+        float b = 1f / LowlandDetail;
+        if (a <= 0f) return shapeMeters / b;
+        return (float)((-b + Math.Sqrt(b * b + 4.0 * a * shapeMeters)) / (2.0 * a));
+    }
+
+    /// <summary>
+    /// Where a block layer written for a uniform, true-to-scale world now sits, in blocks above the
+    /// waterline. <paramref name="blocks"/> is read as that many horizontal blocks of real altitude.
+    /// </summary>
+    public float RescaleLayerHeight(float blocks) => blocks <= 0f ? blocks : LandBlocks(blocks * MetersPerBlock);
 
     /// <summary>Shape of the sea-floor curve: steep near the coast, heavily compressed in the abyss.</summary>
     private static float DepthCurve(float meters) => (float)(Math.Sqrt(meters + 10.0) - Math.Sqrt(10.0) + 1.0);
@@ -410,7 +478,7 @@ public sealed class DiffusionWorldSettings
     {
         if (meters >= 0f)
         {
-            float linear = meters * _blocksPerMeter;
+            float linear = LandBlocks(meters);
             float y;
             if (linear <= _kneeBlocks)
             {
@@ -464,12 +532,13 @@ public sealed class DiffusionWorldSettings
     /// How the terrain's height is being mapped, as a phrase. Shared by the one-line log summary
     /// and the field-per-line command readout so the two cannot drift apart.
     /// </summary>
-    public string DescribeHeight() => IsCalibrated
+    public string DescribeHeight() => (IsCalibrated
         ? $"calibrated to a {CalibratedPeakMeters:0} m peak ({EffectiveExaggeration:0.##}x, " +
           $"{MetersPerBlockVertical:0.##} m/block vertical)"
         : IsIsotropic
             ? "true to scale (1 block = 1 block in every direction)"
-            : $"{EffectiveExaggeration:0.##}x ({MetersPerBlockVertical:0.##} m/block vertical)";
+            : $"{EffectiveExaggeration:0.##}x ({MetersPerBlockVertical:0.##} m/block vertical)")
+        + (LowlandDetail > 1f ? $", {MetersPerBlockAtSeaLevel:0.##} m/block at sea level" : "");
 
     /// <summary>Human-readable summary for the log and the /terraindiffusion command.</summary>
     public string Describe()
@@ -495,7 +564,9 @@ public sealed class DiffusionWorldSettings
     {
         get
         {
-            float neededHeadroom = 5000f * _blocksPerMeter / _shaping.LinearKneeFraction;
+            // Solves ShapeMeters(k H) / blocksPerMeter = 5000 m for H, k being the knee fraction.
+            float k = _shaping.LinearKneeFraction;
+            float neededHeadroom = 5000f * _blocksPerMeter / (k * (1f / LowlandDetail + (1f - 1f / LowlandDetail) * k / 2f));
             float sealevelFraction = MapSizeY > 0 ? (float)SeaLevel / MapSizeY : 0.4313725f;
             int needed = (int)Math.Ceiling((neededHeadroom + 3) / Math.Max(0.05f, 1f - sealevelFraction));
             return Math.Min(4096, ((needed + 127) / 128) * 128);

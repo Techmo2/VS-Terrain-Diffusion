@@ -266,6 +266,18 @@
       }
     },
     {
+      "code": "WorldGen/LowlandDetail",
+      "type": "number",
+      "default": 3.0,
+      "ingui": "setting-WorldGenLowlandDetail",
+      "comment": "setting-WorldGenLowlandDetail-hover",
+      "range": {
+        "min": 1,
+        "max": 8,
+        "step": 0.5
+      }
+    },
+    {
       "type": "separator",
       "title": "configsep-heightcalibration",
       "text": "configsep-heightcalibration-text"
