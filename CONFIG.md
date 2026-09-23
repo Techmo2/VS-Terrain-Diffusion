@@ -22,6 +22,26 @@ world looks like. OpenVINO, TensorRT RTX and every precision other than FP32 mus
 explicitly; keep those machine settings fixed after exploration so new chunks do not disagree
 slightly with the ones already on disk.
 
+At startup the mod checks which inference devices and precisions this machine can run and logs the
+result. The ConfigLib screen offers only those. A config naming one this machine cannot run, or an
+unrecognised value, stops the game with the reason in the log. The mod never changes the device or a
+precision itself; all three precisions default to `fp32`.
+
+| device | runs when |
+|---|---|
+| `auto`, `cpu` | always (Windows or Linux on x64 or arm64, macOS on Apple silicon; ONNX Runtime 1.24.4 has no Intel Mac build) |
+| `openvino` | 64-bit Linux, CPU with SSE4.2 |
+| `cuda` | 64-bit Windows or Linux, NVIDIA GPU and driver supporting the CUDA build in use (12: compute 5.0+, driver 525+; 13: compute 7.5+, driver 580+). Linux also needs the CUDA toolkit and cuDNN 9 installed |
+| `tensorrt-rtx` | 64-bit Windows or Linux, compute capability 8.6, 8.9, 12.0 or 12.1, driver 580+ |
+| `directml` | Windows 10 1903+, Direct3D 12 GPU |
+| `coreml` | macOS 10.15+ |
+
+| precision | runs when |
+|---|---|
+| `fp32` | always |
+| `fp16` | at least one GPU device above can run |
+| `int8` (decoder) | always |
+
 ```jsonc
 {
   // Which execution provider runs the model: "auto", "cpu", "openvino", "cuda", "tensorrt-rtx",
@@ -30,21 +50,18 @@ slightly with the ones already on disk.
   // isolated helper and falls back to ONNX Runtime CPU if the native compiler is not usable on the
   // host. TensorRT RTX needs a GeForce RTX 30xx or newer on 64-bit Windows or Linux, downloads the
   // NVIDIA runtime once (105 MB on Windows, 140 MB on Linux), builds an engine per model on first
-  // start (seconds, then cached under TerrainDiffusionModels/onnx-cache/tensorrt-rtx). A provider
-  // whose runtime cannot be prepared falls back to whatever this machine would have chosen for
-  // itself - DirectML on Windows, which runs on any vendor's card, CUDA on Linux with an NVIDIA
-  // driver, ONNX Runtime CPU otherwise - and that provider is written back to this file, so the
-  // next start comes up on the one that works. On Windows the replacement needs a different ONNX
-  // Runtime than TensorRT RTX loaded, so the game stops once after writing it and comes up on the
-  // new provider when you start it again.
-  // Those fallbacks are logged because changing provider can alter newly generated terrain
-  // slightly. Only what the selected provider actually needs is downloaded: TensorRT RTX does not
-  // fetch the CUDA provider library it never loads, and CUDA on Windows fetches the cuBLAS, cuFFT,
+  // start (seconds, then cached under TerrainDiffusionModels/onnx-cache/tensorrt-rtx). A device
+  // this machine cannot run stops the game at startup. A compatible device whose runtime cannot be
+  // prepared (a failed download, a missing file) runs that session on what "auto" would pick, or
+  // the CPU, and is logged; this file is not changed, so the next start tries the selected device
+  // again. When that replacement needs a different ONNX Runtime than the session already loaded,
+  // the game stops instead. Only what the selected provider actually needs is downloaded:
+  // TensorRT RTX does not fetch the CUDA provider library it never loads, and CUDA on Windows fetches the cuBLAS, cuFFT,
   // NVRTC and cuDNN libraries it links against (about 1 GB, once) only when the machine does not
   // already have them, which it will if a CUDA toolkit and cuDNN are installed. Linux and macOS
-  // use the system CUDA install, as before. OpenVINO and TensorRT RTX are opt-in: "auto" never selects them. Auto picks CoreML
-  // on macOS, DirectML on 64-bit Windows, CUDA on Linux with an NVIDIA driver present, and CPU
-  // everywhere else.
+  // use the system CUDA install. OpenVINO and TensorRT RTX are opt-in: "auto" never selects them.
+  // Auto picks CoreML on macOS, DirectML on Windows, CUDA on Linux when this machine can run it,
+  // and CPU everywhere else.
   "InferenceDevice": "auto",
 
   // Where ONNX Runtime loads model graphs from: "memory", "file", or "auto". Memory makes GPU
@@ -74,7 +91,9 @@ slightly with the ones already on disk.
   "ValidateModelHashes": true,
 
   // Download the matching ONNX Runtime and, when selected, OpenVINO native libraries
-  // automatically. Turn off to supply them yourself under TerrainDiffusionModels/onnxruntime/.
+  // automatically. On 64-bit Windows this includes the Visual C++ runtime (6.8 MB, once, from
+  // Microsoft) when the machine's own is missing or older than 14.39. Turn off to supply them
+  // yourself under TerrainDiffusionModels/onnxruntime/, and install the Visual C++ Redistributable.
   "DownloadRuntime": true,
 
   // Decoder model precision: "fp32", "fp16" or "int8". The matching decoder is downloaded
@@ -501,9 +520,9 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `ScaleOverride` | 0, or 1 – 16 | 0, or 1 – 6 | 0 |
 | `VerticalExaggerationOverride` | 0, or 0.05 – 20 | 0, or 0.5 – 2 | 0 |
 
-An unrecognised `InferenceDevice`, `ModelLoadMode`, `CoarsePrecision`, `BasePrecision`,
-`DecoderPrecision`, `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls back to its
-default rather than failing to load.
+An unrecognised `ModelLoadMode`, `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls
+back to its default. An unrecognised or incompatible `InferenceDevice`, `CoarsePrecision`,
+`BasePrecision` or `DecoderPrecision` stops the game.
 
 Only the selected models are downloaded, into `TerrainDiffusionModels/`:
 

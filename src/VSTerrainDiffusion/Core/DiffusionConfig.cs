@@ -10,7 +10,8 @@ public class DiffusionConfig
 {
     /// <summary>
     /// "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "directml" or "coreml". OpenVINO and
-    /// TensorRT RTX are selected only when requested explicitly.
+    /// TensorRT RTX are selected only when requested explicitly. One this machine cannot run stops
+    /// the game at startup (<see cref="InferenceCompatibility"/>).
     /// </summary>
     public string InferenceDevice { get; set; } = "auto";
 
@@ -145,41 +146,15 @@ public class DiffusionConfig
 
         config ??= new DiffusionConfig();
         config.Sanitize();
+
+        // Before the file is written back, so a refused config is left exactly as the player wrote it.
+        InferenceCompatibility compatibility = InferenceCompatibility.Current;
+        compatibility.Log(api.Logger);
+        compatibility.Require(config, api.Logger);
+
         api.StoreModConfig(config, DiffusionPaths.ModId + ".json");
         _instance = config;
         return config;
-    }
-
-    /// <summary>
-    /// Records an inference device the mod had to choose for the player, in the file they chose the
-    /// original one in.
-    ///
-    /// The runtime is resolved once per process, so a provider that turns out to be unusable cannot
-    /// always be replaced in the session that found out. Writing the working one down means the next
-    /// start comes up on it without the player having to read the log and edit the file, and it
-    /// keeps the effective provider stable for the world afterwards, which matters because changing
-    /// provider moves newly generated terrain slightly.
-    /// </summary>
-    public static void PersistInferenceDevice(string device, ILogger logger)
-    {
-        if (string.Equals(Instance.InferenceDevice, device, System.StringComparison.Ordinal)) return;
-        Instance.InferenceDevice = device;
-
-        try
-        {
-            string path = DiffusionPaths.ConfigFile;
-            string directory = System.IO.Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory)) System.IO.Directory.CreateDirectory(directory);
-            System.IO.File.WriteAllText(
-                path, Newtonsoft.Json.JsonConvert.SerializeObject(Instance, Newtonsoft.Json.Formatting.Indented));
-        }
-        catch (System.Exception e)
-        {
-            // The device in memory is still the corrected one; only the record of it is lost, and
-            // the next start will work the same failure out again.
-            logger?.Warning("[{0}] Could not write the corrected inference device to {1}: {2}",
-                DiffusionPaths.ModId, DiffusionPaths.ConfigFile, e.Message);
-        }
     }
 
     private void Sanitize()
@@ -213,28 +188,10 @@ public class DiffusionConfig
             TerrainTileSizeBlocks -= TerrainTileSizeBlocks % 32;
         }
 
-        InferenceDevice = (InferenceDevice ?? "auto").Trim().ToLowerInvariant();
-        switch (InferenceDevice)
-        {
-            case "auto":
-            case "cpu":
-            case "cuda":
-            case "directml":
-            case "dml":
-            case "coreml":
-            case "openvino":
-            case "tensorrt-rtx":
-            case "gpu":
-                break;
-            case "trt-rtx":
-            case "tensorrtrtx":
-            case "rtx":
-                InferenceDevice = "tensorrt-rtx";
-                break;
-            default:
-                InferenceDevice = "auto";
-                break;
-        }
+        // The device and the precisions are only spelled consistently here, never replaced: a value
+        // that is unknown or cannot run on this machine is refused by InferenceCompatibility, because
+        // quietly substituting another would change the terrain without the player choosing it.
+        InferenceDevice = NormalizeDevice(InferenceDevice);
 
         ModelLoadMode = (ModelLoadMode ?? "auto").Trim().ToLowerInvariant();
         switch (ModelLoadMode)
@@ -248,18 +205,27 @@ public class DiffusionConfig
                 break;
         }
 
-        DecoderPrecision = (DecoderPrecision ?? "fp32").Trim().ToLowerInvariant();
-        // Earlier development builds wrote "auto", which coupled OpenVINO to INT8. Treat it as
-        // the safe FP32 default when those configs are upgraded.
-        if (DecoderPrecision == "auto") DecoderPrecision = "fp32";
-        if (DecoderPrecision is not ("fp32" or "fp16" or "int8")) DecoderPrecision = "fp32";
-
-        BasePrecision = (BasePrecision ?? "fp32").Trim().ToLowerInvariant();
-        if (BasePrecision is not ("fp32" or "fp16")) BasePrecision = "fp32";
-
-        CoarsePrecision = (CoarsePrecision ?? "fp32").Trim().ToLowerInvariant();
-        if (CoarsePrecision is not ("fp32" or "fp16")) CoarsePrecision = "fp32";
+        // A missing key is the FP32 default. Anything else is left for InferenceCompatibility to
+        // accept or refuse, including the "auto" earlier development builds wrote for the decoder.
+        DecoderPrecision = NormalizePrecision(DecoderPrecision);
+        BasePrecision = NormalizePrecision(BasePrecision);
+        CoarsePrecision = NormalizePrecision(CoarsePrecision);
     }
+
+    /// <summary>One spelling per device, so "RTX" and "tensorrt-rtx" are the same choice. Missing is "auto".</summary>
+    internal static string NormalizeDevice(string device)
+    {
+        device = (device ?? "auto").Trim().ToLowerInvariant();
+        return device switch
+        {
+            "dml" => "directml",
+            "trt-rtx" or "tensorrtrtx" or "rtx" => "tensorrt-rtx",
+            _ => device
+        };
+    }
+
+    /// <summary>Lower case and trimmed. Missing is "fp32".</summary>
+    internal static string NormalizePrecision(string precision) => (precision ?? "fp32").Trim().ToLowerInvariant();
 }
 
 /// <summary>
