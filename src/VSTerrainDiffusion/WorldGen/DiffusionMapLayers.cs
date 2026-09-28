@@ -1,5 +1,6 @@
 using System;
 using Vintagestory.API.Common;
+using Vintagestory.API.Datastructures;
 using Vintagestory.API.MathTools;
 using Vintagestory.ServerMods;
 using VSTerrainDiffusion.Core;
@@ -33,10 +34,18 @@ public abstract class DiffusionMapLayer : MapLayerBase
         BlocksPerPixel = blocksPerPixel;
     }
 
-    public override int[] GenLayer(int xCoord, int zCoord, int sizeX, int sizeZ)
+    public override int[] GenLayer(int xCoord, int zCoord, int sizeX, int sizeZ) =>
+        Sample(xCoord, zCoord, sizeX, sizeZ, null);
+
+    /// <summary>
+    /// The map over a block of pixels. With <paramref name="fixedTile"/> every pixel is read from
+    /// that tile, and any outside it comes out 0, rather than asking the provider - for a tile that
+    /// is still being handed round as it finishes, before the provider will return it.
+    /// </summary>
+    protected int[] Sample(int xCoord, int zCoord, int sizeX, int sizeZ, TerrainTile fixedTile)
     {
         var result = new int[sizeX * sizeZ];
-        TerrainTile tile = null;
+        TerrainTile tile = fixedTile;
 
         for (int z = 0; z < sizeZ; z++)
         {
@@ -56,7 +65,17 @@ public abstract class DiffusionMapLayer : MapLayerBase
                     continue;
                 }
 
-                Provider.GetTileAt(blockX, blockZ, ref tile);
+                if (fixedTile == null)
+                {
+                    Provider.GetTileAt(blockX, blockZ, ref tile);
+                }
+                else if (blockX < tile.BlockX || blockX >= tile.BlockX + tile.Size ||
+                         blockZ < tile.BlockZ || blockZ >= tile.BlockZ + tile.Size)
+                {
+                    result[z * sizeX + x] = 0;
+                    continue;
+                }
+
                 int index = tile.Index(
                     Mod(blockX - tile.BlockX, tile.Size),
                     Mod(blockZ - tile.BlockZ, tile.Size));
@@ -165,12 +184,25 @@ public sealed class DiffusionClimateMapLayer : DiffusionMapLayer
 /// relationship to climate whatsoever. Here it comes from the model's moisture and growing season,
 /// which is what puts woodland in the foothills, scrub on the dry plateau and nothing above the
 /// treeline.
+///
+/// Climate alone makes a wet region one unbroken wood, though. Vanilla's map is still good for what
+/// it is - patchy noise - so for trees it is kept and read as where the clearings go: its open
+/// ground thins the model's cover into fields and glens (<see cref="WorldGenConfig.ForestClearings"/>).
 /// </summary>
 public sealed class DiffusionForestMapLayer : DiffusionMapLayer
 {
     private readonly FastNoiseLite _variation;
     private readonly float _multiplier;
     private readonly bool _shrubs;
+    private readonly MapLayerBase _clearings;
+    private readonly float _clearingStrength;
+
+    /// <summary>
+    /// Vanilla's value, as a fraction, below which its ground counts as open. About a third of
+    /// vanilla's map is 0 and the rest spreads evenly to 1, so this is a soft edge round the open
+    /// patches rather than a second threshold on top of them.
+    /// </summary>
+    private const float ClearingEdge = 0.35f;
 
     /// <summary>
     /// How much local noise breaks up an otherwise uniform stand of trees. Climate sets the mean
@@ -178,12 +210,22 @@ public sealed class DiffusionForestMapLayer : DiffusionMapLayer
     /// </summary>
     private const float VariationAmplitude = 0.18f;
 
+    /// <summary>The vanilla layer read for clearings, or null; kept so re-initialisation does not wrap twice.</summary>
+    public MapLayerBase Clearings => _clearings;
+
+    /// <param name="clearings">
+    /// Vanilla's forest layer, whose open ground becomes clearings, or null for none.
+    /// </param>
+    /// <param name="clearingStrength">How much of the model's cover the open ground takes away, 0 to 1.</param>
     public DiffusionForestMapLayer(long seed, TerrainDiffusionProvider provider, int blocksPerPixel,
-                                   bool shrubs, float multiplier)
+                                   bool shrubs, float multiplier,
+                                   MapLayerBase clearings = null, float clearingStrength = 0f)
         : base(seed, provider, blocksPerPixel)
     {
         _shrubs = shrubs;
         _multiplier = multiplier;
+        _clearings = clearingStrength > 0f ? clearings : null;
+        _clearingStrength = clearingStrength;
 
         _variation = new FastNoiseLite((int)seed);
         _variation.SetNoiseType(FastNoiseLite.NoiseType.Perlin);
@@ -192,6 +234,65 @@ public sealed class DiffusionForestMapLayer : DiffusionMapLayer
         _variation.SetFractalOctaves(3);
         _variation.SetFractalLacunarity(2f);
         _variation.SetFractalGain(0.5f);
+    }
+
+    public override int[] GenLayer(int xCoord, int zCoord, int sizeX, int sizeZ) =>
+        Clear(base.GenLayer(xCoord, zCoord, sizeX, sizeZ), xCoord, zCoord, sizeX, sizeZ);
+
+    /// <summary>Map pixels, and so blocks, per pixel edge.</summary>
+    public int BlocksPerMapPixel => BlocksPerPixel;
+
+    /// <summary>
+    /// This map's pixels over one terrain tile, clearings and all, read from that tile alone: the
+    /// same bytes the game gets for that ground. Row-major, <c>tile.Size / BlocksPerMapPixel</c> a
+    /// side. For the debug map, which records tiles as they finish.
+    /// </summary>
+    public int[] CoverWithin(TerrainTile tile)
+    {
+        int size = Math.Max(1, tile.Size / BlocksPerPixel);
+        int xCoord = FloorDiv(tile.BlockX, BlocksPerPixel), zCoord = FloorDiv(tile.BlockZ, BlocksPerPixel);
+        return Clear(Sample(xCoord, zCoord, size, size, tile), xCoord, zCoord, size, size);
+    }
+
+    /// <summary>Thins <paramref name="cover"/> where vanilla's map is open.</summary>
+    private int[] Clear(int[] cover, int xCoord, int zCoord, int sizeX, int sizeZ)
+    {
+        if (_clearings == null) return cover;
+
+        int[] vanilla = VanillaCover(xCoord, zCoord, sizeX, sizeZ);
+        for (int i = 0; i < cover.Length; i++)
+        {
+            float open = 1f - SmoothStep(vanilla[i] / 255f / ClearingEdge);
+            cover[i] = (int)Math.Round(cover[i] * (1f - _clearingStrength * open));
+        }
+        return cover;
+    }
+
+    private static int FloorDiv(int a, int b) => a >= 0 ? a / b : (a - b + 1) / b;
+
+    /// <summary>
+    /// Vanilla's forest map over the same pixels. It subtracts <c>128 - rain * temp / 65025</c>
+    /// read from the climate map it is handed, a term that is 127 to 128 whatever the climate, so a
+    /// zeroed map in its place gives its own pattern to within a unit - and keeps this layer free of
+    /// whatever maps the caller did or did not set, which the terrain sampler does not.
+    /// </summary>
+    private int[] VanillaCover(int xCoord, int zCoord, int sizeX, int sizeZ)
+    {
+        var input = new IntDataMap2D { Data = new int[sizeX * sizeZ], Size = sizeX };
+        var output = new IntDataMap2D { Data = new int[sizeX * sizeZ], Size = sizeX };
+
+        // The input maps are fields on the shared vanilla instance.
+        lock (_clearings)
+        {
+            _clearings.SetInputMap(input, output);
+            return _clearings.GenLayer(xCoord, zCoord, sizeX, sizeZ);
+        }
+    }
+
+    private static float SmoothStep(float t)
+    {
+        t = Math.Clamp(t, 0f, 1f);
+        return t * t * (3f - 2f * t);
     }
 
     protected override int ValueAt(TerrainTile tile, int index, int blockX, int blockZ)

@@ -42,7 +42,7 @@ public sealed class InferenceSettings
     /// Share of the time, as a percentage, that world generation may keep the inference device
     /// busy; see <see cref="Pipeline.InferenceThrottle"/>. 100 is unlimited.
     /// </summary>
-    public int GpuUtilizationPercent { get; internal set; } = 80;
+    public int GpuUtilizationPercent { get; internal set; } = 100;
 
     /// <summary>Verify SHA-256 of pre-existing model files on startup.</summary>
     public bool ValidateModelHashes { get; private init; } = true;

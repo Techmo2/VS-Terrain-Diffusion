@@ -42,8 +42,20 @@ public sealed class DiffusionWorldSettings
     /// </summary>
     public float VerticalExaggeration { get; private set; } = 1f;
 
+    /// <summary>Pooling of the coarse model's output; see <see cref="Pipeline.CoarsePooling"/>.</summary>
+    public Pipeline.CoarsePooling CoarsePooling { get; private set; } = Pipeline.CoarsePooling.None;
+
     /// <summary>Metres of real-world distance per block, horizontally.</summary>
     public float MetersPerBlock => NativeResolution / Scale;
+
+    /// <summary>
+    /// Blocks across one pixel of the coarse model's conditioning. A coarse cell of the world is 256
+    /// model pixels, <c>256 * Scale</c> blocks; pooling packs that many conditioning pixels into it
+    /// in each direction. Whatever feeds the conditioning from a world map - the ocean map, latitude,
+    /// river basins - samples at this spacing.
+    /// </summary>
+    public int BlocksPerConditioningPixel =>
+        32 * Pipeline.WorldPipelineModelConfig.Instance.LatentCompression * Scale / CoarsePooling.Factor;
 
     /// <summary>Metres per model pixel, straight from the model config.</summary>
     public float NativeResolution { get; private set; } = 30f;
@@ -227,6 +239,9 @@ public sealed class DiffusionWorldSettings
                 : ReadWorldConfig(worldConfig, "terraindiffusionClimate", "full")),
             Scale = scale,
             VerticalExaggeration = exaggeration,
+            CoarsePooling = Pipeline.CoarsePooling.Of(
+                ReadWorldConfig(worldConfig, "terraindiffusionCoarsePooling", "1").ToInt(1),
+                ReadWorldConfig(worldConfig, "terraindiffusionCoarsePoolMode", "average") == "extreme"),
             SlopeDetailStrength = shaping.SlopeDetailStrength,
             MapSizeY = api.WorldManager.MapSizeY,
             MapSizeX = api.WorldManager.MapSizeX,
@@ -273,7 +288,8 @@ public sealed class DiffusionWorldSettings
     /// unbanded one.
     /// </param>
     public static DiffusionWorldSettings ForOfflineUse(float nativeResolution, int scale, int mapSizeY,
-                                                       int seaLevel, LatitudeBands latitude = null)
+                                                       int seaLevel, LatitudeBands latitude = null,
+                                                       Pipeline.CoarsePooling pooling = default)
     {
         var settings = new DiffusionWorldSettings
         {
@@ -286,7 +302,8 @@ public sealed class DiffusionWorldSettings
             SlopeDetailStrength = DiffusionConfig.Instance.WorldGen.SlopeDetailStrength,
             MapSizeY = mapSizeY,
             SeaLevel = seaLevel,
-            Latitude = latitude ?? LatitudeBands.None
+            Latitude = latitude ?? LatitudeBands.None,
+            CoarsePooling = pooling.Factor >= 1 ? pooling : Pipeline.CoarsePooling.None
         };
 
         settings.RecomputeMapping();

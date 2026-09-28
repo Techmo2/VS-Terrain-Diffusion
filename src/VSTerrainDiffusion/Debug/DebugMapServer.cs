@@ -71,11 +71,19 @@ public sealed class DebugMapServer : IDisposable
     /// <summary>Where everyone is, for the markers. Supplied by the mod system, which can see them.</summary>
     private readonly System.Func<IReadOnlyList<(string Name, int X, int Z)>> _players;
 
+    /// <summary>
+    /// The forest and shrub map layers the game reads, or nulls while the model's climate is off.
+    /// Asked per tile because they are installed after the map has started.
+    /// </summary>
+    private readonly System.Func<(DiffusionForestMapLayer Forest, DiffusionForestMapLayer Shrub)> _vegetation;
+
     public DebugMapServer(ILogger logger, TerrainDiffusionProvider provider, DiffusionWorldSettings settings,
                           IRiverBasinSource riverBasins = null,
-                          System.Func<IReadOnlyList<(string Name, int X, int Z)>> players = null)
+                          System.Func<IReadOnlyList<(string Name, int X, int Z)>> players = null,
+                          System.Func<(DiffusionForestMapLayer, DiffusionForestMapLayer)> vegetation = null)
     {
         _players = players;
+        _vegetation = vegetation;
         _log = logger;
         _provider = provider;
         _riverBasins = riverBasins;
@@ -112,7 +120,9 @@ public sealed class DebugMapServer : IDisposable
             new Layer("tempSeasonality", "Temperature seasonality", "BIO4", Final),
             new Layer("precipitation", "Annual precipitation", "mm", Final),
             new Layer("precipCv", "Precipitation seasonality", "% CV", Final),
-            new Layer("rainfall", "Rainfall byte (as the game reads it)", "0-255", Final)
+            new Layer("rainfall", "Rainfall byte (as the game reads it)", "0-255", Final),
+            new Layer("forest", "Forest map (as the game reads it)", "0-255", Final),
+            new Layer("shrub", "Shrub map (as the game reads it)", "0-255", Final)
         };
     }
 
@@ -194,6 +204,15 @@ public sealed class DebugMapServer : IDisposable
         }
     }
 
+    /// <summary>The map pixel under a block of a tile, from <see cref="DiffusionForestMapLayer.CoverWithin"/>.</summary>
+    private static float MapPixel(int[] map, DiffusionForestMapLayer layer, int blockX, int blockZ, int tileSize)
+    {
+        if (map == null) return 0f;
+        int per = layer.BlocksPerMapPixel;
+        int side = Math.Max(1, tileSize / per);
+        return map[Math.Min(side - 1, blockZ / per) * side + Math.Min(side - 1, blockX / per)];
+    }
+
     private RecordedTile Downsample(TerrainTile tile)
     {
         int size = tile.Size;
@@ -225,11 +244,19 @@ public sealed class DebugMapServer : IDisposable
             coarseValues[6] = basin;
         }
 
+        // The game's own map pixels over this tile, clearings included: 32 blocks a pixel for
+        // forest and 16 for shrubs, each coarser than a thumbnail cell, so a cell takes its pixel.
+        (DiffusionForestMapLayer forestLayer, DiffusionForestMapLayer shrubLayer) = _vegetation?.Invoke() ?? default;
+        int[] forest = forestLayer?.CoverWithin(tile);
+        int[] shrub = shrubLayer?.CoverWithin(tile);
+
         for (int v = 0; v < ThumbSize; v++)
         {
             for (int u = 0; u < ThumbSize; u++)
             {
                 int cell = v * ThumbSize + u;
+                values[20 * cells + cell] = MapPixel(forest, forestLayer, u * step, v * step, size);
+                values[21 * cells + cell] = MapPixel(shrub, shrubLayer, u * step, v * step, size);
                 int x0 = u * step, z0 = v * step;
                 int x1 = Math.Min(size, x0 + step), z1 = Math.Min(size, z0 + step);
 

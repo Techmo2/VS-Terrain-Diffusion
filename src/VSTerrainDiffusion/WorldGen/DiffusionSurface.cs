@@ -30,6 +30,12 @@ public sealed class DiffusionSurface
     /// <summary>Deepest a soil layer can be, so scouring a cliff never walks the whole column.</summary>
     private const int MaxSurfaceDepth = 12;
 
+    /// <summary>
+    /// Blocks below the model's surface the ground has to have been carved before its built slope
+    /// counts. Only Rivers cuts the ground away from the model's, and a block or two is rounding.
+    /// </summary>
+    private const int CarvedBlocks = 2;
+
     public DiffusionSurface(ICoreServerAPI api, TerrainDiffusionProvider provider)
     {
         _api = api;
@@ -49,6 +55,14 @@ public sealed class DiffusionSurface
         int baseX = request.ChunkX * 32;
         int baseZ = request.ChunkZ * 32;
         TerrainTile tile = null;
+
+        // The model's slope knows nothing of the valleys Rivers carves out of it, so a canyon wall
+        // hundreds of blocks deep reads as whatever hillside the model drew there. Inside a cut the
+        // ground as built is measured too, from this chunk's heightmap and its four neighbours',
+        // which the terrain pass has always finished before this one runs.
+        Heights built = RiversCompat.Installed ? new Heights(_api, request.ChunkX, request.ChunkZ, mapChunk) : null;
+        DiffusionWorldSettings settings = _provider.Settings;
+        float blockSlopeToReal = settings.MetersPerBlockVertical / settings.MetersPerBlock;
 
         for (int lz = 0; lz < 32; lz++)
         {
@@ -74,7 +88,11 @@ public sealed class DiffusionSurface
                     continue;
                 }
 
-                if (_config.BareSlopeRock && tile.Slope[index] >= climate.BareSlopeThreshold)
+                float slope = tile.Slope[index];
+                if (built != null && tile.SurfaceY[index] - built.At(lx, lz) >= CarvedBlocks)
+                    slope = Math.Max(slope, built.SlopeAt(lx, lz) * blockSlopeToReal);
+
+                if (_config.BareSlopeRock && slope >= climate.BareSlopeThreshold)
                 {
                     int rockId = mapChunk.TopRockIdMap?[flat] ?? 0;
                     if (rockId != 0) ScourToRock(chunks, lx, lz, surfaceY, rockId);
@@ -126,6 +144,55 @@ public sealed class DiffusionSurface
             data.SetBlockUnsafe(flat, blockId);
             data.SetFluid(flat, 0);
         }
+    }
+
+    /// <summary>
+    /// Ground heights as built around one chunk: its own heightmap and, across each edge, the
+    /// neighbour's. A neighbour that is missing or has no terrain yet leaves that side to a one-sided
+    /// difference.
+    /// </summary>
+    private sealed class Heights
+    {
+        private readonly ushort[] _self, _west, _east, _north, _south;
+
+        public Heights(ICoreServerAPI api, int chunkX, int chunkZ, IMapChunk self)
+        {
+            _self = self.WorldGenTerrainHeightMap;
+            _west = Map(api, chunkX - 1, chunkZ);
+            _east = Map(api, chunkX + 1, chunkZ);
+            _north = Map(api, chunkX, chunkZ - 1);
+            _south = Map(api, chunkX, chunkZ + 1);
+        }
+
+        private static ushort[] Map(ICoreServerAPI api, int chunkX, int chunkZ) =>
+            api.WorldManager.GetMapChunk(chunkX, chunkZ)?.WorldGenTerrainHeightMap;
+
+        public int At(int lx, int lz) => _self[lz * 32 + lx];
+
+        /// <summary>Height at a column up to one block outside the chunk, or -1 where unknown.</summary>
+        private int Around(int lx, int lz)
+        {
+            ushort[] map = lx < 0 ? _west : lx > 31 ? _east : lz < 0 ? _north : lz > 31 ? _south : _self;
+            if (map == null) return -1;
+            int h = map[((lz + 32) % 32) * 32 + (lx + 32) % 32];
+            return h > 0 ? h : -1;
+        }
+
+        /// <summary>Rise over run, in blocks, by central differences where both sides are known.</summary>
+        public float SlopeAt(int lx, int lz)
+        {
+            float centre = At(lx, lz);
+            return MathF.Sqrt(Square(Gradient(Around(lx - 1, lz), centre, Around(lx + 1, lz))) +
+                              Square(Gradient(Around(lx, lz - 1), centre, Around(lx, lz + 1))));
+        }
+
+        private static float Gradient(int before, float centre, int after) =>
+            before >= 0 && after >= 0 ? (after - before) / 2f
+            : after >= 0 ? after - centre
+            : before >= 0 ? centre - before
+            : 0f;
+
+        private static float Square(float v) => v * v;
     }
 
     private static int Mod(int a, int b)

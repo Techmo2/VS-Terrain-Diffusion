@@ -56,6 +56,11 @@
     border-radius: 5px; padding: 5px 9px; font: inherit; cursor: pointer;
   }
   button:hover { border-color: var(--accent); }
+  select {
+    background: #262b34; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 6px; font: inherit; width: 100%; margin-top: 8px;
+  }
+  select:hover, select:focus { border-color: var(--accent); outline: none; }
 </style>
 </head>
 <body>
@@ -86,6 +91,9 @@
     <legend>View</legend>
     <button id="fit">Fit to tiles</button>
     <button id="follow">Follow newest</button>
+    <select id="followPlayer" title="Keep the map centred on a player">
+      <option value="">Centre on player…</option>
+    </select>
     <p style="color:var(--dim);margin:8px 0 0;font-size:11px">
       Drag to pan, wheel to zoom. Each tile is one model query, drawn the moment it is generated.
     </p>
@@ -117,6 +125,7 @@ const state = {
   hover: null,
   follow: false,
   newest: null,
+  followPlayer: "",      // name of the player the view stays centred on, or "" for none
 };
 
 const canvas = document.getElementById("map");
@@ -149,6 +158,10 @@ const wetRamp = ramp([
   [0.00, [140, 100,  50]], [0.25, [200, 180, 110]], [0.50, [160, 195, 110]],
   [0.75, [ 60, 150, 110]], [1.00, [ 25,  75, 150]],
 ]);
+// Vegetation cover: bare ground in pale tan through to dense forest in dark green.
+const coverRamp = ramp([
+  [0.00, [214, 200, 160]], [0.35, [150, 175,  95]], [0.70, [ 60, 130,  60]], [1.00, [ 20,  70,  35]],
+]);
 const seasonRamp = ramp([
   [0.00, [ 30,  60,  90]], [0.5, [190, 190, 200]], [1.00, [190,  70, 130]],
 ]);
@@ -168,6 +181,7 @@ const RAMPS = {
   surfaceY: greyRamp, elevation: greyRamp, slope: greyRamp,
   temperature: tempRamp, tempSeasonality: seasonRamp,
   precipitation: wetRamp, precipCv: seasonRamp, rainfall: wetRamp,
+  forest: coverRamp, shrub: coverRamp,
 };
 
 /* ---------- data ---------------------------------------------------------- */
@@ -193,8 +207,44 @@ async function poll() {
   // Separate and best effort: losing the markers should not stop the terrain arriving.
   try {
     const res = await fetch("api/players", { cache: "no-store" });
-    if (res.ok) state.players = await res.json();
+    if (res.ok) {
+      state.players = await res.json();
+      buildPlayerList();
+      if (centreOnPlayer()) draw();
+    }
   } catch (e) { /* leave the last known positions up */ }
+}
+
+/** Keeps the dropdown in step with who is online, holding on to the choice while they are away. */
+function buildPlayerList() {
+  const select = document.getElementById("followPlayer");
+  const names = state.players.map(p => p.name).sort((a, b) => a.localeCompare(b));
+  if (state.followPlayer && !names.includes(state.followPlayer)) names.push(state.followPlayer);
+
+  const wanted = ["", ...names].join("\n");
+  const current = [...select.options].map(o => o.value).join("\n");
+  if (wanted !== current) {
+    select.replaceChildren(new Option("Centre on player…", ""), ...names.map(name => {
+      const online = state.players.some(p => p.name === name);
+      return new Option(online ? name : name + " (offline)", name);
+    }));
+  }
+  select.value = state.followPlayer;
+}
+
+/** Centres the view on the chosen player, if there is one and they are online. */
+function centreOnPlayer() {
+  if (!state.followPlayer) return false;
+  const player = state.players.find(p => p.name === state.followPlayer);
+  if (!player) return false;
+  state.view.x = player.x;
+  state.view.z = player.z;
+  return true;
+}
+
+function stopFollowingPlayer() {
+  state.followPlayer = "";
+  document.getElementById("followPlayer").value = "";
 }
 
 function ingest(view) {
@@ -477,6 +527,7 @@ function fitToTiles() {
 canvas.addEventListener("mousedown", e => {
   state.drag = { cx: e.clientX, cy: e.clientY, x: state.view.x, z: state.view.z };
   state.follow = false;
+  stopFollowingPlayer();
 });
 window.addEventListener("mouseup", () => { state.drag = null; });
 window.addEventListener("mousemove", e => {
@@ -502,10 +553,18 @@ canvas.addEventListener("wheel", e => {
   draw();
 }, { passive: false });
 
-document.getElementById("fit").addEventListener("click", fitToTiles);
+document.getElementById("fit").addEventListener("click", () => {
+  stopFollowingPlayer();
+  fitToTiles();
+});
 document.getElementById("follow").addEventListener("click", () => {
   state.follow = !state.follow;
-  if (state.follow) { centreOnNewest(); draw(); }
+  if (state.follow) { stopFollowingPlayer(); centreOnNewest(); draw(); }
+});
+document.getElementById("followPlayer").addEventListener("change", e => {
+  state.followPlayer = e.target.value;
+  if (state.followPlayer) state.follow = false;
+  if (centreOnPlayer()) draw();
 });
 document.getElementById("autoRange").addEventListener("change", e => {
   state.autoRange = e.target.checked;

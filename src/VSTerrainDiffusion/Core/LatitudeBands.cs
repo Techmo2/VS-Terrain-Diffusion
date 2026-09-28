@@ -204,7 +204,7 @@ public sealed class LatitudeBands : ILatitudeSource
             return new LatitudeBands("off, because the world's latitude has not been set up");
         }
 
-        double blocksPerCoarsePixel = 32.0 * WorldPipelineModelConfig.Instance.LatentCompression * settings.Scale;
+        double blocksPerCoarsePixel = settings.BlocksPerConditioningPixel;
         string status = strength >= 1f
             ? $"on, pole {polarEquatorDistance} blocks from the equator"
             : $"on at {strength:0.##} strength, pole {polarEquatorDistance} blocks from the equator";

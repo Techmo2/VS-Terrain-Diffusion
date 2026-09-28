@@ -28,6 +28,8 @@ public class TerrainDiffusionModSystem : ModSystem
     private GenDiffusionTerra _generator;
     private DiffusionSurface _surface;
     private DebugMapServer _debugMap;
+    private DiffusionForestMapLayer _forestLayer;
+    private DiffusionForestMapLayer _shrubLayer;
     private ChunkColumnGenerationDelegate _installedHandler;
 
     /// <summary>
@@ -228,7 +230,8 @@ public class TerrainDiffusionModSystem : ModSystem
         int port = DiffusionConfig.Instance.DebugMapPort;
         if (port == 0) return;
 
-        var server = new DebugMapServer(_api.Logger, _provider, _settings, _riverBasins, PlayerMarkers);
+        var server = new DebugMapServer(_api.Logger, _provider, _settings, _riverBasins, PlayerMarkers,
+            () => (_forestLayer, _shrubLayer));
         if (server.Start(DiffusionConfig.Instance.DebugMapBindAddress, port)) _debugMap = server;
         else server.Dispose();
     }
@@ -622,6 +625,7 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     private void InstallMapLayers()
     {
+        _forestLayer = _shrubLayer = null;
         WorldMapLayers genMaps = WorldMapLayers.Resolve(_api);
         if (genMaps == null)
         {
@@ -692,10 +696,16 @@ public class TerrainDiffusionModSystem : ModSystem
                   "climate put it.");
 
         WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
-        genMaps.Forest = new DiffusionForestMapLayer(
+
+        // Vanilla's forest layer stays on as the source of clearings. On re-initialisation it may
+        // already be wrapped.
+        MapLayerBase vanillaForest = genMaps.Forest is DiffusionForestMapLayer wrappedForest
+            ? wrappedForest.Clearings
+            : genMaps.Forest;
+        genMaps.Forest = _forestLayer = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 2, _provider, TerraGenConfig.forestMapScale, false,
-            worldGen.ForestDensityMultiplier);
-        genMaps.Bush = new DiffusionForestMapLayer(
+            worldGen.ForestDensityMultiplier, vanillaForest, worldGen.ForestClearings);
+        genMaps.Bush = _shrubLayer = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 3, _provider, TerraGenConfig.shrubMapScale, true,
             worldGen.ShrubDensityMultiplier);
     }

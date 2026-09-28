@@ -545,6 +545,28 @@
       }
     },
     {
+      "code": "WorldGen/ForestClearings",
+      "type": "number",
+      "default": 0.8,
+      "ingui": "setting-WorldGenForestClearings",
+      "comment": "setting-WorldGenForestClearings-hover",
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    {
+      "code": "WorldGen/BaseRenoiseSigma",
+      "type": "number",
+      "default": 0.35,
+      "ingui": "setting-WorldGenBaseRenoiseSigma",
+      "comment": "setting-WorldGenBaseRenoiseSigma-hover",
+      "range": {
+        "min": 0.05,
+        "max": 4.0
+      }
+    },
+    {
       "code": "WorldGen/RescaleBlockLayerAltitudes",
       "type": "boolean",
       "default": true,

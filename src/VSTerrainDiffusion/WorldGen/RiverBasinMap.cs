@@ -41,7 +41,7 @@ public sealed class RiverBasinMap : IRiverBasinSource
 
     public RiverBasinMap(DiffusionWorldSettings settings, ILogger logger)
     {
-        _blocksPerCoarse = 32 * WorldPipelineModelConfig.Instance.LatentCompression * settings.Scale;
+        _blocksPerCoarse = settings.BlocksPerConditioningPixel;
         _originBlockX = settings.OriginBlockX;
         _originBlockZ = settings.OriginBlockZ;
         _logger = logger;

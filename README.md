@@ -47,6 +47,24 @@ and `/worldconfig <code> <value>` changes one later.
 | Resolution               | `terraindiffusionScale`                | 15 m    | Real-world metres per block, horizontally *and* vertically. |
 | Vertical exaggeration    | `terraindiffusionVerticalExaggeration` | 1x      | Multiplies terrain height. 1x is true scale. |
 | Climate                  | `terraindiffusionClimate`              | model   | Whether the model drives climate as well as terrain. |
+| Terrain intensity        | `terraindiffusionCoarsePooling`        | off     | Packs 2x or 4x the landscape into the same distance: ranges, valleys and coasts closer together, relief steeper. |
+| Intensity mode           | `terraindiffusionCoarsePoolMode`       | average | `extreme` keeps each block's highest ground and deepest valley floor: taller peaks, deeper cuts, less realistic. |
+
+Terrain intensity is the reference implementation's `coarse_pooling`: the model's large-scale map is
+drawn as usual and each 2x2 or 4x4 block of it becomes one cell of the world. Measured over nine
+15 km regions, land only:
+
+| Setting | Relief (std) | 95th percentile | Mean grade | 90th percentile grade |
+|---|---|---|---|---|
+| off | 452 m | 1196 m | 17% | 39% |
+| 2x | 376 m | 1124 m | 20% | 46% |
+| 4x | 743 m | 2353 m | 23% | 46% |
+| 2x extreme | 926 m | 2934 m | 57% | 105% |
+| 4x extreme | 1298 m | 4172 m | 54% | 104% |
+
+The world's ocean map is followed as closely at every setting (94-95% of coarse cells at 50%
+landcover); extreme adds a few points of land along coasts. 4x and extreme need a tall world to keep
+their peaks at true scale.
 
 The same tab holds the [inference settings](#inference). `worldGen.climateMode`,
 `worldGen.scaleOverride` and `worldGen.verticalExaggerationOverride` in the mod config override the
@@ -290,8 +308,10 @@ makes the world read as desert. The model's tree moisture goes through its own d
 **Forest and shrub cover** come from the same moisture, scaled by growing season and cut to zero on
 ground too steep for soil. Vanilla's `MapLayerWobbledForest` computes `128 - rain * temp / 65025`,
 a product that never exceeds 1, so its forest density is pure noise with no relation to climate;
-woodland in the foothills and nothing above the treeline are new behaviour. Everything that read
-that map still does, so animals and undergrowth follow the woods.
+woodland in the foothills and nothing above the treeline are new behaviour. That noise is still used
+for the one thing it is good at, patchiness: where vanilla's map is open, the model's tree cover is
+thinned by `forestClearings`, so wet country gets fields and glens instead of one unbroken wood.
+Everything that read that map still does, so animals and undergrowth follow the woods.
 
 **Temperature** is stored as sea-level temperature, and the mod replaces the lapse rate applied on
 read. Vanilla's flat 0.157 °C per block is only right at about 24 m per block and over-cools
@@ -363,7 +383,7 @@ the world closes, so the next world can use a different device without restartin
 | `terraindiffusionDecoderPrecision`       | `fp32`  | `fp32` `fp16` `int8` | Select and automatically fetch only the matching decoder. FP16 is for GPU providers, INT8 for CPU/OpenVINO. Both change newly generated terrain slightly; a missing or invalid selected decoder stops model loading instead of silently changing precision. |
 | `terraindiffusionBasePrecision`          | `fp32`  | `fp32` `fp16` | The base model is most of a tile's work, so FP16 here is the biggest GPU win: on an RTX 3060, TensorRT RTX with FP16 base and decoder generated the same ten regions in 7.6 s against 19.0 s on CUDA FP32, for about 4 m mean elevation difference (CPU vs GPU is already ~2.6 m). Needs a GPU provider. |
 | `terraindiffusionCoarsePrecision`        | `fp32`  | `fp32` `fp16` | Separate because the trade is poor: the coarse sampler runs twenty steps per tile, so FP16 saved 0.3 s and moved elevation a further 2 m on the same bench. |
-| `terraindiffusionGpuUtilizationPercent`  | 80      | 40 – 100     | Share of the time world generation may keep the device busy. Lower it if generating chunks makes the game stutter; see [Stuttering](#stuttering) below. World generation slows by the reciprocal. |
+| `terraindiffusionGpuUtilizationPercent`  | 100     | 40 – 100     | Share of the time world generation may keep the device busy. Lower it if generating chunks makes the game stutter; see [Stuttering](#stuttering) below. World generation slows by the reciprocal. |
 | `terraindiffusionOffloadModels`          | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
 | `terraindiffusionModelLoadMode`          | `file`  | `file` `memory` | Open model graphs from their files, or read them into RAM first (about 1 GB more). |
 | `terraindiffusionValidateModelHashes`    | true    | on / off     | Verify SHA-256 of existing model files on load. Off saves a few seconds of disk read. |
@@ -452,6 +472,8 @@ chunks disagree with old ones.
 | `temperatureOffsetC`             | 0             | -5 – 5       | Degrees added to every model temperature, after the latitude band and the world's global setting. A blunt instrument; prefer the world settings. |
 | `forestDensityMultiplier`        | 1             | 0.7 – 1.5    | Scales the forest cover the model's moisture implies. **Trees on the ground go as the square of this** — see below. |
 | `shrubDensityMultiplier`         | 1             | 0.5 – 2      | Scales shrub cover the same way, and with the same squaring. |
+| `forestClearings`                | 0.8           | 0.5 – 1      | How far vanilla's patchy forest noise opens the model's woods into fields and glens. 0 off, 1 bare clearings. Trees only. |
+| `baseRenoiseSigma`               | 0.35          | 0.2 – 1      | Experimental. How much of the base model's first draw its second step redraws. 0.35 is the author's quality optimum; 0.7–1 varies medium-scale detail (coast shapes, small valleys) by 10–17 m on average without seams. |
 
 **Seasons and surface**
 

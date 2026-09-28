@@ -52,11 +52,11 @@ public sealed class OceanMapLandmask : ILandmaskSource
         _resolveLayer = resolveLayer;
         _logger = logger;
 
-        // A coarse pixel is 256 model pixels across and a model pixel is Scale blocks, so it covers
-        // 256 * Scale blocks - always a whole number of 32-block ocean-map pixels. The model origin
-        // is rounded to a chunk boundary, so the two grids line up exactly and no rounding is
-        // needed anywhere below.
-        int blocksPerCoarse = 32 * WorldPipelineModelConfig.Instance.LatentCompression * settings.Scale;
+        // A conditioning pixel is 256 model pixels across, divided by any coarse pooling, and a
+        // model pixel is Scale blocks - a whole number of 32-block ocean-map pixels for every
+        // setting the world offers. The model origin is rounded to a chunk boundary, so the two
+        // grids line up exactly and no rounding is needed anywhere below.
+        int blocksPerCoarse = settings.BlocksPerConditioningPixel;
         _oceanPixelsPerCoarse = Math.Max(1, blocksPerCoarse / TerraGenConfig.oceanMapScale);
         _originOceanPixelX = settings.OriginBlockX / TerraGenConfig.oceanMapScale;
         _originOceanPixelZ = settings.OriginBlockZ / TerraGenConfig.oceanMapScale;

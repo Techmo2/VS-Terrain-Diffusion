@@ -51,6 +51,12 @@ public sealed class WorldPipeline
 
     private readonly MemoryTileStore _tileStore;
     private readonly int _latentBatchSize;
+    private readonly CoarsePooling _pooling;
+
+    /// <summary>The second latent step's re-noise angle; see <see cref="WorldGenConfig.BaseRenoiseSigma"/>.</summary>
+    private readonly float _renoiseT;
+
+
 
     private readonly InfiniteTensor _coarse;
     private readonly InfiniteTensor _latents;
@@ -81,18 +87,22 @@ public sealed class WorldPipeline
     /// </param>
     public WorldPipeline(ulong seed, PipelineModels models, ILandmaskSource landmask = null,
                          ClimateShift climate = default, ILatitudeSource latitude = null,
-                         IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f)
+                         IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f,
+                         CoarsePooling pooling = default)
     {
+        _pooling = pooling.Factor >= 1 ? pooling : CoarsePooling.None;
         _riverBasins = riverBasins;
         _riverBasinDepth = riverBasinDepth;
 
         _seed = seed;
         _config = WorldPipelineModelConfig.Instance;
 
+        // Pooling is the world's choice (CoarsePooling), not the model's; a model config asking for
+        // it would be pooled twice.
         if (_config.CoarsePooling != 1)
         {
             throw new NotSupportedException(
-                "coarse_pooling=" + _config.CoarsePooling + " is not supported by this pipeline");
+                "coarse_pooling=" + _config.CoarsePooling + " in the model config is not supported by this pipeline");
         }
 
         WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
@@ -135,6 +145,8 @@ public sealed class WorldPipeline
         for (int i = 0; i < _condSnr.Length; i++) _condVals[i] = (float)Math.Log(_condSnr[i] / 8.0);
 
         _mpConcatScales = BuildMpConcatScales();
+
+        _renoiseT = (float)Math.Atan(worldGen.BaseRenoiseSigma / SigmaData);
 
         _coarseModel = models.Coarse;
         _baseModel = models.Base;
@@ -208,7 +220,10 @@ public sealed class WorldPipeline
 
     private InfiniteTensor BuildCoarseStage()
     {
-        const int s = CoarseTileSize, st = CoarseTileStride;
+        // Pooled tiles are generated on the usual grid and written to a map n times smaller, so
+        // window k covers model pixels from k * stride and map pixels from k * stride / n.
+        int n = _pooling.Factor;
+        int s = CoarseTileSize / n, st = CoarseTileStride / n;
         float[] weights = LinearWeightWindow(s);
         var outWindow = new TensorWindow(new[] { 7, s, s }, new[] { 7, st, st });
 
@@ -298,12 +313,48 @@ public sealed class WorldPipeline
         }
         for (int px = 0; px < plane; px++) output[plane + px] = output[px] - output[plane + px];
 
-        var result = new FloatTensor(new[] { 7, s, s });
+        int size = s;
+        if (!_pooling.IsNone)
+        {
+            output = Pool(output, s, _pooling);
+            size = s / _pooling.Factor;
+            plane = size * size;
+        }
+
+        var result = new FloatTensor(new[] { 7, size, size });
         for (int ch = 0; ch < 6; ch++)
             for (int px = 0; px < plane; px++)
                 result.Data[ch * plane + px] = output[ch * plane + px] * weights[px];
         Array.Copy(weights, 0, result.Data, 6 * plane, plane);
         return result;
+    }
+
+    /// <summary>
+    /// Pools a (6, s, s) coarse output to (6, s/n, s/n), as the reference's
+    /// <c>_pool_coarse_conditioning</c>: averages everywhere, or, for an extreme pool, the highest
+    /// elevation and the lowest fifth percentile in each block.
+    /// </summary>
+    private static float[] Pool(float[] input, int s, CoarsePooling pooling)
+    {
+        int n = pooling.Factor, size = s / n, plane = s * s, pooledPlane = size * size;
+        var output = new float[6 * pooledPlane];
+        for (int ch = 0; ch < 6; ch++)
+        {
+            bool max = pooling.Extreme && ch == 0, min = pooling.Extreme && ch == 1;
+            for (int pi = 0; pi < size; pi++)
+            for (int pj = 0; pj < size; pj++)
+            {
+                float acc = max ? float.MinValue : min ? float.MaxValue : 0f;
+                for (int di = 0; di < n; di++)
+                for (int dj = 0; dj < n; dj++)
+                {
+                    float v = input[ch * plane + (pi * n + di) * s + pj * n + dj];
+                    acc = max ? Math.Max(acc, v) : min ? Math.Min(acc, v) : acc + v;
+                }
+                output[ch * pooledPlane + pi * size + pj] = max || min ? acc : acc / (n * n);
+            }
+        }
+        return output;
     }
 
     // =====================================================================
@@ -323,7 +374,7 @@ public sealed class WorldPipeline
             (windowIndices, args) => LatentBatch(windowIndices, null, args[0], initialT, 5819, weights),
             outWindow, new[] { _coarse }, new[] { coarseWindow }, _latentBatchSize);
 
-        float intermediateT = (float)Math.Atan(0.35f / SigmaData);
+        float intermediateT = _renoiseT;
         return _tileStore.GetOrCreateBatched(
             "step_latent_map_0", new int?[] { 6, null, null },
             (windowIndices, args) => LatentBatch(windowIndices, args[0], args[1], intermediateT, 5820, weights),
@@ -447,6 +498,9 @@ public sealed class WorldPipeline
             climateMeans[ch] = float.IsNaN(mean) ? 0f : mean;
         }
 
+        // The conditioning is exact, so noise level 0. The model was trained to accept noisier
+        // conditioning at higher levels, but only up to 0.1 in these units - 0.005 of a standard
+        // deviation - so raising it changes the terrain by about 3 m (measured) and buys nothing.
         float noiseLevelNorm = (0f - 0.5f) * (float)Math.Sqrt(12.0);
 
         var output = new float[58];
@@ -547,7 +601,11 @@ public sealed class WorldPipeline
     /// </summary>
     public float[] CoarseConditioningAt(int i, int j)
     {
-        float[] synthetic = _syntheticMapFactory.Sample(j, i, j + 1, i + 1);
+        // The conditioning is in the coarse model's own grid, n times finer than the world's coarse
+        // cells under pooling; read the pixel at the middle of this cell.
+        int n = _pooling.Factor;
+        int ci = i * n + n / 2, cj = j * n + n / 2;
+        float[] synthetic = _syntheticMapFactory.Sample(cj, ci, cj + 1, ci + 1);
 
         // Channel 0 arrives in signed square-root space, which is not a number anyone can read.
         float e = synthetic[0];
@@ -558,8 +616,13 @@ public sealed class WorldPipeline
     /// <summary>How much of one coarse cell the world's ocean map calls sea, or null without one.</summary>
     public float? SeaFractionAt(int i, int j)
     {
-        float[] sea = _landmask?.SeaFraction(j, i, j + 1, i + 1);
-        return sea is { Length: > 0 } ? sea[0] : null;
+        int n = _pooling.Factor;
+        float[] sea = _landmask?.SeaFraction(j * n, i * n, (j + 1) * n, (i + 1) * n);
+        if (sea is not { Length: > 0 }) return null;
+
+        float sum = 0f;
+        foreach (float v in sea) sum += v;
+        return sum / sea.Length;
     }
 
     public FloatTensor GetCoarseSlice(int ci0, int cj0, int ci1, int cj1)
