@@ -81,6 +81,17 @@
       }
     },
     {
+      "code": "TerrainSamplerHeight",
+      "type": "string",
+      "default": "full",
+      "ingui": "setting-TerrainSamplerHeight",
+      "comment": "setting-TerrainSamplerHeight-hover",
+      "values": [
+        "full",
+        "coarse"
+      ]
+    },
+    {
       "code": "OffloadModels",
       "type": "boolean",
       "default": false,

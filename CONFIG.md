@@ -86,6 +86,14 @@ precision itself; all three precisions default to `fp32`.
   // as long. Changeable while the server runs, with /tdiff gpulimit.
   "GpuUtilizationPercent": 100,
 
+  // How this mod answers Algernon's Terrain Sampler, which other mods use to predict terrain
+  // without generating it: "full" or "coarse". Full builds the model's terrain tile around the
+  // position and matches the generated terrain exactly, but runs the model for ground not generated
+  // yet (~3 s a new tile on an RTX 3060). Coarse answers from the coarse model: under 1 ms, blurred
+  // to about 512 blocks (5 blocks off on average). The first sample in a new 32 km area also pays
+  // for building Rivers' network there (~10 s), either way. Takes effect immediately.
+  "TerrainSamplerHeight": "full",
+
   // Check the SHA-256 of model files that are already on disk at every startup. Turning this off
   // saves a few seconds of hashing per start; file sizes are still checked.
   "ValidateModelHashes": true,

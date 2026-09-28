@@ -93,6 +93,15 @@ public static class ConfigLibCompat
                 return;
             }
 
+            case nameof(DiffusionConfig.TerrainSamplerHeight):
+            {
+                string mode = (tree.GetAsString("value") ?? "full").Trim().ToLowerInvariant();
+                DiffusionConfig.Instance.TerrainSamplerHeight = mode == "coarse" ? "coarse" : "full";
+                logger?.Notification("[{0}] Algernon's Terrain Sampler now gets {1} heights.",
+                    DiffusionPaths.ModId, DiffusionConfig.Instance.TerrainSamplerHeight);
+                return;
+            }
+
             case nameof(DiffusionConfig.VerboseInference):
             {
                 bool verbose = tree.GetAsBool("value", DiffusionConfig.Instance.VerboseInference);

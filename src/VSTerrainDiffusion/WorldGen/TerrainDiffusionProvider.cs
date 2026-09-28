@@ -1319,12 +1319,6 @@ public sealed class TerrainDiffusionProvider : IDisposable
     /// </summary>
     public bool IsCoarseSea(int blockX, int blockZ)
     {
-        int scale = Math.Max(1, _settings.Scale);
-        double ci = (double)(blockZ - _settings.OriginBlockZ) / scale / CoarseCellNativePixels - 0.5;
-        double cj = (double)(blockX - _settings.OriginBlockX) / scale / CoarseCellNativePixels - 0.5;
-        int i0 = (int)Math.Floor(ci), j0 = (int)Math.Floor(cj);
-        double fi = ci - i0, fj = cj - j0;
-
         lock (_seaGate)
         {
             using IDisposable noPreemption = InferencePreemption.Suspend();
@@ -1334,18 +1328,75 @@ public sealed class TerrainDiffusionProvider : IDisposable
                 _riverFreePipeline = new WorldPipeline(_seed, _models.WithCoarse(_riverFreeCoarse), _landmask,
                                                        _settings.Climate, _settings.Latitude);
             }
-
-            // Channel 0 is the blended elevation and channel 6 the blend weight it is divided by.
-            float[] data = _riverFreePipeline.GetCoarseSlice(i0, j0, i0 + 2, j0 + 2).Data;
-            double Cell(int r, int c)
-            {
-                int k = r * 2 + c;
-                return data[4 * 6 + k] > 1e-6f ? data[k] / data[4 * 6 + k] : 0.0;
-            }
-            double elevation = (1 - fi) * ((1 - fj) * Cell(0, 0) + fj * Cell(0, 1)) +
-                               fi * ((1 - fj) * Cell(1, 0) + fj * Cell(1, 1));
-            return elevation < 0.0;
+            return CoarseElevationRoot(_riverFreePipeline, blockX, blockZ) < 0.0;
         }
+    }
+
+    /// <summary>
+    /// A pipeline's coarse elevation at a block position, in the model's own signed-square-root
+    /// units, interpolated between the four cells around it. The caller holds whatever guards
+    /// <paramref name="pipeline"/>.
+    /// </summary>
+    private double CoarseElevationRoot(WorldPipeline pipeline, int blockX, int blockZ)
+    {
+        int scale = Math.Max(1, _settings.Scale);
+        double ci = (double)(blockZ - _settings.OriginBlockZ) / scale / CoarseCellNativePixels - 0.5;
+        double cj = (double)(blockX - _settings.OriginBlockX) / scale / CoarseCellNativePixels - 0.5;
+        int i0 = (int)Math.Floor(ci), j0 = (int)Math.Floor(cj);
+        double fi = ci - i0, fj = cj - j0;
+
+        // Channel 0 is the blended elevation and channel 6 the blend weight it is divided by.
+        float[] data = pipeline.GetCoarseSlice(i0, j0, i0 + 2, j0 + 2).Data;
+        double Cell(int r, int c)
+        {
+            int k = r * 2 + c;
+            return data[4 * 6 + k] > 1e-6f ? data[k] / data[4 * 6 + k] : 0.0;
+        }
+        return (1 - fi) * ((1 - fj) * Cell(0, 0) + fj * Cell(0, 1)) +
+               fi * ((1 - fj) * Cell(1, 0) + fj * Cell(1, 1));
+    }
+
+    /// <summary>
+    /// The top solid block this mod builds a column to, for mods that predict terrain without
+    /// generating it (see <see cref="TerrainSamplerCompat"/>): the model's surface, brought
+    /// down into Rivers' valley and channel exactly as <see cref="GenDiffusionTerra"/> does. Only the
+    /// smoothing against chunks that already exist is left out, since a prediction is of fresh
+    /// terrain.
+    ///
+    /// <paramref name="coarse"/> answers from the coarse model instead of the terrain tile: blurred
+    /// to one coarse cell, 512 blocks at the default scale, but it never runs the base model or the
+    /// decoder, which is what a tile costs for ground not yet generated.
+    /// </summary>
+    public int SampleSurfaceY(int blockX, int blockZ, bool coarse)
+    {
+        int y;
+        if (coarse)
+        {
+            double root;
+            _scheduler.Enter();
+            try
+            {
+                root = CoarseElevationRoot(_pipeline, blockX, blockZ);
+            }
+            finally
+            {
+                _scheduler.Exit();
+            }
+            y = _settings.ElevationToBlockY((float)(Math.Sign(root) * root * root));
+        }
+        else
+        {
+            TerrainTile tile = GetTileAt(blockX, blockZ);
+            y = tile.SurfaceY[tile.Index(blockX - tile.BlockX, blockZ - tile.BlockZ)];
+        }
+
+        int seaLevel = _settings.SeaLevel, mapSizeY = _settings.MapSizeY;
+        if (RiversCompat.Installed && RiversCompat.SampleAt(blockX, blockZ) is { } river)
+        {
+            y = Math.Clamp(RiversCompat.ValleyHeight(y, river, blockX, blockZ, seaLevel), 1, mapSizeY - 2);
+            if (river.Distance <= 0.0) y = Math.Min(y, RiversCompat.ChannelFloorY(river, seaLevel, mapSizeY));
+        }
+        return Math.Clamp(y, 1, mapSizeY - 2);
     }
 
     public void Dispose()

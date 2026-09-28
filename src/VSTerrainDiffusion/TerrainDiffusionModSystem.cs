@@ -151,6 +151,7 @@ public class TerrainDiffusionModSystem : ModSystem
 
         // Before anything builds a Rivers region, which the spawn search below is the first to do.
         if (RiversCompat.Installed) RiversCompat.UseModelSea(_provider.IsCoarseSea);
+        TerrainSamplerCompat.Install(_api, _provider);
 
         // The spawn search can run before the height mapping is settled - and it should, because
         // the survey wants to be centred on where people will actually play.
@@ -1266,6 +1267,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _debugMap = null;
         WatershedsCompat.Uninstall();
         RiversCompat.Uninstall();
+        TerrainSamplerCompat.Uninstall();
         SurfaceClimateCompat.Uninstall();
         TranslocatorSearchCompat.Uninstall();
         ClimateScale.Uninstall();

@@ -277,6 +277,45 @@ public static class RiversCompat
     public static double MaxValleyWidth => _maxValleyWidth;
 
     /// <summary>
+    /// The river sample at one column, asked of the network without generating anything, or null
+    /// when it cannot say. It is the same <c>SampleRiver</c> call <see cref="SamplesForChunk"/> makes
+    /// for every column of a chunk, minus the flow data that call writes into the chunk.
+    /// </summary>
+    public static Sample? SampleAt(int worldX, int worldZ)
+    {
+        if (ChunkContext(worldX >> 5, worldZ >> 5) is not object[] { Length: 2 } parts) return null;
+
+        try
+        {
+            object sample = _sampleRiver.Invoke(null, new[] { worldX, worldZ, parts[1], parts[0] });
+            return sample == null ? null : new Sample(_riverDistance(sample), _bankFactor(sample));
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The model's ground height at a column brought down into the river valley, if it is in one.
+    ///
+    /// A river sits just above sea level wherever it runs, so the ground has to come down to meet
+    /// it. Outside the valley the weight is 1 and the model's own landscape is untouched.
+    ///
+    /// Only ever downwards. Ground already below the valley floor is sea bed, and pulling it
+    /// *towards* the floor raises it: that walled every river mouth off from the ocean with a bar of
+    /// sand at exactly sea level, a valley's width wide, and left the river ending in a lagoon.
+    /// </summary>
+    public static int ValleyHeight(int y, in Sample sample, int worldX, int worldZ, int seaLevel)
+    {
+        int valleyFloorY = ValleyFloorY(seaLevel);
+        if (!sample.InValley(MaxValleyWidth) || y <= valleyFloorY) return y;
+
+        float keep = ModelWeight(sample, worldX, worldZ);
+        return (int)Math.Round(valleyFloorY + (y - valleyFloorY) * keep);
+    }
+
+    /// <summary>
     /// How much of the model's own height survives at a column, from 0 in the channel to 1 outside
     /// the valley.
     ///

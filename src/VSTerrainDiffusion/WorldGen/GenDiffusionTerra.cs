@@ -76,7 +76,6 @@ public sealed class GenDiffusionTerra
         // writes the flow vectors and river distances its boats and rendering read back, so it has
         // to happen for every chunk, not only the ones a river runs through.
         Array riverSamples = RiversCompat.SamplesForChunk(chunkX, chunkZ, chunks);
-        int valleyFloorY = riverSamples == null ? 0 : RiversCompat.ValleyFloorY(_seaLevel);
         RiversCompat.Sample[] riverColumn = riverSamples == null ? null : new RiversCompat.Sample[1024];
 
         // The lowest river bed in this chunk. The bulk fill below cannot look at individual
@@ -108,20 +107,7 @@ public sealed class GenDiffusionTerra
                 {
                     RiversCompat.Sample sample = RiversCompat.At(riverSamples, index2d);
                     riverColumn[index2d] = sample;
-
-                    // A river sits just above sea level wherever it runs, so the ground has to come
-                    // down to meet it. Outside the valley the weight is 1 and the model's own
-                    // landscape is untouched.
-                    //
-                    // Only ever downwards. Ground already below the valley floor is sea bed, and
-                    // pulling it *towards* the floor raises it: that walled every river mouth off
-                    // from the ocean with a bar of sand at exactly sea level, a valley's width
-                    // wide, and left the river ending in a lagoon.
-                    if (sample.InValley(RiversCompat.MaxValleyWidth) && y > valleyFloorY)
-                    {
-                        float keep = RiversCompat.ModelWeight(sample, worldX, worldZ);
-                        y = (int)Math.Round(valleyFloorY + (y - valleyFloorY) * keep);
-                    }
+                    y = RiversCompat.ValleyHeight(y, sample, worldX, worldZ, _seaLevel);
 
                     if (sample.Distance <= 0.0)
                     {

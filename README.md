@@ -194,6 +194,11 @@ and starts each river in open sea, so rivers reach the water (95% within their f
 against 75% from the map). Rivers caches each world's zones under `RiverCache/`, so a world keeps
 the coast its rivers were first routed from.
 
+**Algernon's Terrain Sampler** answers other mods' height questions from the model instead of its
+own copy of vanilla's terrain: exactly what gets generated in `full` mode, or a blurred coarse-model
+answer in `coarse` mode (`terrainSamplerHeight`). Its climate and vegetation already come from this
+mod's map layers.
+
 A mod that *replaces terrain generation itself* cannot layer with this one: two generators filling
 the same column give the union of both landscapes. So whoever generates terrain gets handed the
 model's heights and does the filling.

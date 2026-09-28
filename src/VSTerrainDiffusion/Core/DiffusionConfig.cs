@@ -119,6 +119,14 @@ public class DiffusionConfig
     public int DebugMapHistoryTiles { get; set; } = 2048;
 
     /// <summary>
+    /// How this mod answers Algernon's Terrain Sampler, which other mods use to predict terrain
+    /// without generating it. "full" builds the model's terrain tile around the position: exact, but
+    /// a model run for any ground not generated yet. "coarse" answers from the coarse model alone,
+    /// blurred to about 512 blocks but far cheaper. Takes effect immediately.
+    /// </summary>
+    public string TerrainSamplerHeight { get; set; } = "full";
+
+    /// <summary>
     /// World shaping and climate. Unlike the rest of this file these change what the world looks
     /// like, so editing them after a world has been explored will make new chunks disagree with old
     /// ones.
@@ -192,6 +200,9 @@ public class DiffusionConfig
         // that is unknown or cannot run on this machine is refused by InferenceCompatibility, because
         // quietly substituting another would change the terrain without the player choosing it.
         InferenceDevice = NormalizeDevice(InferenceDevice);
+
+        TerrainSamplerHeight = (TerrainSamplerHeight ?? "full").Trim().ToLowerInvariant();
+        if (TerrainSamplerHeight != "coarse") TerrainSamplerHeight = "full";
 
         ModelLoadMode = (ModelLoadMode ?? "auto").Trim().ToLowerInvariant();
         switch (ModelLoadMode)
