@@ -149,6 +149,9 @@ public class TerrainDiffusionModSystem : ModSystem
             WorldSeed(), models, _settings, _api.Logger, BuildLandmask(),
             _riverBasins, DiffusionConfig.Instance.WorldGen.RiverBasinDepth);
 
+        // Before anything builds a Rivers region, which the spawn search below is the first to do.
+        if (RiversCompat.Installed) RiversCompat.UseModelSea(_provider.IsCoarseSea);
+
         // The spawn search can run before the height mapping is settled - and it should, because
         // the survey wants to be centred on where people will actually play.
         TerrainDiffusionProvider.SpawnCandidate? spawn = FindSpawn();

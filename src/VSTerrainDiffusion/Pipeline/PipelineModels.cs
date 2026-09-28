@@ -28,6 +28,14 @@ public sealed class PipelineModels : IDisposable
 
     private PipelineModels() { }
 
+    /// <summary>
+    /// These models with a coarse model of its own, for a pipeline that only ever runs the coarse
+    /// stage alongside another. The shared models are not owned by the copy: dispose
+    /// <paramref name="coarse"/> separately, never the copy.
+    /// </summary>
+    internal PipelineModels WithCoarse(IModelRunner coarse) =>
+        new() { Coarse = coarse, Base = Base, Decoder = Decoder };
+
     /// <summary>True once the models are resident and ready to run.</summary>
     public static bool IsReady => _instance != null;
 

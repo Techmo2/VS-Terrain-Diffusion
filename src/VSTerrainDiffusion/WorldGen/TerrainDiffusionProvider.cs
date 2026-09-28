@@ -91,6 +91,14 @@ public sealed class TerrainDiffusionProvider : IDisposable
     }
 
     private readonly WorldPipeline _pipeline;
+
+    // Everything needed to build the river-free coarse pipeline behind IsCoarseSea, on first use.
+    private readonly ulong _seed;
+    private readonly PipelineModels _models;
+    private readonly ILandmaskSource _landmask;
+    private readonly object _seaGate = new();
+    private WorldPipeline _riverFreePipeline;
+    private IModelRunner _riverFreeCoarse;
     private readonly DiffusionWorldSettings _settings;
     private readonly ILogger _logger;
     private readonly int _tileSize;
@@ -242,6 +250,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
     {
         _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude,
                                       riverBasins, riverBasinDepth);
+        _seed = seed;
+        _models = models;
+        _landmask = landmask;
         _settings = settings;
         _logger = logger;
         int configuredTileSize = DiffusionConfig.Instance.TerrainTileSizeBlocks;
@@ -1289,9 +1300,63 @@ public sealed class TerrainDiffusionProvider : IDisposable
         return q;
     }
 
+    /// <summary>
+    /// Whether the coarse model puts sea at a block position, for Rivers to route from in place of
+    /// the world's ocean map. The model follows that map only to within a coarse cell and sometimes
+    /// overrides it outright, so rivers routed from the map end on the model's dry land.
+    ///
+    /// Answered by a second pipeline that is conditioned on everything the main one is except the
+    /// river basins, because the basins come from the very network this is building. They only ever
+    /// lower land towards sea level and never past it, so which side of the coast a place is on
+    /// comes out the same. The pipeline has a coarse model of its own and a lock of its own, and
+    /// does not take the scheduler: Rivers builds a region inside a lock while the main pipeline can
+    /// be waiting on that region with the scheduler held, and a shared model or the scheduler here
+    /// would deadlock the two. Its work is not abandoned by preemption either, since Rivers keeps a
+    /// failure for the life of the region.
+    ///
+    /// The coarse elevation is interpolated between the four cells around the position, in the
+    /// model's own square-root units, so each Rivers zone - half a cell - gets its own answer.
+    /// </summary>
+    public bool IsCoarseSea(int blockX, int blockZ)
+    {
+        int scale = Math.Max(1, _settings.Scale);
+        double ci = (double)(blockZ - _settings.OriginBlockZ) / scale / CoarseCellNativePixels - 0.5;
+        double cj = (double)(blockX - _settings.OriginBlockX) / scale / CoarseCellNativePixels - 0.5;
+        int i0 = (int)Math.Floor(ci), j0 = (int)Math.Floor(cj);
+        double fi = ci - i0, fj = cj - j0;
+
+        lock (_seaGate)
+        {
+            using IDisposable noPreemption = InferencePreemption.Suspend();
+            if (_riverFreePipeline == null)
+            {
+                _riverFreeCoarse = new OnnxModel(ModelAssetManager.ResolveCoarsePath(_logger), "coarse", _logger);
+                _riverFreePipeline = new WorldPipeline(_seed, _models.WithCoarse(_riverFreeCoarse), _landmask,
+                                                       _settings.Climate, _settings.Latitude);
+            }
+
+            // Channel 0 is the blended elevation and channel 6 the blend weight it is divided by.
+            float[] data = _riverFreePipeline.GetCoarseSlice(i0, j0, i0 + 2, j0 + 2).Data;
+            double Cell(int r, int c)
+            {
+                int k = r * 2 + c;
+                return data[4 * 6 + k] > 1e-6f ? data[k] / data[4 * 6 + k] : 0.0;
+            }
+            double elevation = (1 - fi) * ((1 - fj) * Cell(0, 0) + fj * Cell(0, 1)) +
+                               fi * ((1 - fj) * Cell(1, 0) + fj * Cell(1, 1));
+            return elevation < 0.0;
+        }
+    }
+
     public void Dispose()
     {
         _tiles.Clear();
         _scheduler.Dispose();
+        lock (_seaGate)
+        {
+            _riverFreeCoarse?.Dispose();
+            _riverFreeCoarse = null;
+            _riverFreePipeline = null;
+        }
     }
 }

@@ -53,8 +53,27 @@ public static class InferencePreemption
         if (_current is { IsPreempted: true }) throw new InferencePreemptedException();
     }
 
+    /// <summary>
+    /// Stops this thread's current attempt from being abandoned until the scope ends, then restores
+    /// it. For work nested inside an attempt that must not be interrupted part way: its caller
+    /// would keep the failure, not retry it.
+    /// </summary>
+    public static IDisposable Suspend()
+    {
+        var restore = new Restore(_current);
+        _current = null;
+        return restore;
+    }
+
     private sealed class Scope : IDisposable
     {
         public void Dispose() => _current = null;
+    }
+
+    private sealed class Restore : IDisposable
+    {
+        private readonly PreemptionToken _saved;
+        public Restore(PreemptionToken saved) => _saved = saved;
+        public void Dispose() => _current = _saved;
     }
 }

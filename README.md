@@ -189,6 +189,11 @@ Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whate
 Mods that only supply a map — Continental World's ocean map, for instance — need nothing special:
 the mod reads whatever map is installed and conditions the model on it.
 
+**sneeze's Rivers** routes its rivers from the coast the model actually draws, not the ocean map,
+and starts each river in open sea, so rivers reach the water (95% within their first three nodes,
+against 75% from the map). Rivers caches each world's zones under `RiverCache/`, so a world keeps
+the coast its rivers were first routed from.
+
 A mod that *replaces terrain generation itself* cannot layer with this one: two generators filling
 the same column give the union of both landscapes. So whoever generates terrain gets handed the
 model's heights and does the filling.
