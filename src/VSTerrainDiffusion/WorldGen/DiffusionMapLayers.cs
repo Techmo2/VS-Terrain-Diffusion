@@ -129,7 +129,14 @@ public sealed class DiffusionClimateMapLayer : DiffusionMapLayer
         // Climate is read at whatever surface is exposed to the sky, which over water is the sea
         // surface rather than the sea bed. Measuring from a sea bed hundreds of blocks down would
         // make every ocean read tens of degrees too warm at sea level.
-        int surfaceY = Math.Max(tile.SurfaceY[index], _seaLevel - 1);
+        //
+        // And at the ground as built, not as the model drew it. Rivers pulls its valleys down to
+        // sea level wherever they run, through mountains too; taking the model's surface back to
+        // sea level from the height the valley was carved out of stored the whole mountain's lapse
+        // as warmth, and the river bed - which is at sea level - read it all back: 29 C in a canyon
+        // whose model temperature is 11 C. From the built height, the bed gets the model's own
+        // temperature and the valley walls warm only by as much as they were lowered.
+        int surfaceY = Math.Max(Provider.BuiltSurfaceY(tile.SurfaceY[index], blockX, blockZ), _seaLevel - 1);
         int distanceToSeaLevel = surfaceY - _seaLevel;
 
         // The world's global temperature setting and the config's offset are already in the tile.

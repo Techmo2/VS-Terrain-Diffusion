@@ -1390,6 +1390,17 @@ public sealed class TerrainDiffusionProvider : IDisposable
             y = tile.SurfaceY[tile.Index(blockX - tile.BlockX, blockZ - tile.BlockZ)];
         }
 
+        return BuiltSurfaceY(y, blockX, blockZ);
+    }
+
+    /// <summary>
+    /// The model's surface <paramref name="modelY"/> at a column, brought down into Rivers' valley
+    /// and channel as <see cref="GenDiffusionTerra"/> builds it: the ground the world actually has
+    /// there. The model surface itself outside a river valley, or without Rivers.
+    /// </summary>
+    public int BuiltSurfaceY(int modelY, int blockX, int blockZ)
+    {
+        int y = modelY;
         int seaLevel = _settings.SeaLevel, mapSizeY = _settings.MapSizeY;
         if (RiversCompat.Installed && RiversCompat.SampleAt(blockX, blockZ) is { } river)
         {
