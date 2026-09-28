@@ -46,11 +46,17 @@ public static class InferenceThrottle
         get => _percent;
         set
         {
-            int clamped = value < 5 ? 5 : value > 100 ? 100 : value;
+            int clamped = Clamp(value);
             _percent = clamped;
             if (clamped >= 100) Interlocked.Exchange(ref _debtTicks, 0);
         }
     }
+
+    /// <summary>
+    /// 5 to 100. Below about a twentieth the idle windows are longer than the pauses they are meant
+    /// to prevent, and world generation stops keeping up with a walking player.
+    /// </summary>
+    public static int Clamp(int percent) => percent < 5 ? 5 : percent > 100 ? 100 : percent;
 
     public static bool IsLimiting => _percent < 100;
 

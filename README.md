@@ -37,17 +37,20 @@ download, and `Logs/server-main.log` has the detail.
 
 ## Creating a world
 
-Settings added by this mod:
+The mod adds a **Terrain Diffusion** tab to the Customize screen. Each setting is saved with the
+world; a dedicated server sets them under `WorldConfig.WorldConfiguration` in `serverconfig.json`,
+and `/worldconfig <code> <value>` changes one later.
 
-| Setting                  | Default | What it does                                                         |
-| ------------------------ | ------- | -------------------------------------------------------------------- |
-| Terrain diffusion        | on      | Turn off to fall back to vanilla terrain, keeping the mod installed.  |
-| Diffusion resolution     | 15 m    | Real-world metres per block, horizontally *and* vertically.           |
-| Vertical exaggeration    | 1x      | Multiplies terrain height. 1x is true scale.                          |
-| Diffusion climate        | on      | Whether the model drives climate as well as terrain.                  |
+| Setting                  | Code                                   | Default | What it does |
+| ------------------------ | -------------------------------------- | ------- | ------------ |
+| Terrain Diffusion        | `terraindiffusionEnabled`              | on      | Turn off to fall back to vanilla terrain, keeping the mod installed. |
+| Resolution               | `terraindiffusionScale`                | 15 m    | Real-world metres per block, horizontally *and* vertically. |
+| Vertical exaggeration    | `terraindiffusionVerticalExaggeration` | 1x      | Multiplies terrain height. 1x is true scale. |
+| Climate                  | `terraindiffusionClimate`              | model   | Whether the model drives climate as well as terrain. |
 
-A dedicated server has no world-creation screen, so these are also reachable from the mod config as
-`worldGen.climateMode`, `worldGen.scaleOverride` and `worldGen.verticalExaggerationOverride`.
+The same tab holds the [inference settings](#inference). `worldGen.climateMode`,
+`worldGen.scaleOverride` and `worldGen.verticalExaggerationOverride` in the mod config override the
+first three on every world.
 
 Vanilla settings, and what becomes of them:
 
@@ -314,7 +317,7 @@ sent to clients. A vanilla client falls back to vanilla's seasons for display.
 | Subcommand           | What it shows                                                          |
 | -------------------- | ---------------------------------------------------------------------- |
 | `status`             | Device, world scaling, tiles generated, average tile time, and where that time went: total model inference, its share of tile time, and a per-stage breakdown. A low inference share means something other than the GPU is the bottleneck. |
-| `gpulimit [percent]` | The share of the time inference is allowed to keep the device busy, and how much has been given up to the limit so far. With a percentage, sets it there and now, and saves it. |
+| `gpulimit [percent]` | The share of the time inference is allowed to keep the device busy, and how much has been given up to the limit so far. With a percentage, sets it there and now, and saves it to the world. |
 | `map`                | The debug map's address, and how many tiles it is holding. |
 | `here`               | Elevation, slope, full bioclimate and derived cover where you stand, plus the latitude diagnostics below. |
 | `season <x> <z>`     | The same diagnostics at a position, and the year's temperature and rainfall cycle there. Usable from a server console, where `here` is not. |
@@ -341,26 +344,35 @@ default file with a comment on every field; the tables below are the short versi
 Optional: [ConfigLib](https://mods.vintagestory.at/configlib) gives the same settings an in-game
 screen, editing this file in place rather than keeping a copy.
 
-`gpuUtilizationPercent` and `verboseInference` take effect on save; everything else is read when the
-world generator starts, so it needs a restart. **Useful range** below is where a setting does
+`verboseInference` takes effect on save; everything else is read when the world generator starts,
+so it needs a restart. **Useful range** below is where a setting does
 something sensible, not where it is legal — CONFIG.md lists the hard limits.
 
 ### Inference
 
-Machine settings. Keep `inferenceDevice` and the three precision settings fixed after exploring a world:
-changing either can make newly generated terrain disagree slightly with existing chunks.
+World settings, in the Terrain Diffusion tab (see [Creating a world](#creating-a-world)). The
+Customize screen lists every device and precision; one this machine cannot run stops the world from
+loading, naming the ones it can. Keep the device and the three precisions fixed after exploring a
+world: changing any of them can make newly generated terrain disagree slightly with existing chunks.
+Each world loads the runtime for its device in a worker process of its own, which exits when
+the world closes, so the next world can use a different device without restarting the game.
+
+| Code                                     | Default | Useful range | Meaning                                 |
+| ---------------------------------------- | ------- | ------------ | ---------------------------------------- |
+| `terraindiffusionInferenceDevice`        | `auto`  | `auto` `cpu` `openvino` `cuda` `tensorrt-rtx` `directml` `coreml` | OpenVINO and TensorRT RTX are opt-in. OpenVINO, on 64-bit Linux, accelerates the decoder while leaving the large stages on ORT CPU. TensorRT RTX needs a GeForce RTX 30xx or newer on 64-bit Windows or Linux, fetches the NVIDIA runtime once (105 MB on Windows, 140 MB on Linux) and builds a cached engine per model; it is about 1.5x faster than CUDA on the same FP32 models and 2.4x with FP16. A compatible device whose runtime cannot be prepared runs that session on what `auto` would pick, or ORT CPU, and is logged; the setting is never changed. Only what the selected provider needs is fetched: TensorRT RTX skips the CUDA provider library it never loads, and `cuda` on Windows pulls the cuBLAS/cuFFT/NVRTC/cuDNN libraries it links against (~1 GB, once) only if no CUDA toolkit and cuDNN are installed; Linux and macOS use the system CUDA install. |
+| `terraindiffusionDecoderPrecision`       | `fp32`  | `fp32` `fp16` `int8` | Select and automatically fetch only the matching decoder. FP16 is for GPU providers, INT8 for CPU/OpenVINO. Both change newly generated terrain slightly; a missing or invalid selected decoder stops model loading instead of silently changing precision. |
+| `terraindiffusionBasePrecision`          | `fp32`  | `fp32` `fp16` | The base model is most of a tile's work, so FP16 here is the biggest GPU win: on an RTX 3060, TensorRT RTX with FP16 base and decoder generated the same ten regions in 7.6 s against 19.0 s on CUDA FP32, for about 4 m mean elevation difference (CPU vs GPU is already ~2.6 m). Needs a GPU provider. |
+| `terraindiffusionCoarsePrecision`        | `fp32`  | `fp32` `fp16` | Separate because the trade is poor: the coarse sampler runs twenty steps per tile, so FP16 saved 0.3 s and moved elevation a further 2 m on the same bench. |
+| `terraindiffusionGpuUtilizationPercent`  | 80      | 40 – 100     | Share of the time world generation may keep the device busy. Lower it if generating chunks makes the game stutter; see [Stuttering](#stuttering) below. World generation slows by the reciprocal. |
+| `terraindiffusionOffloadModels`          | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
+| `terraindiffusionModelLoadMode`          | `file`  | `file` `memory` | Open model graphs from their files, or read them into RAM first (about 1 GB more). |
+| `terraindiffusionValidateModelHashes`    | true    | on / off     | Verify SHA-256 of existing model files on load. Off saves a few seconds of disk read. |
+| `terraindiffusionDownloadRuntime`        | true    | on / off     | Fetch the ONNX Runtime and, when selected, OpenVINO native libraries automatically. On 64-bit Windows this includes the Visual C++ runtime (6.8 MB, from Microsoft) when the machine's own is missing or older than 14.39. |
+
+Machine settings, in the mod config:
 
 | Key                          | Default | Useful range | Meaning                                 |
 | ---------------------------- | ------- | ------------ | ---------------------------------------- |
-| `inferenceDevice`            | `auto`  | `auto` `cpu` `openvino` `cuda` `tensorrt-rtx` `directml` `coreml` | OpenVINO and TensorRT RTX are opt-in. OpenVINO, on 64-bit Linux, accelerates the decoder while leaving the large stages on ORT CPU. TensorRT RTX needs a GeForce RTX 30xx or newer on 64-bit Windows or Linux, fetches the NVIDIA runtime once (105 MB on Windows, 140 MB on Linux) and builds a cached engine per model; it is about 1.5x faster than CUDA on the same FP32 models and 2.4x with FP16. Only devices this machine can run are offered in ConfigLib; one it cannot run stops the game at startup. A compatible device whose runtime cannot be prepared runs that session on what `auto` would pick, or ORT CPU, and is logged; the config is never changed. Only what the selected provider needs is fetched: TensorRT RTX skips the CUDA provider library it never loads, and `cuda` on Windows pulls the cuBLAS/cuFFT/NVRTC/cuDNN libraries it links against (~1 GB, once) only if no CUDA toolkit and cuDNN are installed; Linux and macOS use the system CUDA install. |
-| `modelLoadMode`              | `auto`  | `auto` `memory` `file` | Load model graphs from RAM or their optimised files. Auto uses files for CPU and memory-constrained hosts. |
-| `offloadModels`              | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
-| `gpuUtilizationPercent`      | 100     | 40 – 100     | Share of the time world generation may keep the device busy. Lower it if generating chunks makes the game stutter; see [Stuttering](#stuttering) below. World generation slows by the reciprocal. |
-| `validateModelHashes`        | true    | on / off     | Verify SHA-256 of existing model files on startup. Off saves a few seconds of disk read. |
-| `downloadRuntime`            | true    | on / off     | Fetch the ONNX Runtime and, when selected, OpenVINO native libraries automatically. On 64-bit Windows this includes the Visual C++ runtime (6.8 MB, from Microsoft) when the machine's own is missing or older than 14.39. |
-| `decoderPrecision`           | `fp32`  | `fp32` `fp16` `int8` | Select and automatically fetch only the matching decoder. FP16 is for GPU providers, INT8 for CPU/OpenVINO. Both are opt-in and change newly generated terrain slightly; a missing or invalid selected decoder stops model loading instead of silently changing precision. |
-| `basePrecision`              | `fp32`  | `fp32` `fp16` | The base model is most of a tile's work, so FP16 here is the biggest GPU win: on an RTX 3060, TensorRT RTX with FP16 base and decoder generated the same ten regions in 7.6 s against 19.0 s on CUDA FP32, for about 4 m mean elevation difference (CPU vs GPU is already ~2.6 m). Needs a GPU provider; on CPU it is slower than FP32 and still changes terrain. |
-| `coarsePrecision`            | `fp32`  | `fp32` `fp16` | Separate because the trade is poor: the coarse sampler runs twenty steps per tile, so FP16 saved 0.3 s and moved elevation a further 2 m on the same bench. |
 | `tileCacheMegabytes`         | 256     | 128 – 1024   | Total decoded tensor-window cache across all pipeline stages. |
 | `latentBatchSize`            | 0       | 0 – 4        | Latent windows per base-model call. Zero chooses 1 on CPU and 4 on GPU. |
 | `terrainTileCacheMegabytes`  | 256     | 128 – 1024   | Finished terrain tiles. Raise if you see thrash warnings. |
@@ -376,15 +388,15 @@ In single player the model shares the GPU with the renderer, and a submitted gra
 completion, so a burst of chunk generation reads as a freeze even though the game thread is not
 blocked.
 
-`gpuUtilizationPercent` below 100 idles the generator after each run, so the renderer gets regular
+`terraindiffusionGpuUtilizationPercent` below 100 idles the generator after each run, so the renderer gets regular
 windows. It cannot shorten an individual run, and world generation slows by the reciprocal: at 50% a
 tile takes about twice as long. Measured on a 6 GB laptop card at 40%, a tile went from 142 ms to
 323 ms, and total inference time rose 14.7 s to 16.5 s because a card that keeps going idle drops
 its clocks.
 
 Start at 50 and go down only as far as the stutter needs; too low and generation cannot keep up with
-a walking player. `/tdiff gpulimit <percent>` changes it without a restart. On a dedicated server
-leave it at 100 unless you want the card for something else.
+a walking player. `/tdiff gpulimit <percent>` changes it without a restart and saves it to the
+world. On a dedicated server set it to 100 unless you want the card for something else.
 
 #### Debug map
 
@@ -432,7 +444,7 @@ chunks disagree with old ones.
 
 | Key                              | Default       | Useful range | Meaning                                  |
 | -------------------------------- | ------------- | ------------ | ----------------------------------------- |
-| `climateMode`                    | `""`          | `""` `"full"` `"off"` | Overrides the world's "Diffusion climate" setting. Empty uses it. |
+| `climateMode`                    | `""`          | `""` `"full"` `"off"` | Overrides the world's "Climate" setting. Empty uses it. |
 | `rainfallBasis`                  | `"moisture"`  | `"moisture"` `"precipitation"` | What the game's rainfall byte is quantile-mapped from: the model's aridity-derived tree moisture, or raw millimetres. |
 | `moistureMedian` / `moistureSpread` | 0.62 / 1.0 | 0.4 – 0.9 / 0.7 – 1.4 | Log-normal fit to the model's tree moisture over land. Raising the median makes the whole world read wetter to the game's biome thresholds; raising the spread pushes deserts and rainforests further apart. |
 | `rainfallMedianMm` / `rainfallSpread` | 540 / 0.8 | 300 – 900 / 0.6 – 1.2 | The same for `"precipitation"` basis. |

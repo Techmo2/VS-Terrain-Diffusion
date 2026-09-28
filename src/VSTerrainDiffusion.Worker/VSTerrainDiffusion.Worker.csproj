@@ -1,18 +1,29 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The mod's worker processes: ONNX Runtime for one game, and the OpenVINO decoder. Embedded in the
+    mod assembly and extracted on first use; see WorkerProcess.
+  -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
-    <AssemblyName>VSTerrainDiffusion.OpenVinoWorker</AssemblyName>
+    <AssemblyName>VSTerrainDiffusion.Worker</AssemblyName>
     <RootNamespace>VSTerrainDiffusion</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
     <UseAppHost>false</UseAppHost>
     <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Only the managed binding; the game downloads the native runtime that matches the machine. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.4" />
+  </ItemGroup>
   <ItemGroup>
     <Compile Include="..\VSTerrainDiffusion\Native\OpenVinoRuntime.cs" Link="Native\OpenVinoRuntime.cs" />
     <Compile Include="..\VSTerrainDiffusion\Native\OpenVinoLibraryResolver.cs" Link="Native\OpenVinoLibraryResolver.cs" />
     <Compile Include="..\VSTerrainDiffusion\Native\OpenVinoWorkerProtocol.cs" Link="Native\OpenVinoWorkerProtocol.cs" />
+    <Compile Include="..\VSTerrainDiffusion\Native\InferenceWorkerProtocol.cs" Link="Native\InferenceWorkerProtocol.cs" />
+    <Compile Include="..\VSTerrainDiffusion\Native\InferenceProvider.cs" Link="Native\InferenceProvider.cs" />
   </ItemGroup>
 </Project>

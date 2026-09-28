@@ -11,15 +11,14 @@ namespace VSTerrainDiffusion.Core;
 /// Which inference devices and model precisions this machine can run, worked out once per process
 /// from the operating system, the GPU and its driver.
 ///
-/// It is the single answer to "can this run here": the settings screen offers only what it allows
-/// (see <see cref="ConfigLibOptionsFilter"/>), the config is refused at startup when it names
-/// anything else, and the "auto" device picks from it. Nothing in the mod changes the device or a
-/// precision on the player's behalf - a value that cannot run stops the game with the reason, and
-/// only the player edits it.
+/// It is the single answer to "can this run here": a world whose settings name anything else is
+/// refused as it loads (<see cref="InferenceSettings"/>), and the "auto" device picks from it.
+/// Nothing in the mod changes the device or a precision on the player's behalf - a value that
+/// cannot run stops the game with the reason, and only the player changes it.
 /// </summary>
 public sealed class InferenceCompatibility
 {
-    /// <summary>Every device the config understands, in the order the settings screen lists them.</summary>
+    /// <summary>Every device the world settings understand, in the order the Customize screen lists them.</summary>
     public static readonly string[] AllDevices =
         { "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "directml", "coreml" };
 
@@ -60,13 +59,7 @@ public sealed class InferenceCompatibility
     }
 
     public bool IsDeviceCompatible(string device) =>
-        device switch
-        {
-            // Not offered in the settings screen, but older configs carry it: the automatic choice,
-            // with a warning if that choice is not a GPU.
-            "gpu" => Array.Exists(GpuDevices, IsDeviceCompatible),
-            _ => Array.IndexOf(AllDevices, device) >= 0 && !_deviceProblems.ContainsKey(device)
-        };
+        Array.IndexOf(AllDevices, device) >= 0 && !_deviceProblems.ContainsKey(device);
 
     /// <summary>The devices this machine can run, in settings-screen order.</summary>
     public List<string> CompatibleDevices() => new(Array.FindAll(AllDevices, IsDeviceCompatible));
@@ -94,27 +87,25 @@ public sealed class InferenceCompatibility
     }
 
     /// <summary>
-    /// Stops the game if <paramref name="config"/> names a device or precision this machine cannot
-    /// run. Called as the mod loads, before anything is downloaded or any world is touched.
+    /// Stops the game if <paramref name="settings"/> names a device or precision this machine cannot
+    /// run. Called as the world loads, before anything is downloaded or any chunk is generated.
     /// </summary>
-    public void Require(DiffusionConfig config, ILogger logger)
+    public void Require(InferenceSettings settings, ILogger logger)
     {
-        RequireDevice(config.InferenceDevice, logger);
-        RequirePrecision(nameof(DiffusionConfig.CoarsePrecision), config.CoarsePrecision, AllCoarsePrecisions, logger);
-        RequirePrecision(nameof(DiffusionConfig.BasePrecision), config.BasePrecision, AllBasePrecisions, logger);
-        RequirePrecision(nameof(DiffusionConfig.DecoderPrecision), config.DecoderPrecision, AllDecoderPrecisions, logger);
+        RequireDevice(settings.InferenceDevice, logger);
+        RequirePrecision(nameof(InferenceSettings.CoarsePrecision), settings.CoarsePrecision, AllCoarsePrecisions, logger);
+        RequirePrecision(nameof(InferenceSettings.BasePrecision), settings.BasePrecision, AllBasePrecisions, logger);
+        RequirePrecision(nameof(InferenceSettings.DecoderPrecision), settings.DecoderPrecision, AllDecoderPrecisions, logger);
     }
 
     public void RequireDevice(string device, ILogger logger)
     {
         if (IsDeviceCompatible(device)) return;
 
-        string reason = device == "gpu"
-            ? "no GPU provider can run on this machine"
-            : _deviceProblems.TryGetValue(device ?? "", out string problem) ? problem : "it is not a known inference device";
-        throw DiffusionFailure.Fatal(logger,
-            $"{nameof(DiffusionConfig.InferenceDevice)} \"{device}\" in {DiffusionPaths.ModId}.json cannot be used: " +
-            $"{reason}. This machine can use: {string.Join(", ", CompatibleDevices())}.");
+        string reason = _deviceProblems.TryGetValue(device ?? "", out string problem)
+            ? problem
+            : "it is not a known inference device";
+        throw Refuse(nameof(InferenceSettings.InferenceDevice), device, reason, CompatibleDevices(), logger);
     }
 
     public void RequirePrecision(string setting, string precision, string[] all, ILogger logger)
@@ -124,12 +115,18 @@ public sealed class InferenceCompatibility
             : PrecisionProblem(precision);
         if (reason == null) return;
 
-        throw DiffusionFailure.Fatal(logger,
-            $"{setting} \"{precision}\" in {DiffusionPaths.ModId}.json cannot be used: {reason}. " +
-            $"This machine can use: {string.Join(", ", CompatiblePrecisions(all))}.");
+        throw Refuse(setting, precision, reason, CompatiblePrecisions(all), logger);
     }
 
-    /// <summary>Writes what was found and what it allows, so a refused config can be explained from the log.</summary>
+    private static Exception Refuse(string setting, string value, string reason, List<string> usable, ILogger logger)
+    {
+        string code = InferenceSettings.Code(setting);
+        return DiffusionFailure.Fatal(logger,
+            $"World setting {code} is \"{value}\", which cannot be used: {reason}. This machine can use: " +
+            $"{string.Join(", ", usable)}. Change it with /worldconfig {code} <value>, then reload the world.");
+    }
+
+    /// <summary>Writes what was found and what it allows, so a refused setting can be explained from the log.</summary>
     public void Log(ILogger logger)
     {
         // The server runs StartPre more than once, and the hardware does not change in between.

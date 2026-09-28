@@ -134,26 +134,26 @@ public static class ModelAssetManager
 
     // Every precision is matched by name. The config is validated at startup, so the default arms are
     // unreachable; they throw rather than pick a file, because a model nobody selected must never load.
-    private static Asset SelectedDecoderAsset => DiffusionConfig.Instance.DecoderPrecision switch
+    private static Asset SelectedDecoderAsset => InferenceSettings.Current.DecoderPrecision switch
     {
         "fp32" => Fp32DecoderAsset,
         "fp16" => Fp16DecoderAsset,
         "int8" => Int8DecoderAsset,
-        var other => throw UnknownPrecision(nameof(DiffusionConfig.DecoderPrecision), other)
+        var other => throw UnknownPrecision(nameof(InferenceSettings.DecoderPrecision), other)
     };
 
-    private static Asset SelectedCoarseAsset => DiffusionConfig.Instance.CoarsePrecision switch
+    private static Asset SelectedCoarseAsset => InferenceSettings.Current.CoarsePrecision switch
     {
         "fp32" => Fp32CoarseAsset,
         "fp16" => Fp16CoarseAsset,
-        var other => throw UnknownPrecision(nameof(DiffusionConfig.CoarsePrecision), other)
+        var other => throw UnknownPrecision(nameof(InferenceSettings.CoarsePrecision), other)
     };
 
-    private static Asset SelectedBaseAsset => DiffusionConfig.Instance.BasePrecision switch
+    private static Asset SelectedBaseAsset => InferenceSettings.Current.BasePrecision switch
     {
         "fp32" => Fp32BaseAsset,
         "fp16" => Fp16BaseAsset,
-        var other => throw UnknownPrecision(nameof(DiffusionConfig.BasePrecision), other)
+        var other => throw UnknownPrecision(nameof(InferenceSettings.BasePrecision), other)
     };
 
     private static ModelAssetException UnknownPrecision(string setting, string value) =>
@@ -204,7 +204,7 @@ public static class ModelAssetManager
 
             Downloaded = false;
             Directory.CreateDirectory(DiffusionPaths.ModelDirectory);
-            bool validate = DiffusionConfig.Instance.ValidateModelHashes;
+            bool validate = InferenceSettings.Current.ValidateModelHashes;
 
             logger.Notification("[{0}] Preparing model assets in {1}", DiffusionPaths.ModId, DiffusionPaths.ModelDirectory);
 
@@ -243,15 +243,15 @@ public static class ModelAssetManager
     /// terrain on the next successful start.
     /// </summary>
     public static string ResolveDecoderPath(ILogger logger) =>
-        ResolveSelectedModel(SelectedDecoderAsset, "Decoder", DiffusionConfig.Instance.DecoderPrecision, logger);
+        ResolveSelectedModel(SelectedDecoderAsset, "Decoder", InferenceSettings.Current.DecoderPrecision, logger);
 
     /// <summary>The coarse model at the configured precision.</summary>
     public static string ResolveCoarsePath(ILogger logger) =>
-        ResolveSelectedModel(SelectedCoarseAsset, "Coarse model", DiffusionConfig.Instance.CoarsePrecision, logger);
+        ResolveSelectedModel(SelectedCoarseAsset, "Coarse model", InferenceSettings.Current.CoarsePrecision, logger);
 
     /// <summary>The base (latent) model at the configured precision.</summary>
     public static string ResolveBasePath(ILogger logger) =>
-        ResolveSelectedModel(SelectedBaseAsset, "Base model", DiffusionConfig.Instance.BasePrecision, logger);
+        ResolveSelectedModel(SelectedBaseAsset, "Base model", InferenceSettings.Current.BasePrecision, logger);
 
     private static string ResolveSelectedModel(Asset asset, string label, string precision, ILogger logger)
     {

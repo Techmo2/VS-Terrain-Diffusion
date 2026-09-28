@@ -60,7 +60,7 @@ public static class DiffusionFailure
 
         string message =
             $"[{DiffusionPaths.ModId}] {problem}\n" +
-            "Stopped rather than finish this world with a different generator. Set diffusionTerrain " +
+            "Stopped rather than finish this world with a different generator. Set terraindiffusionEnabled " +
             "to false in the world config to play without the mod.";
 
         logger ??= _ambient;

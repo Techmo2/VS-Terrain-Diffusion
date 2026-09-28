@@ -2,7 +2,6 @@ using System;
 using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
-using VSTerrainDiffusion.Pipeline;
 
 namespace VSTerrainDiffusion.Core;
 
@@ -83,16 +82,6 @@ public static class ConfigLibCompat
 
         switch (code)
         {
-            case nameof(DiffusionConfig.GpuUtilizationPercent):
-            {
-                int percent = tree.GetAsInt("value", DiffusionConfig.Instance.GpuUtilizationPercent);
-                InferenceThrottle.UtilizationPercent = percent;
-                DiffusionConfig.Instance.GpuUtilizationPercent = InferenceThrottle.UtilizationPercent;
-                logger?.Notification("[{0}] Inference is now limited to {1}.",
-                    DiffusionPaths.ModId, InferenceThrottle.Describe());
-                return;
-            }
-
             case nameof(DiffusionConfig.TerrainSamplerHeight):
             {
                 string mode = (tree.GetAsString("value") ?? "full").Trim().ToLowerInvariant();
@@ -111,27 +100,6 @@ public static class ConfigLibCompat
                 return;
             }
 
-            // The settings screen only offers what this machine can run, so an incompatible value here
-            // was typed into the file by hand while the server runs, and ConfigLib's file watcher
-            // relayed it. It would stop the next start anyway; stopping now puts the reason next to
-            // the edit that caused it.
-            case nameof(DiffusionConfig.InferenceDevice):
-                InferenceCompatibility.Current.RequireDevice(
-                    DiffusionConfig.NormalizeDevice(tree.GetAsString("value")), logger);
-                goto default;
-
-            case nameof(DiffusionConfig.CoarsePrecision):
-                RequirePrecision(code, tree, InferenceCompatibility.AllCoarsePrecisions, logger);
-                goto default;
-
-            case nameof(DiffusionConfig.BasePrecision):
-                RequirePrecision(code, tree, InferenceCompatibility.AllBasePrecisions, logger);
-                goto default;
-
-            case nameof(DiffusionConfig.DecoderPrecision):
-                RequirePrecision(code, tree, InferenceCompatibility.AllDecoderPrecisions, logger);
-                goto default;
-
             default:
                 logger?.Notification(
                     "[{0}] '{1}' was changed in the settings screen and saved to {2}. It is read when the " +
@@ -140,8 +108,4 @@ public static class ConfigLibCompat
                 return;
         }
     }
-
-    private static void RequirePrecision(string code, ITreeAttribute tree, string[] all, ILogger logger) =>
-        InferenceCompatibility.Current.RequirePrecision(
-            code, DiffusionConfig.NormalizePrecision(tree.GetAsString("value")), all, logger);
 }

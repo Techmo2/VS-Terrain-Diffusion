@@ -8,8 +8,10 @@ using VSTerrainDiffusion.Native;
 namespace VSTerrainDiffusion.Pipeline;
 
 /// <summary>
-/// Owns the three model graphs used by <see cref="WorldPipeline"/>. Loading happens once on a
-/// background thread; anything that needs the models waits on <see cref="Await"/>.
+/// Owns the three model graphs used by <see cref="WorldPipeline"/>, and the
+/// <see cref="InferenceWorker"/> they run in. Loading happens once per world on a background
+/// thread; anything that needs the models waits on <see cref="Await"/>. <see cref="Shutdown"/>
+/// ends the worker, and the native runtime with it.
 /// </summary>
 public sealed class PipelineModels : IDisposable
 {
@@ -26,6 +28,9 @@ public sealed class PipelineModels : IDisposable
     public IModelRunner Base { get; private set; }
     public IModelRunner Decoder { get; private set; }
 
+    /// <summary>The process the models run in. Shared by <see cref="WithCoarse"/> copies, owned here.</summary>
+    public InferenceWorker Worker { get; private set; }
+
     private PipelineModels() { }
 
     /// <summary>
@@ -34,7 +39,7 @@ public sealed class PipelineModels : IDisposable
     /// <paramref name="coarse"/> separately, never the copy.
     /// </summary>
     internal PipelineModels WithCoarse(IModelRunner coarse) =>
-        new() { Coarse = coarse, Base = Base, Decoder = Decoder };
+        new() { Coarse = coarse, Base = Base, Decoder = Decoder, Worker = Worker };
 
     /// <summary>True once the models are resident and ready to run.</summary>
     public static bool IsReady => _instance != null;
@@ -43,8 +48,8 @@ public sealed class PipelineModels : IDisposable
     public static Exception LoadFailure => _loadFailure;
 
     /// <summary>
-    /// Kicks off asset download, native runtime resolution and model loading on a background
-    /// thread. Returns immediately.
+    /// Kicks off asset download, native runtime preparation, the worker and model loading on a
+    /// background thread. Returns immediately.
     /// </summary>
     public static void BeginLoad(ILogger logger)
     {
@@ -53,9 +58,9 @@ public sealed class PipelineModels : IDisposable
             if (_instance != null) return;
             if (_loadThread != null)
             {
-                // Shutdown may invalidate a load while it is inside a native session constructor,
-                // which cannot be cancelled. Queue this request; the old loader starts it only
-                // after its partial models are disposed and shared ONNX state is safe to reset.
+                // Shutdown may invalidate a load that has not noticed yet, part way through a
+                // download or a worker request. Queue this request; the old loader starts it once
+                // its partial models and worker are disposed.
                 if (_loadThread.IsAlive && _loadCancellation?.IsCancellationRequested == true)
                 {
                     if (_pendingLoadLogger == null)
@@ -98,7 +103,7 @@ public sealed class PipelineModels : IDisposable
     {
         if (OnnxRuntimeBootstrap.Provider is not (InferenceProvider.Cpu or InferenceProvider.OpenVino)) return;
 
-        DiffusionConfig config = DiffusionConfig.Instance;
+        InferenceSettings config = InferenceSettings.Current;
         var half = new List<string>();
         if (config.CoarsePrecision == "fp16") half.Add("coarse");
         if (config.BasePrecision == "fp16") half.Add("base");
@@ -112,21 +117,18 @@ public sealed class PipelineModels : IDisposable
     }
 
     /// <summary>
-    /// INT8 is never selected for anyone: it is a smaller decoder for CPU-only servers and has to
-    /// be asked for by name in the config. Finding it set on a machine that resolved a GPU provider
-    /// almost always means a value left behind by an older config or a stray edit in the settings
-    /// screen, so say so rather than quietly generating different terrain than FP32 would.
+    /// INT8 is a smaller decoder for CPU-only servers. Set on a world that resolved a GPU provider it
+    /// still runs, but the choice was probably made for another machine, so say so.
     /// </summary>
     private static void WarnIfInt8OnGpu(ILogger logger)
     {
-        if (DiffusionConfig.Instance.DecoderPrecision != "int8") return;
+        if (InferenceSettings.Current.DecoderPrecision != "int8") return;
         if (OnnxRuntimeBootstrap.Provider is InferenceProvider.Cpu or InferenceProvider.OpenVino) return;
 
         logger.Warning(
             "[{0}] the decoder is set to INT8, which is meant for CPU-only servers, but inference runs on {1}. " +
-            "Nothing selects INT8 on its own: it is in {2}. Set decoderPrecision back to fp32 unless this world " +
-            "was generated with INT8, because decoder precision changes newly generated terrain slightly.",
-            DiffusionPaths.ModId, OnnxRuntimeBootstrap.Provider, DiffusionPaths.ModId + ".json");
+            "Nothing selects INT8 on its own: it is this world's {2}.",
+            DiffusionPaths.ModId, OnnxRuntimeBootstrap.Provider, InferenceSettings.Code(nameof(InferenceSettings.DecoderPrecision)));
     }
 
     private static void Load(ILogger logger, int generation, CancellationTokenSource cancellation)
@@ -136,7 +138,7 @@ public sealed class PipelineModels : IDisposable
         {
             CancellationToken token = cancellation.Token;
             ModelAssetManager.EnsureAssetsReady(logger, token);
-            OnnxRuntimeBootstrap.Initialize(logger, token);
+            loading = new PipelineModels { Worker = StartWorker(logger, token) };
             token.ThrowIfCancellationRequested();
 
             // Closes off whichever of the two downloads announced itself. Nothing is said at all on
@@ -146,7 +148,8 @@ public sealed class PipelineModels : IDisposable
                 LoadingNotice.Post(logger, "Downloads complete.");
             }
 
-            loading = new PipelineModels();
+            logger.Notification("[{0}] Model graph loading: {1}", DiffusionPaths.ModId,
+                InferenceSettings.Current.ModelLoadMode);
             string decoderPath = ModelAssetManager.ResolveDecoderPath(logger);
             string coarsePath = ModelAssetManager.ResolveCoarsePath(logger);
             string basePath = ModelAssetManager.ResolveBasePath(logger);
@@ -155,24 +158,24 @@ public sealed class PipelineModels : IDisposable
             if (OnnxRuntimeBootstrap.Provider == InferenceProvider.OpenVino)
             {
                 loading.Decoder = LoadOpenVinoOrCpu(
-                    decoderPath, decoderPath, "decoder", logger, token);
+                    loading.Worker, decoderPath, decoderPath, "decoder", logger, token);
                 token.ThrowIfCancellationRequested();
 
                 // OpenVINO is effectively tied with ONNX Runtime on the FP32 coarse and base
                 // graphs, while compiling the 1.9 GB base graph needs substantially more memory.
                 // Load the decoder first so its temporary compilation work does not overlap the
                 // base model's resident CPU session.
-                loading.Coarse = new OnnxModel(coarsePath, "coarse", logger);
+                loading.Coarse = new OnnxModel(loading.Worker, coarsePath, "coarse", logger, token);
                 token.ThrowIfCancellationRequested();
-                loading.Base = new OnnxModel(basePath, "base", logger);
+                loading.Base = new OnnxModel(loading.Worker, basePath, "base", logger, token);
             }
             else
             {
-                loading.Coarse = new OnnxModel(coarsePath, "coarse", logger);
+                loading.Coarse = new OnnxModel(loading.Worker, coarsePath, "coarse", logger, token);
                 token.ThrowIfCancellationRequested();
-                loading.Base = new OnnxModel(basePath, "base", logger);
+                loading.Base = new OnnxModel(loading.Worker, basePath, "base", logger, token);
                 token.ThrowIfCancellationRequested();
-                loading.Decoder = new OnnxModel(decoderPath, "decoder", logger);
+                loading.Decoder = new OnnxModel(loading.Worker, decoderPath, "decoder", logger, token);
             }
 
             token.ThrowIfCancellationRequested();
@@ -218,7 +221,6 @@ public sealed class PipelineModels : IDisposable
                         // Model construction and partial cleanup are complete before this lock.
                         // Clear ownership here, rather than on physical thread exit, so Shutdown
                         // cannot catch the thread in its harmless epilogue and defer cleanup forever.
-                        if (_instance == null) OnnxModel.ResetSharedState();
                         _loadCancellation = null;
                         _loadThread = null;
                         Loaded.Set();
@@ -226,7 +228,6 @@ public sealed class PipelineModels : IDisposable
                     else if (ReferenceEquals(_loadThread, Thread.CurrentThread))
                     {
                         if (ReferenceEquals(_loadCancellation, cancellation)) _loadCancellation = null;
-                        OnnxModel.ResetSharedState();
                         _loadThread = null;
 
                         ILogger pending = _pendingLoadLogger;
@@ -239,14 +240,39 @@ public sealed class PipelineModels : IDisposable
         }
     }
 
-    private static IModelRunner LoadOpenVinoOrCpu(string openVinoPath, string cpuPath,
+    /// <summary>
+    /// A worker running the runtime this world asked for. A compatible provider whose runtime does
+    /// not load there - a library that will not open, a plugin that will not register - gives way
+    /// to <see cref="OnnxRuntimeBootstrap.FallbackFor"/> in a fresh worker, for this world only.
+    /// </summary>
+    private static InferenceWorker StartWorker(ILogger logger, CancellationToken cancellation)
+    {
+        RuntimePlan plan = OnnxRuntimeBootstrap.Prepare(logger, cancellation);
+        InferenceWorker worker;
+        try
+        {
+            worker = InferenceWorker.Start(plan, logger, cancellation);
+        }
+        catch (InferenceWorkerException e) when (plan.Provider != InferenceProvider.Cpu)
+        {
+            InferenceProvider fallback = OnnxRuntimeBootstrap.FallbackFor(plan.Provider, logger);
+            OnnxRuntimeBootstrap.WarnFallback(plan.Provider, fallback, e, logger);
+            plan = OnnxRuntimeBootstrap.Prepare(fallback, logger, cancellation);
+            worker = InferenceWorker.Start(plan, logger, cancellation);
+        }
+
+        OnnxRuntimeBootstrap.Use(plan);
+        return worker;
+    }
+
+    private static IModelRunner LoadOpenVinoOrCpu(InferenceWorker worker, string openVinoPath, string cpuPath,
                                                    string name, ILogger logger,
                                                    CancellationToken cancellation)
     {
         try
         {
             return new OpenVinoModel(
-                openVinoPath, cpuPath ?? openVinoPath, name, logger, cancellation);
+                worker, openVinoPath, cpuPath ?? openVinoPath, name, logger, cancellation);
         }
         catch (OperationCanceledException)
         {
@@ -259,7 +285,7 @@ public sealed class PipelineModels : IDisposable
                 "[{0}] OpenVINO could not compile '{1}' ({2}); using ONNX Runtime CPU for this model. " +
                 "This provider change can alter newly generated terrain slightly.",
                 DiffusionPaths.ModId, name, e.Message);
-            return new OnnxModel(cpuPath ?? openVinoPath, name, logger);
+            return new OnnxModel(worker, cpuPath ?? openVinoPath, name, logger, cancellation);
         }
     }
 
@@ -279,6 +305,9 @@ public sealed class PipelineModels : IDisposable
         Coarse?.Dispose();
         Base?.Dispose();
         Decoder?.Dispose();
+
+        // Last: the models above unload in it, and its exit is what frees the native runtime.
+        Worker?.Dispose();
         if (ReferenceEquals(_instance, this)) _instance = null;
     }
 
@@ -296,14 +325,12 @@ public sealed class PipelineModels : IDisposable
                 "Terrain Diffusion model loading was cancelled because the server is shutting down.");
             Loaded.Set();
 
-            // A live loader owns the shared ONNX state until it exits its current constructor and
-            // disposes any partial models. Its finally block performs the reset and clears the
-            // thread. If it is already stopped, cleanup is safe here.
+            // A live loader disposes its partial models and worker, and clears the thread, in its
+            // finally block. If it is already stopped, there is nothing left to wait for.
             if (_loadThread == null || !_loadThread.IsAlive)
             {
                 _loadThread = null;
                 _loadCancellation = null;
-                OnnxModel.ResetSharedState();
             }
         }
     }

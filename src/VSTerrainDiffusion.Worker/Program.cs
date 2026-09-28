@@ -1,9 +1,39 @@
 using System.Globalization;
 using VSTerrainDiffusion.Native;
 
-return WorkerProgram.Run(args);
+// One executable for both of the mod's worker processes:
+//   onnx <request pipe> <reply pipe> <nonce>                      - ONNX Runtime for one game
+//   openvino <model> <cache> <native runtime> <thread count>      - the OpenVINO decoder
+return args.Length > 0 && args[0] == "onnx" && args.Length == 4
+    ? OnnxWorker.Run(args[1], args[2], args[3])
+    : args.Length > 0 && args[0] == "openvino"
+        ? OpenVinoWorker.Run(args[1..])
+        : Usage();
 
-internal static class WorkerProgram
+static int Usage()
+{
+    Console.Error.WriteLine("Expected 'onnx <request pipe> <reply pipe> <nonce>' or " +
+                            "'openvino <model> <cache> <native runtime> <thread count>'");
+    return 2;
+}
+
+internal static class OnnxWorker
+{
+    internal static int Run(string requestPipe, string replyPipe, string nonce)
+    {
+        try
+        {
+            return OnnxWorkerHost.Run(requestPipe, replyPipe, nonce);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            return 1;
+        }
+    }
+}
+
+internal static class OpenVinoWorker
 {
     internal static int Run(string[] args)
     {

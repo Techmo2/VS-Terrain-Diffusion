@@ -67,23 +67,26 @@
   </ItemGroup>
 
   <!--
-    Only the managed ONNX Runtime binding is shipped with the mod (~1 MB).
-    The matching native runtime is downloaded on first launch by OnnxRuntimeBootstrap,
-    so the mod archive stays small and platform independent.
+    ONNX Runtime runs in the worker process, never in the game, so the mod references none of it.
+    The worker and its managed ONNX Runtime binding are embedded and written out on first use
+    (WorkerProcess); the native runtime is downloaded by OnnxRuntimeBootstrap.
   -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.4" />
-    <ProjectReference Include="..\VSTerrainDiffusion.OpenVinoWorker\VSTerrainDiffusion.OpenVinoWorker.csproj"
+    <ProjectReference Include="..\VSTerrainDiffusion.Worker\VSTerrainDiffusion.Worker.csproj"
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="..\VSTerrainDiffusion.OpenVinoWorker\bin\$(Configuration)\net10.0\VSTerrainDiffusion.OpenVinoWorker.dll"
-                      LogicalName="VSTerrainDiffusion.OpenVinoWorker.dll" />
-    <EmbeddedResource Include="..\VSTerrainDiffusion.OpenVinoWorker\bin\$(Configuration)\net10.0\VSTerrainDiffusion.OpenVinoWorker.deps.json"
-                      LogicalName="VSTerrainDiffusion.OpenVinoWorker.deps.json" />
-    <EmbeddedResource Include="..\VSTerrainDiffusion.OpenVinoWorker\bin\$(Configuration)\net10.0\VSTerrainDiffusion.OpenVinoWorker.runtimeconfig.json"
-                      LogicalName="VSTerrainDiffusion.OpenVinoWorker.runtimeconfig.json" />
+    <EmbeddedResource Include="..\VSTerrainDiffusion.Worker\bin\$(Configuration)\net10.0\VSTerrainDiffusion.Worker.dll"
+                      LogicalName="VSTerrainDiffusion.Worker.dll" />
+    <EmbeddedResource Include="..\VSTerrainDiffusion.Worker\bin\$(Configuration)\net10.0\VSTerrainDiffusion.Worker.deps.json"
+                      LogicalName="VSTerrainDiffusion.Worker.deps.json" />
+    <EmbeddedResource Include="..\VSTerrainDiffusion.Worker\bin\$(Configuration)\net10.0\VSTerrainDiffusion.Worker.runtimeconfig.json"
+                      LogicalName="VSTerrainDiffusion.Worker.runtimeconfig.json" />
+    <EmbeddedResource Include="..\VSTerrainDiffusion.Worker\bin\$(Configuration)\net10.0\Microsoft.ML.OnnxRuntime.dll"
+                      LogicalName="Microsoft.ML.OnnxRuntime.dll" />
+    <EmbeddedResource Include="..\VSTerrainDiffusion.Worker\bin\$(Configuration)\net10.0\System.Numerics.Tensors.dll"
+                      LogicalName="System.Numerics.Tensors.dll" />
   </ItemGroup>
 
   <!-- The debug map page is served straight out of the assembly, so it cannot go missing. -->

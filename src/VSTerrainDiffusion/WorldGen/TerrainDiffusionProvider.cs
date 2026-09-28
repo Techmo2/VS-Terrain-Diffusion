@@ -1324,7 +1324,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
             using IDisposable noPreemption = InferencePreemption.Suspend();
             if (_riverFreePipeline == null)
             {
-                _riverFreeCoarse = new OnnxModel(ModelAssetManager.ResolveCoarsePath(_logger), "coarse", _logger);
+                _riverFreeCoarse = new OnnxModel(_models.Worker, ModelAssetManager.ResolveCoarsePath(_logger), "coarse", _logger);
                 _riverFreePipeline = new WorldPipeline(_seed, _models.WithCoarse(_riverFreeCoarse), _landmask,
                                                        _settings.Climate, _settings.Latitude);
             }

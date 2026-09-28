@@ -63,7 +63,8 @@ public class TerrainDiffusionModSystem : ModSystem
                 "into it.", DiffusionPaths.ModId);
         }
 
-        InferenceThrottle.UtilizationPercent = DiffusionConfig.Load(api).GpuUtilizationPercent;
+        DiffusionConfig.Load(api);
+        InferenceThrottle.UtilizationPercent = InferenceSettings.Load((ICoreServerAPI)api).GpuUtilizationPercent;
     }
 
     public override void StartServerSide(ICoreServerAPI api)
@@ -903,13 +904,13 @@ public class TerrainDiffusionModSystem : ModSystem
         {
             "Terrain Diffusion active",
             "",
-            $"Requested device: {DiffusionConfig.Instance.InferenceDevice}",
-            $"Model precision: coarse {DiffusionConfig.Instance.CoarsePrecision}, " +
-            $"base {DiffusionConfig.Instance.BasePrecision}, decoder {DiffusionConfig.Instance.DecoderPrecision}",
+            $"Requested device: {InferenceSettings.Current.InferenceDevice}",
+            $"Model precision: coarse {InferenceSettings.Current.CoarsePrecision}, " +
+            $"base {InferenceSettings.Current.BasePrecision}, decoder {InferenceSettings.Current.DecoderPrecision}",
             $"Runtime: {OnnxRuntimeBootstrap.ActiveRuntimeDescription}",
             $"Provider: {OnnxModel.ActiveProvider}",
             $"Model resolution: {WorldPipelineModelConfig.Instance.NativeResolution:0.##} m per pixel",
-            $"Models resident: {(DiffusionConfig.Instance.OffloadModels ? "no, one at a time (offloadModels)" : "yes")}",
+            $"Models resident: {(InferenceSettings.Current.OffloadModels ? "no, one at a time (terraindiffusionOffloadModels)" : "yes")}",
             $"Latent batch: {_provider.LatentBatchSize}",
             $"Pipeline cache: {_provider.PipelineCachedBytes / 1048576.0:0.#} / " +
             $"{DiffusionConfig.Instance.TileCacheMegabytes} MB",
@@ -955,11 +956,12 @@ public class TerrainDiffusionModSystem : ModSystem
         int requested = (int)args[0];
         InferenceThrottle.UtilizationPercent = requested;
         int applied = InferenceThrottle.UtilizationPercent;
-        DiffusionConfig.Instance.GpuUtilizationPercent = applied;
+        InferenceSettings.Current.GpuUtilizationPercent = applied;
 
-        string persisted = PersistGpuLimit(applied)
-            ? $"Saved to {DiffusionPaths.ModId}.json."
-            : $"Could not write {DiffusionPaths.ModId}.json, so this lasts until the server restarts.";
+        // Saved with the world, as the Customize screen's own value is.
+        string code = InferenceSettings.Code(nameof(InferenceSettings.GpuUtilizationPercent));
+        _api.WorldManager.SaveGame.WorldConfiguration.SetInt(code, applied);
+        string persisted = $"Saved to this world's {code}.";
 
         string effect = applied >= 100
             ? "World generation runs at full speed."
@@ -982,35 +984,6 @@ public class TerrainDiffusionModSystem : ModSystem
         return Vintagestory.API.Common.TextCommandResult.Success(
             $"Debug map: {_debugMap.Url}\n" +
             $"Remembering {_debugMap.TileCount} of the last {DiffusionConfig.Instance.DebugMapHistoryTiles} tiles.");
-    }
-
-    /// <summary>
-    /// Writes just this one key back, rather than serialising the whole config. ConfigLib edits the
-    /// same file when it is installed, and the in-memory config is not kept in step with its
-    /// changes on purpose (see <see cref="ConfigLibCompat"/>), so rewriting the file wholesale here
-    /// would quietly revert them.
-    /// </summary>
-    private bool PersistGpuLimit(int percent)
-    {
-        try
-        {
-            string path = DiffusionPaths.ConfigFile;
-            if (!System.IO.File.Exists(path))
-            {
-                _api.StoreModConfig(DiffusionConfig.Instance, DiffusionPaths.ModId + ".json");
-                return true;
-            }
-
-            var root = Newtonsoft.Json.Linq.JObject.Parse(System.IO.File.ReadAllText(path));
-            root[nameof(DiffusionConfig.GpuUtilizationPercent)] = percent;
-            System.IO.File.WriteAllText(path, root.ToString(Newtonsoft.Json.Formatting.Indented));
-            return true;
-        }
-        catch (Exception e)
-        {
-            _api.Logger.Warning("[{0}] Could not save the GPU limit: {1}", DiffusionPaths.ModId, e.Message);
-            return false;
-        }
     }
 
     private Vintagestory.API.Common.TextCommandResult OnHereCommand(Vintagestory.API.Common.TextCommandCallingArgs args)

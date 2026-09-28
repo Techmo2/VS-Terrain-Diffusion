@@ -13,6 +13,7 @@ namespace VSTerrainDiffusion.Pipeline;
 public sealed class OpenVinoModel : IModelRunner
 {
     private readonly object _gate = new();
+    private readonly InferenceWorker _worker;
     private readonly string _fallbackModelPath;
     private readonly string _name;
     private readonly ILogger _logger;
@@ -25,14 +26,10 @@ public sealed class OpenVinoModel : IModelRunner
     private long _runItems;
     private long _runStopwatchTicks;
 
-    public OpenVinoModel(string modelPath, string fallbackModelPath, string name, ILogger logger)
-        : this(modelPath, fallbackModelPath, name, logger, CancellationToken.None)
+    internal OpenVinoModel(InferenceWorker worker, string modelPath, string fallbackModelPath, string name,
+                           ILogger logger, CancellationToken cancellation)
     {
-    }
-
-    internal OpenVinoModel(string modelPath, string fallbackModelPath, string name, ILogger logger,
-                           CancellationToken cancellation)
-    {
+        _worker = worker;
         _fallbackModelPath = fallbackModelPath ?? modelPath;
         _name = name;
         _logger = logger;
@@ -121,7 +118,7 @@ public sealed class OpenVinoModel : IModelRunner
 
         try
         {
-            _fallback = new OnnxModel(_fallbackModelPath, _name, _logger);
+            _fallback = new OnnxModel(_worker, _fallbackModelPath, _name, _logger);
             _backend = _fallback.Backend + " (OpenVINO fallback)";
         }
         catch (Exception fallbackFailure)

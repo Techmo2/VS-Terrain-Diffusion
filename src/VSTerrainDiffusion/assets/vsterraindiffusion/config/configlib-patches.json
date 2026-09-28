@@ -7,80 +7,6 @@
       "text": "configsep-inference-text"
     },
     {
-      "code": "InferenceDevice",
-      "type": "string",
-      "default": "auto",
-      "ingui": "setting-InferenceDevice",
-      "comment": "setting-InferenceDevice-hover",
-      "values": [
-        "auto",
-        "cpu",
-        "openvino",
-        "cuda",
-        "tensorrt-rtx",
-        "directml",
-        "coreml"
-      ]
-    },
-    {
-      "code": "ModelLoadMode",
-      "type": "string",
-      "default": "auto",
-      "ingui": "setting-ModelLoadMode",
-      "comment": "setting-ModelLoadMode-hover",
-      "values": [
-        "auto",
-        "memory",
-        "file"
-      ]
-    },
-    {
-      "code": "DecoderPrecision",
-      "type": "string",
-      "default": "fp32",
-      "ingui": "setting-DecoderPrecision",
-      "comment": "setting-DecoderPrecision-hover",
-      "values": [
-        "fp32",
-        "fp16",
-        "int8"
-      ]
-    },
-    {
-      "code": "BasePrecision",
-      "type": "string",
-      "default": "fp32",
-      "ingui": "setting-BasePrecision",
-      "comment": "setting-BasePrecision-hover",
-      "values": [
-        "fp32",
-        "fp16"
-      ]
-    },
-    {
-      "code": "CoarsePrecision",
-      "type": "string",
-      "default": "fp32",
-      "ingui": "setting-CoarsePrecision",
-      "comment": "setting-CoarsePrecision-hover",
-      "values": [
-        "fp32",
-        "fp16"
-      ]
-    },
-    {
-      "code": "GpuUtilizationPercent",
-      "type": "integer",
-      "default": 100,
-      "ingui": "setting-GpuUtilizationPercent",
-      "comment": "setting-GpuUtilizationPercent-hover",
-      "range": {
-        "min": 5,
-        "max": 100,
-        "step": 5
-      }
-    },
-    {
       "code": "TerrainSamplerHeight",
       "type": "string",
       "default": "full",
@@ -90,13 +16,6 @@
         "full",
         "coarse"
       ]
-    },
-    {
-      "code": "OffloadModels",
-      "type": "boolean",
-      "default": false,
-      "ingui": "setting-OffloadModels",
-      "comment": "setting-OffloadModels-hover"
     },
     {
       "code": "TerrainTileSizeBlocks",
@@ -142,20 +61,6 @@
         "min": 32,
         "max": 4096
       }
-    },
-    {
-      "code": "ValidateModelHashes",
-      "type": "boolean",
-      "default": true,
-      "ingui": "setting-ValidateModelHashes",
-      "comment": "setting-ValidateModelHashes-hover"
-    },
-    {
-      "code": "DownloadRuntime",
-      "type": "boolean",
-      "default": true,
-      "ingui": "setting-DownloadRuntime",
-      "comment": "setting-DownloadRuntime-hover"
     },
     {
       "code": "DebugMapPort",
@@ -279,7 +184,7 @@
     {
       "code": "WorldGen/ShoreDetail",
       "type": "number",
-      "default": 2.0,
+      "default": 1.0,
       "ingui": "setting-WorldGenShoreDetail",
       "comment": "setting-WorldGenShoreDetail-hover",
       "range": {

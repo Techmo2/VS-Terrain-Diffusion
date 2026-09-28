@@ -7,33 +7,16 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Threading;
-using Microsoft.ML.OnnxRuntime;
 using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
 
 namespace VSTerrainDiffusion.Native;
 
 /// <summary>
-/// Which execution provider the ONNX sessions should be created with.
-/// </summary>
-public enum InferenceProvider
-{
-    Cpu,
-    Cuda,
-    DirectMl,
-    CoreMl,
-    OpenVino,
-
-    /// <summary>
-    /// NVIDIA's TensorRT for RTX, an ONNX Runtime plugin provider. Ampere and later; builds its
-    /// engines on the machine, in seconds, and caches them.
-    /// </summary>
-    TensorRtRtx
-}
-
-/// <summary>
 /// Locates (and, if needed, downloads) the native ONNX Runtime that matches this machine and the
-/// configured execution provider, then teaches the runtime's P/Invoke layer where to find it.
+/// world's execution provider, and everything that provider needs loaded beside it. Nothing here
+/// is loaded into the game: the result is a <see cref="RuntimePlan"/> the
+/// <see cref="InferenceWorker"/> loads, so each world gets the runtime it asks for.
 ///
 /// The mod ships only the ~1 MB managed binding; native libraries are pulled from pinned official
 /// packages on first use. ZIP packages are range-read so only the required entries are transferred.
@@ -305,32 +288,20 @@ public static class OnnxRuntimeBootstrap
         "tensorrt_plugins.dll"
     };
 
-    private static readonly object Gate = new();
     private static readonly object OpenVinoGate = new();
     private static readonly object TensorRtRtxGate = new();
     private static readonly object CudaLibrariesGate = new();
     private static readonly object VcRuntimeGate = new();
-    private static readonly List<IntPtr> VcRuntimeHandles = new();
-    private static bool _vcRuntimeInitialised;
-    private static readonly List<IntPtr> TensorRtRtxHandles = new();
-    private static readonly List<IntPtr> CudaLibraryHandles = new();
-    private static bool _cudaLibrariesInitialised;
-    private static string _cudaLibrariesDirectory;
-    private static bool _initialised;
-    private static bool _openVinoInitialised;
-    private static bool _tensorRtRtxInitialised;
-    private static bool _deviceChangeReported;
-    private static string _nativeDirectory;
 
-    /// <summary>
-    /// The directory the P/Invoke resolver was pinned to, or null while nothing has been installed.
-    /// Only the TensorRT RTX path installs it before the runtime is known to work.
-    /// </summary>
-    private static string _resolverDirectory;
+    // What each preparation found, kept for the life of the game: the files do not change under it,
+    // and verifying a gigabyte of CUDA libraries again for every world would be wasted.
+    private static string[] _vcRuntimePreload;
+    private static string[] _cudaLibrariesPreload;
     private static string _openVinoDirectory;
     private static string _tensorRtRtxDirectory;
+    private static string _nativeDirectory;
 
-    /// <summary>The provider that was actually resolved, available after <see cref="Initialize"/>.</summary>
+    /// <summary>The provider the current world's worker was started for.</summary>
     public static InferenceProvider Provider { get; private set; } = InferenceProvider.Cpu;
 
     /// <summary>Whether this run fetched a runtime, rather than finding one already on disk.</summary>
@@ -352,19 +323,18 @@ public static class OnnxRuntimeBootstrap
         _ => $"ONNX Runtime {ActiveRuntimeVersion}"
     };
 
-    /// <summary>Directory containing the standalone OpenVINO C runtime, if initialised.</summary>
+    /// <summary>Directory containing the standalone OpenVINO C runtime, once prepared.</summary>
     public static string OpenVinoDirectory => _openVinoDirectory;
 
     /// <summary>
-    /// Download and initialise the standalone OpenVINO C runtime used for decoder inference.
-    /// It is separate from ONNX Runtime and does not change <see cref="Provider"/>.
+    /// Downloads the standalone OpenVINO C runtime the OpenVINO worker runs the decoder on. It is
+    /// separate from ONNX Runtime and does not change <see cref="Provider"/>.
     /// </summary>
-    public static string InitializeOpenVino(ILogger logger, CancellationToken cancellation = default)
+    private static string PrepareOpenVino(ILogger logger, CancellationToken cancellation)
     {
-        if (_openVinoInitialised) return _openVinoDirectory;
         lock (OpenVinoGate)
         {
-            if (_openVinoInitialised) return _openVinoDirectory;
+            if (_openVinoDirectory != null) return _openVinoDirectory;
             if (!HostPlatform.IsLinux || HostPlatform.Architecture != Architecture.X64)
                 throw new PlatformNotSupportedException("The standalone OpenVINO runtime requires 64-bit Linux");
 
@@ -374,7 +344,7 @@ public static class OnnxRuntimeBootstrap
             bool verified = filesPresent && HasVerifiedOpenVinoRuntime(directory);
             if (!verified)
             {
-                if (!DiffusionConfig.Instance.DownloadRuntime)
+                if (!InferenceSettings.Current.DownloadRuntime)
                 {
                     // An administrator may deliberately provide the native files themselves. An
                     // auto-downloaded install, identified by its marker, must match the pinned
@@ -399,7 +369,6 @@ public static class OnnxRuntimeBootstrap
                 throw new FileNotFoundException("Standalone OpenVINO native libraries are missing in " + directory);
 
             _openVinoDirectory = directory;
-            _openVinoInitialised = true;
             logger.Notification("[{0}] OpenVINO {1} standalone CPU runtime prepared in {2}",
                 DiffusionPaths.ModId, OpenVinoVersion, directory);
             return directory;
@@ -407,15 +376,14 @@ public static class OnnxRuntimeBootstrap
     }
 
     /// <summary>
-    /// Downloads the plugin provider, loads its libraries and registers it. Must run after the ONNX
-    /// Runtime resolver is installed: registering a plugin goes through the native runtime.
+    /// Downloads the TensorRT RTX plugin provider and its libraries. The worker loads them and
+    /// registers the plugin once its ONNX Runtime is loaded.
     /// </summary>
-    public static string InitializeTensorRtRtx(ILogger logger, CancellationToken cancellation = default)
+    private static string PrepareTensorRtRtx(ILogger logger, CancellationToken cancellation)
     {
-        if (_tensorRtRtxInitialised) return _tensorRtRtxDirectory;
         lock (TensorRtRtxGate)
         {
-            if (_tensorRtRtxInitialised) return _tensorRtRtxDirectory;
+            if (_tensorRtRtxDirectory != null) return _tensorRtRtxDirectory;
             if (!(HostPlatform.IsLinux || HostPlatform.IsWindows) ||
                 HostPlatform.Architecture != Architecture.X64)
                 throw new PlatformNotSupportedException("The TensorRT RTX provider requires 64-bit Linux or Windows");
@@ -425,7 +393,7 @@ public static class OnnxRuntimeBootstrap
             bool filesPresent = HasTensorRtRtxRuntime(directory);
             if (!filesPresent || !HasVerifiedTensorRtRtxRuntime(directory))
             {
-                if (!DiffusionConfig.Instance.DownloadRuntime)
+                if (!InferenceSettings.Current.DownloadRuntime)
                 {
                     if (!filesPresent || File.Exists(Path.Combine(directory, TensorRtRtxVerificationFileName)))
                     {
@@ -448,41 +416,32 @@ public static class OnnxRuntimeBootstrap
             if (!HasTensorRtRtxRuntime(directory))
                 throw new FileNotFoundException("TensorRT RTX native libraries are missing in " + directory);
 
-            foreach (string dependency in TensorRtRtxDependencies)
-                TensorRtRtxHandles.Add(NativeLibrary.Load(Path.Combine(directory, dependency)));
-
-            OrtEnv.Instance().RegisterExecutionProviderLibrary(
-                TensorRtRtxEpName, Path.Combine(directory, TensorRtRtxProviderLibrary));
-
             _tensorRtRtxDirectory = directory;
-            _tensorRtRtxInitialised = true;
-            logger.Notification("[{0}] TensorRT RTX {1} provider registered from {2}",
+            logger.Notification("[{0}] TensorRT RTX {1} provider prepared in {2}",
                 DiffusionPaths.ModId, TensorRtRtxVersion, directory);
             return directory;
         }
     }
 
     /// <summary>
-    /// Makes the Visual C++ runtime available before anything that imports it is loaded, on 64-bit
+    /// The Visual C++ runtime for the worker to load before anything that imports it, on 64-bit
     /// Windows only. A machine whose own runtime is at least <see cref="VcRuntimeVersion"/> keeps
-    /// using it; otherwise the pinned copy is downloaded once and loaded by absolute path, so every
-    /// library loaded afterwards binds its imports to it by name.
+    /// using it and nothing is returned; otherwise the pinned copy is downloaded once and its files
+    /// returned, so the worker loads them by absolute path and every library after binds to them.
     /// </summary>
-    public static void InitializeVisualCppRuntime(ILogger logger, CancellationToken cancellation = default)
+    private static string[] PrepareVisualCppRuntime(ILogger logger, CancellationToken cancellation)
     {
-        if (!HostPlatform.IsWindows || HostPlatform.Architecture != Architecture.X64) return;
-        if (_vcRuntimeInitialised) return;
+        if (!HostPlatform.IsWindows || HostPlatform.Architecture != Architecture.X64) return Array.Empty<string>();
 
         lock (VcRuntimeGate)
         {
-            if (_vcRuntimeInitialised) return;
+            if (_vcRuntimePreload != null) return _vcRuntimePreload;
 
-            if (SystemVisualCppRuntimeIsCurrent(out string found, out string resident))
+            if (SystemVisualCppRuntimeIsCurrent(out string found, out _))
             {
                 logger.Notification("[{0}] Using the Visual C++ runtime installed on this machine ({1}).",
                     DiffusionPaths.ModId, found);
-                _vcRuntimeInitialised = true;
-                return;
+                return _vcRuntimePreload = Array.Empty<string>();
             }
 
             string directory = Path.Combine(
@@ -490,12 +449,12 @@ public static class OnnxRuntimeBootstrap
             bool filesPresent = HasVisualCppRuntime(directory);
             if (!filesPresent || !HasVerifiedVisualCppRuntime(directory))
             {
-                if (!DiffusionConfig.Instance.DownloadRuntime)
+                if (!InferenceSettings.Current.DownloadRuntime)
                 {
                     throw new InvalidOperationException(
                         "Runtime downloads are disabled and this machine's Visual C++ runtime is missing or older " +
                         $"than {VcRuntimeVersion} ({found}). Install the latest Microsoft Visual C++ " +
-                        "Redistributable (x64), or turn DownloadRuntime back on.");
+                        $"Redistributable (x64), or turn {DownloadRuntimeCode} back on.");
                 }
 
                 Downloaded = true;
@@ -506,22 +465,12 @@ public static class OnnxRuntimeBootstrap
                 InstallVisualCppRuntime(client, directory, logger, cancellation);
             }
 
-            // A copy some other part of the process already loaded wins the name lookup, and cannot
-            // be unloaded from here. Say which, so a load failure that follows can be traced to it.
-            if (resident != null)
-            {
-                logger.Warning("[{0}] An older Visual C++ runtime is already loaded in this process ({1}). ONNX " +
-                               "Runtime may bind to it instead of version {2}; if loading the models fails, install " +
-                               "the latest Microsoft Visual C++ Redistributable (x64).",
-                    DiffusionPaths.ModId, resident, VcRuntimeVersion);
-            }
+            var preload = new List<string>();
+            foreach ((string name, _, _) in VcRuntimeFiles) preload.Add(Path.Combine(directory, name));
 
-            foreach ((string name, _, _) in VcRuntimeFiles)
-                VcRuntimeHandles.Add(NativeLibrary.Load(Path.Combine(directory, name)));
-
-            _vcRuntimeInitialised = true;
-            logger.Notification("[{0}] Visual C++ runtime {1} loaded from {2} (this machine has {3}).",
+            logger.Notification("[{0}] Visual C++ runtime {1} prepared in {2} (this machine has {3}).",
                 DiffusionPaths.ModId, VcRuntimeVersion, directory, found);
+            return _vcRuntimePreload = preload.ToArray();
         }
     }
 
@@ -665,26 +614,24 @@ public static class OnnxRuntimeBootstrap
     /// them from the system CUDA install the way this mod has always expected, and nothing on a
     /// Windows machine that already has a toolkit and cuDNN.
     ///
-    /// Like the TensorRT RTX plugin, the libraries are loaded by absolute path before the provider
-    /// is created: cuDNN opens its engine libraries by bare name, and this directory is not on any
-    /// search path the loader would consult for those.
+    /// Like the TensorRT RTX plugin, the worker loads the returned libraries by absolute path
+    /// before the provider is created: cuDNN opens its engine libraries by bare name, and this
+    /// directory is not on any search path the loader would consult for those.
     /// </summary>
-    public static string InitializeCudaLibraries(ILogger logger, CancellationToken cancellation = default)
+    private static string[] PrepareCudaLibraries(ILogger logger, CancellationToken cancellation)
     {
-        if (!HostPlatform.IsWindows || HostPlatform.Architecture != Architecture.X64) return null;
-        if (_cudaLibrariesInitialised) return _cudaLibrariesDirectory;
+        if (!HostPlatform.IsWindows || HostPlatform.Architecture != Architecture.X64) return Array.Empty<string>();
 
         lock (CudaLibrariesGate)
         {
-            if (_cudaLibrariesInitialised) return _cudaLibrariesDirectory;
+            if (_cudaLibrariesPreload != null) return _cudaLibrariesPreload;
 
             if (HasSystemCudaLibraries())
             {
                 logger.Notification(
                     "[{0}] Using the CUDA libraries already installed on this machine; nothing to download.",
                     DiffusionPaths.ModId);
-                _cudaLibrariesInitialised = true;
-                return null;
+                return _cudaLibrariesPreload = Array.Empty<string>();
             }
 
             string directory = Path.Combine(
@@ -692,7 +639,7 @@ public static class OnnxRuntimeBootstrap
             bool filesPresent = HasCudaLibraries(directory);
             if (!filesPresent || !HasVerifiedCudaLibraries(directory))
             {
-                if (!DiffusionConfig.Instance.DownloadRuntime)
+                if (!InferenceSettings.Current.DownloadRuntime)
                 {
                     if (!filesPresent || File.Exists(Path.Combine(directory, CudaLibrariesMarkerFileName)))
                     {
@@ -715,14 +662,12 @@ public static class OnnxRuntimeBootstrap
             if (!HasCudaLibraries(directory))
                 throw new FileNotFoundException("CUDA support libraries are missing in " + directory);
 
-            foreach ((string name, _, _) in CudaLibraryFiles)
-                CudaLibraryHandles.Add(NativeLibrary.Load(Path.Combine(directory, name)));
+            var preload = new List<string>();
+            foreach ((string name, _, _) in CudaLibraryFiles) preload.Add(Path.Combine(directory, name));
 
-            _cudaLibrariesDirectory = directory;
-            _cudaLibrariesInitialised = true;
-            logger.Notification("[{0}] CUDA support libraries ({1}) loaded from {2}",
+            logger.Notification("[{0}] CUDA support libraries ({1}) prepared in {2}",
                 DiffusionPaths.ModId, CudaLibrariesVersion, directory);
-            return directory;
+            return _cudaLibrariesPreload = preload.ToArray();
         }
     }
 
@@ -853,106 +798,71 @@ public static class OnnxRuntimeBootstrap
         Path.Combine(DiffusionPaths.OptimizedModelDirectory, "tensorrt-rtx", TensorRtRtxVersion);
 
     /// <summary>
-    /// Resolves the native runtime and installs the DllImport resolver. Blocking; may download
-    /// tens of megabytes (or a few hundred for CUDA). Safe to call more than once.
+    /// Works out, and downloads if needed, the runtime for this world's device. Blocking; may
+    /// download tens of megabytes (or a few hundred for CUDA). A compatible device whose files
+    /// cannot be prepared - a failed download, a missing file - gives way to
+    /// <see cref="FallbackFor"/> for this world only.
     /// </summary>
-    public static void Initialize(ILogger logger, CancellationToken cancellation = default)
+    internal static RuntimePlan Prepare(ILogger logger, CancellationToken cancellation = default)
     {
-        if (_initialised)
+        Downloaded = false;
+        InferenceProvider provider = ResolveRequestedProvider(InferenceSettings.Current.InferenceDevice, logger);
+        try
         {
-            WarnIfDeviceChanged(logger);
-            return;
+            return Prepare(provider, logger, cancellation);
         }
-        lock (Gate)
+        catch (Exception e) when (provider != InferenceProvider.Cpu && e is not OperationCanceledException)
         {
-            if (_initialised)
-            {
-                WarnIfDeviceChanged(logger);
-                return;
-            }
-
-            InferenceProvider provider = ResolveRequestedProvider(DiffusionConfig.Instance.InferenceDevice, logger);
-
-            // Before anything below loads a library that imports it. Every provider needs it, and a
-            // fallback would too, so a failure here is not one a fallback can route around.
-            InitializeVisualCppRuntime(logger, cancellation);
-
-            // OpenVINO runs beside an ORT CPU build; TensorRT RTX is a plugin on the CUDA build.
-            InferenceProvider onnxProvider = OnnxProviderFor(provider);
-            string directory;
-
-            try
-            {
-                directory = EnsureNativeFiles(
-                    onnxProvider, provider == InferenceProvider.Cuda, logger, cancellation);
-                if (provider == InferenceProvider.OpenVino) InitializeOpenVino(logger, cancellation);
-                if (provider == InferenceProvider.Cuda) InitializeCudaLibraries(logger, cancellation);
-                if (provider == InferenceProvider.TensorRtRtx)
-                {
-                    InstallResolver(directory);   // the plugin registers through the native runtime
-                    InitializeTensorRtRtx(logger, cancellation);
-                }
-            }
-            catch (Exception e) when (provider != InferenceProvider.Cpu && e is not OperationCanceledException)
-            {
-                // The machine can run this provider (InferenceCompatibility let it through), so this is
-                // a failure of the moment - a download, a missing file - and this session carries on
-                // on another backend with the same models. The config is left alone: the device is
-                // the player's choice, and the next start tries it again.
-                InferenceProvider fallback = FallbackFor(provider, logger);
-                logger.Warning("[{0}] Could not prepare the {1} runtime: {2}",
-                    DiffusionPaths.ModId, provider, e.Message);
-                logger.Warning("[{0}] This session runs on {1} instead; {2} stays selected in {3}. Provider changes " +
-                               "can alter newly generated terrain slightly.",
-                    DiffusionPaths.ModId, DeviceName(fallback), DeviceName(provider), DiffusionPaths.ModId + ".json");
-
-                onnxProvider = OnnxProviderFor(fallback);
-                // The P/Invoke resolver pins one native directory for the life of the process, and
-                // the TensorRT RTX path installs it before the plugin can register. A fallback that
-                // needs a different ONNX Runtime build therefore cannot be honoured in this process.
-                if (_resolverDirectory != null &&
-                    !string.Equals(_resolverDirectory, RuntimeDirectoryFor(onnxProvider),
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    throw DiffusionFailure.Fatal(logger,
-                        $"The {DeviceName(provider)} runtime could not be prepared, and {DeviceName(fallback)} needs a " +
-                        "different ONNX Runtime than the one this session already loaded. Fix the cause below, or set " +
-                        $"InferenceDevice to another device in {DiffusionPaths.ModId}.json, then start the game again.", e);
-                }
-
-                provider = fallback;
-                directory = EnsureNativeFiles(
-                    onnxProvider, provider == InferenceProvider.Cuda, logger, cancellation);
-                if (provider == InferenceProvider.Cuda) InitializeCudaLibraries(logger, cancellation);
-            }
-
-            _nativeDirectory = directory;
-            Provider = provider;
-            InstallResolver(directory);
-            _initialised = true;
-
-            logger.Notification("[{0}] ONNX Runtime {1} ({2}) loaded from {3}",
-                DiffusionPaths.ModId, OnnxRuntimeVersion, onnxProvider, directory);
+            InferenceProvider fallback = FallbackFor(provider, logger);
+            WarnFallback(provider, fallback, e, logger);
+            return Prepare(fallback, logger, cancellation);
         }
     }
 
-    /// <summary>
-    /// The native runtime is resolved once per process: its library directory is fixed the moment
-    /// the P/Invoke resolver is installed. A device changed between two worlds in one session
-    /// therefore does nothing until the game restarts, which is worth saying rather than leaving
-    /// the player to infer it from <c>/tdiff status</c>.
-    /// </summary>
-    private static void WarnIfDeviceChanged(ILogger logger)
+    /// <summary>The runtime for <paramref name="provider"/>, downloading what is missing.</summary>
+    internal static RuntimePlan Prepare(InferenceProvider provider, ILogger logger, CancellationToken cancellation)
     {
-        if (_deviceChangeReported) return;
-        InferenceProvider requested = ResolveRequestedProvider(DiffusionConfig.Instance.InferenceDevice, logger);
-        if (requested == Provider) return;
+        // First in the list, so the worker has it before anything that imports it.
+        var preload = new List<string>(PrepareVisualCppRuntime(logger, cancellation));
 
-        _deviceChangeReported = true;
-        logger.Warning(
-            "[{0}] inference device is now '{1}' but this session already started on {2}. The native runtime is " +
-            "loaded once per process, so restart the game for the change to take effect; this world will use {2}.",
-            DiffusionPaths.ModId, DiffusionConfig.Instance.InferenceDevice, Provider);
+        // OpenVINO runs beside an ORT CPU build; TensorRT RTX is a plugin on the CUDA build.
+        string directory = EnsureNativeFiles(
+            OnnxProviderFor(provider), provider == InferenceProvider.Cuda, logger, cancellation);
+        var plan = new RuntimePlan { Provider = provider, OnnxRuntimeDirectory = directory };
+
+        if (provider == InferenceProvider.OpenVino) PrepareOpenVino(logger, cancellation);
+        if (provider == InferenceProvider.Cuda) preload.AddRange(PrepareCudaLibraries(logger, cancellation));
+        if (provider == InferenceProvider.TensorRtRtx)
+        {
+            string tensorRt = PrepareTensorRtRtx(logger, cancellation);
+            foreach (string dependency in TensorRtRtxDependencies) preload.Add(Path.Combine(tensorRt, dependency));
+            plan.PluginName = TensorRtRtxEpName;
+            plan.PluginLibrary = Path.Combine(tensorRt, TensorRtRtxProviderLibrary);
+        }
+
+        plan.Preload = preload.ToArray();
+        return plan;
+    }
+
+    /// <summary>Records the plan the current world's worker runs, for the status command.</summary>
+    internal static void Use(RuntimePlan plan)
+    {
+        Provider = plan.Provider;
+        _nativeDirectory = plan.OnnxRuntimeDirectory;
+    }
+
+    /// <summary>
+    /// Says that this world runs on <paramref name="fallback"/>. The machine can run the chosen
+    /// provider (<see cref="InferenceCompatibility"/> let it through), so this was a failure of the
+    /// moment; the world setting is left alone, and the next world tries it again.
+    /// </summary>
+    internal static void WarnFallback(InferenceProvider provider, InferenceProvider fallback, Exception cause,
+                                      ILogger logger)
+    {
+        logger.Warning("[{0}] Could not prepare the {1} runtime: {2}", DiffusionPaths.ModId, provider, cause.Message);
+        logger.Warning("[{0}] This world runs on {1} instead; {2} stays selected in {3}. Provider changes " +
+                       "can alter newly generated terrain slightly.",
+            DiffusionPaths.ModId, DeviceName(fallback), DeviceName(provider), DeviceCode);
     }
 
     /// <summary>
@@ -969,12 +879,12 @@ public static class OnnxRuntimeBootstrap
     /// <summary>
     /// Where a provider goes when its runtime cannot be prepared: whatever this machine would have
     /// picked for itself (<see cref="InferenceCompatibility.AutomaticDevice"/>), or the CPU when that
-    /// is the provider that just failed. Only this session moves; the config is not touched.
+    /// is the provider that just failed. Only this world moves; the world setting is not touched.
     ///
     /// Naming a provider here instead would assume hardware the player may not have - a fallback
     /// fixed at CUDA lands an AMD machine on a provider it cannot run at all.
     /// </summary>
-    private static InferenceProvider FallbackFor(InferenceProvider provider, ILogger logger)
+    internal static InferenceProvider FallbackFor(InferenceProvider provider, ILogger logger)
     {
         // OpenVINO is already an ONNX Runtime CPU session everywhere except the decoder, so the
         // CPU is where it degrades to - not a GPU the player did not ask this world to be built on.
@@ -984,7 +894,11 @@ public static class OnnxRuntimeBootstrap
         return automatic == provider ? InferenceProvider.Cpu : automatic;
     }
 
-    /// <summary>The provider's <c>inferenceDevice</c> spelling, as the config file writes it.</summary>
+    private static string DeviceCode => InferenceSettings.Code(nameof(InferenceSettings.InferenceDevice));
+
+    private static string DownloadRuntimeCode => InferenceSettings.Code(nameof(InferenceSettings.DownloadRuntime));
+
+    /// <summary>The provider's spelling in the <c>terraindiffusionInferenceDevice</c> world setting.</summary>
     private static string DeviceName(InferenceProvider provider) => provider switch
     {
         InferenceProvider.Cuda => "cuda",
@@ -998,17 +912,11 @@ public static class OnnxRuntimeBootstrap
     private static InferenceProvider ResolveRequestedProvider(string configured, ILogger logger)
     {
         InferenceCompatibility compatibility = InferenceCompatibility.Current;
-        // The config was refused at startup if this machine cannot run the device. Checked again here
-        // so that no path can reach a native runtime the machine cannot run.
+        // The world was refused as it loaded if this machine cannot run the device. Checked again
+        // here so that no path can reach a native runtime the machine cannot run.
         compatibility.RequireDevice(configured, logger);
 
-        string device = configured is "auto" or "gpu" ? compatibility.AutomaticDevice() : configured;
-        if (configured == "gpu" && device == "cpu")
-        {
-            logger.Warning("[{0}] inference device 'gpu' is the automatic choice, which is the CPU on this machine. " +
-                           "Name the GPU provider in {1} to use it: {2}.", DiffusionPaths.ModId,
-                DiffusionPaths.ModId + ".json", string.Join(", ", compatibility.CompatibleDevices()));
-        }
+        string device = configured == "auto" ? compatibility.AutomaticDevice() : configured;
 
         return device switch
         {
@@ -1051,11 +959,7 @@ public static class OnnxRuntimeBootstrap
         public string[] FileNames;
     }
 
-    /// <summary>
-    /// Where a given ONNX Runtime build lives, without fetching anything. Separate from
-    /// <see cref="EnsureNativeFiles"/> so a fallback can be tested against the directory the
-    /// resolver is already pinned to before any of it is downloaded.
-    /// </summary>
+    /// <summary>Where a given ONNX Runtime build lives, without fetching anything.</summary>
     private static string RuntimeDirectoryFor(InferenceProvider provider)
     {
         string flavour = provider == InferenceProvider.Cuda
@@ -1079,10 +983,10 @@ public static class OnnxRuntimeBootstrap
 
         if (HasCompleteRuntime(directory, sources)) return directory;
 
-        if (!DiffusionConfig.Instance.DownloadRuntime)
+        if (!InferenceSettings.Current.DownloadRuntime)
         {
             throw new InvalidOperationException(
-                "Runtime downloads are disabled (downloadRuntime=false) and no complete ONNX Runtime was found in " +
+                $"Runtime downloads are disabled ({DownloadRuntimeCode}=false) and no complete ONNX Runtime was found in " +
                 directory);
         }
 
@@ -1704,11 +1608,5 @@ public static class OnnxRuntimeBootstrap
         // ONNX Runtime does not publish an osx-x64 build for every release; arm64 is the supported Mac target.
         if (os == "osx" && arch == "x64") arch = "x64";
         return os + "-" + arch;
-    }
-
-    private static void InstallResolver(string directory)
-    {
-        NativeLibraryResolver.ConfigureOnnxRuntime(directory);
-        _resolverDirectory = Path.GetFullPath(directory);
     }
 }

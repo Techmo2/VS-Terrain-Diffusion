@@ -5,72 +5,10 @@ namespace VSTerrainDiffusion.Core;
 /// <summary>
 /// Machine-level settings, stored in <c>ModConfig/vsterraindiffusion.json</c>. Everything except
 /// <see cref="WorldGen"/> describes the hardware the server is running on, not the world itself.
+/// How the model runs (device, precisions, throttle) is set per world; see <see cref="InferenceSettings"/>.
 /// </summary>
 public class DiffusionConfig
 {
-    /// <summary>
-    /// "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "directml" or "coreml". OpenVINO and
-    /// TensorRT RTX are selected only when requested explicitly. One this machine cannot run stops
-    /// the game at startup (<see cref="InferenceCompatibility"/>).
-    /// </summary>
-    public string InferenceDevice { get; set; } = "auto";
-
-    /// <summary>"auto", "memory" or "file". Controls where ONNX sessions load model graphs from.</summary>
-    public string ModelLoadMode { get; set; } = "auto";
-
-    /// <summary>
-    /// Keep only one model resident on the GPU at a time, rebuilding a session whenever another
-    /// stage needs the device. That holds peak VRAM near 1.5 GB instead of about 2.5 GB, and it
-    /// costs a great deal: generating one terrain tile runs the latent model and the decoder, so
-    /// every tile pays for at least one session rebuild of a graph that is most of a gigabyte.
-    /// Measured on a 6 GB laptop card, turning this on triples the average tile time (66 ms to
-    /// 197 ms). Off by default; turn it on only if the models will not fit alongside everything
-    /// else on the card.
-    /// </summary>
-    public bool OffloadModels { get; set; }
-
-    /// <summary>
-    /// Share of the time, as a percentage, that world generation may keep the inference device
-    /// busy. 100 is unlimited and is the default.
-    ///
-    /// This exists for frame stuttering in single player, where the model runs on the same GPU the
-    /// game renders with. A graph that is already running cannot be interrupted, so the only lever
-    /// is how often one is started: after each one the generator idles for long enough to hold the
-    /// device to this share, which leaves the renderer regular windows to get a frame out. It
-    /// cannot make an individual model run shorter, so it reduces stutter rather than removing it.
-    /// World generation slows down by the reciprocal - at 50% a terrain tile takes about twice as
-    /// long - so lower this only as far as the stutter actually requires.
-    /// </summary>
-    public int GpuUtilizationPercent { get; set; } = 100;
-
-    /// <summary>Verify SHA-256 of pre-existing model files on startup.</summary>
-    public bool ValidateModelHashes { get; set; } = true;
-
-    /// <summary>
-    /// Download the matching ONNX Runtime and optional OpenVINO native libraries automatically.
-    /// Turn off to supply them yourself under <c>TerrainDiffusionModels/onnxruntime/</c>.
-    /// </summary>
-    public bool DownloadRuntime { get; set; } = true;
-
-    /// <summary>
-    /// "fp32", "fp16" or "int8". Both are opt-in because changing decoder precision can alter
-    /// newly generated terrain slightly. FP16 needs a GPU provider; INT8 is for CPU and OpenVINO.
-    /// </summary>
-    public string DecoderPrecision { get; set; } = "fp32";
-
-    /// <summary>
-    /// "fp32" or "fp16" for the base (latent) model, which is most of the work in a tile. FP16
-    /// needs a GPU provider and is worth the most on TensorRT RTX.
-    /// </summary>
-    public string BasePrecision { get; set; } = "fp32";
-
-    /// <summary>
-    /// "fp32" or "fp16" for the coarse model. Measured on an RTX 3060: FP16 here saves about a
-    /// tenth of a tile's time and moves elevation roughly 2 m, because the coarse sampler runs
-    /// twenty steps and compounds the difference. FP32 unless you have measured otherwise.
-    /// </summary>
-    public string CoarsePrecision { get; set; } = "fp32";
-
     /// <summary>Total megabytes of decoded tensor windows kept across all pipeline stages.</summary>
     public int TileCacheMegabytes { get; set; } = 256;
 
@@ -155,11 +93,6 @@ public class DiffusionConfig
         config ??= new DiffusionConfig();
         config.Sanitize();
 
-        // Before the file is written back, so a refused config is left exactly as the player wrote it.
-        InferenceCompatibility compatibility = InferenceCompatibility.Current;
-        compatibility.Log(api.Logger);
-        compatibility.Require(config, api.Logger);
-
         api.StoreModConfig(config, DiffusionPaths.ModId + ".json");
         _instance = config;
         return config;
@@ -168,11 +101,6 @@ public class DiffusionConfig
     private void Sanitize()
     {
         (WorldGen ??= new WorldGenConfig()).Sanitize();
-
-        // Below about a twentieth the idle windows are longer than the pauses they are meant to
-        // prevent, and world generation stops keeping up with a walking player.
-        if (GpuUtilizationPercent < 5) GpuUtilizationPercent = 5;
-        if (GpuUtilizationPercent > 100) GpuUtilizationPercent = 100;
 
         if (DebugMapPort != 0 && (DebugMapPort < 1024 || DebugMapPort > 65535)) DebugMapPort = 0;
         DebugMapBindAddress = (DebugMapBindAddress ?? "127.0.0.1").Trim();
@@ -196,47 +124,9 @@ public class DiffusionConfig
             TerrainTileSizeBlocks -= TerrainTileSizeBlocks % 32;
         }
 
-        // The device and the precisions are only spelled consistently here, never replaced: a value
-        // that is unknown or cannot run on this machine is refused by InferenceCompatibility, because
-        // quietly substituting another would change the terrain without the player choosing it.
-        InferenceDevice = NormalizeDevice(InferenceDevice);
-
         TerrainSamplerHeight = (TerrainSamplerHeight ?? "full").Trim().ToLowerInvariant();
         if (TerrainSamplerHeight != "coarse") TerrainSamplerHeight = "full";
-
-        ModelLoadMode = (ModelLoadMode ?? "auto").Trim().ToLowerInvariant();
-        switch (ModelLoadMode)
-        {
-            case "auto":
-            case "memory":
-            case "file":
-                break;
-            default:
-                ModelLoadMode = "auto";
-                break;
-        }
-
-        // A missing key is the FP32 default. Anything else is left for InferenceCompatibility to
-        // accept or refuse, including the "auto" earlier development builds wrote for the decoder.
-        DecoderPrecision = NormalizePrecision(DecoderPrecision);
-        BasePrecision = NormalizePrecision(BasePrecision);
-        CoarsePrecision = NormalizePrecision(CoarsePrecision);
     }
-
-    /// <summary>One spelling per device, so "RTX" and "tensorrt-rtx" are the same choice. Missing is "auto".</summary>
-    internal static string NormalizeDevice(string device)
-    {
-        device = (device ?? "auto").Trim().ToLowerInvariant();
-        return device switch
-        {
-            "dml" => "directml",
-            "trt-rtx" or "tensorrtrtx" or "rtx" => "tensorrt-rtx",
-            _ => device
-        };
-    }
-
-    /// <summary>Lower case and trimmed. Missing is "fp32".</summary>
-    internal static string NormalizePrecision(string precision) => (precision ?? "fp32").Trim().ToLowerInvariant();
 }
 
 /// <summary>
@@ -318,12 +208,12 @@ public class WorldGenConfig
     /// units give coasts an even slope instead. 0 turns it off. Recorded in a world when it is
     /// created; existing worlds keep what they were generated with.
     /// </summary>
-    public float ShoreDetail { get; set; } = 2f;
+    public float ShoreDetail { get; set; } = 1f;
 
     /// <summary>
     /// How far the shore detail reaches, in square-root-of-metres: it falls by a factor of e every
     /// this many units, so at 3 it is mostly gone by 60 m. High ground and deep sea end up moved
-    /// by ShoreDetail x ShoreFade blocks (6 at the defaults), not reshaped.
+    /// by ShoreDetail x ShoreFade blocks (3 at the defaults), not reshaped.
     /// </summary>
     public float ShoreFade { get; set; } = 3f;
 
@@ -615,7 +505,7 @@ public class WorldGenConfig
     public string ClimateMode { get; set; } = "";
 
     /// <summary>
-    /// Overrides the world's "Diffusion resolution" setting. Zero uses the world setting. Values
+    /// Overrides the world's "Resolution" setting. Zero uses the world setting. Values
     /// above 6 are only reachable from here.
     /// </summary>
     public int ScaleOverride { get; set; }
@@ -646,7 +536,7 @@ public class WorldGenConfig
         LinearKneeFraction = Clamp(LinearKneeFraction, 0.1f, 0.99f, 0.85f);
         OceanDepthFraction = Clamp(OceanDepthFraction, 0.05f, 1f, 0.9f);
         SlopeDetailStrength = Clamp(SlopeDetailStrength, 0f, 8f, 1f);
-        ShoreDetail = Clamp(ShoreDetail, 0f, 8f, 2f);
+        ShoreDetail = Clamp(ShoreDetail, 0f, 8f, 1f);
         ShoreFade = Clamp(ShoreFade, 0.5f, 20f, 3f);
 
         RainfallBasis = (RainfallBasis ?? "moisture").Trim().ToLowerInvariant();

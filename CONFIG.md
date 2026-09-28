@@ -2,30 +2,45 @@
 
 The mod writes `ModConfig/vsterraindiffusion.json` inside your Vintage Story data folder the first
 time it runs, and rewrites it on every start with any missing keys filled in and any out-of-range
-values pulled back into range. A single player world exposes the four world settings on the creation
-screen as well; everything else lives in this file.
+values pulled back into range.
 
 With [ConfigLib](https://mods.vintagestory.at/configlib) installed the same file gets an in-game
 settings screen, with every field below on it. ConfigLib edits this file in place rather than
-keeping one of its own, so the two ways of setting things stay the same thing. Only
-`GpuUtilizationPercent` and `VerboseInference` take effect the moment they are saved; the rest are
-read when the world generator starts. `InferenceDevice` is the exception: the native runtime loads
-once per process, so it needs the game restarted, not just a new world.
+keeping one of its own. Only `TerrainSamplerHeight` and `VerboseInference` take effect the moment
+they are saved; the rest are read when the world generator starts.
 
 The listing below is the file exactly as the mod generates it, with a comment on every field. **JSON
 does not allow comments** — copy values out of it, do not paste the whole thing over your config.
 [Ranges](#ranges) at the end gives every numeric field's hard limit, the narrower range worth
 staying inside, and its default.
 
-Settings under `WorldGen`, the inference device, and the three model precisions can change what the
-world looks like. OpenVINO, TensorRT RTX and every precision other than FP32 must be selected
-explicitly; keep those machine settings fixed after exploration so new chunks do not disagree
-slightly with the ones already on disk.
+Settings under `WorldGen` change what the world looks like; keep them fixed after exploration so new
+chunks do not disagree with the ones already on disk.
 
-At startup the mod checks which inference devices and precisions this machine can run and logs the
-result. The ConfigLib screen offers only those. A config naming one this machine cannot run, or an
-unrecognised value, stops the game with the reason in the log. The mod never changes the device or a
-precision itself; all three precisions default to `fp32`.
+## World settings
+
+The world options and how the model runs (device, precisions, GPU limit, model loading, downloads)
+are saved with each world, set in the Customize screen's Terrain Diffusion tab. The codes and
+defaults are in the [README](README.md#creating-a-world). A dedicated server sets them in
+`serverconfig.json`:
+
+```json
+"WorldConfig": {
+  "WorldConfiguration": {
+    "terraindiffusionInferenceDevice": "cuda",
+    "terraindiffusionBasePrecision": "fp16"
+  }
+}
+```
+
+`/worldconfig <code> <value>` changes one on an existing world; it is read the next time the world
+loads. ONNX Runtime runs in a worker process that starts with each world and exits with it, so a
+device change needs no game restart.
+
+As a world loads the mod checks which devices and precisions this machine can run and logs the
+result. The Customize screen is built before any mod code runs, so it lists every value; a world
+naming one this machine cannot run, or an unrecognised value, stops loading with the reason and the
+values that would work. The mod never changes the device or a precision itself.
 
 | device | runs when |
 |---|---|
@@ -42,50 +57,10 @@ precision itself; all three precisions default to `fp32`.
 | `fp16` | at least one GPU device above can run |
 | `int8` (decoder) | always |
 
+## The file
+
 ```jsonc
 {
-  // Which execution provider runs the model: "auto", "cpu", "openvino", "cuda", "tensorrt-rtx",
-  // "directml" or "coreml". OpenVINO can accelerate the decoder on 64-bit Linux CPUs; the coarse
-  // and base stages remain on ONNX Runtime CPU to keep memory use predictable. It runs in an
-  // isolated helper and falls back to ONNX Runtime CPU if the native compiler is not usable on the
-  // host. TensorRT RTX needs a GeForce RTX 30xx or newer on 64-bit Windows or Linux, downloads the
-  // NVIDIA runtime once (105 MB on Windows, 140 MB on Linux), builds an engine per model on first
-  // start (seconds, then cached under TerrainDiffusionModels/onnx-cache/tensorrt-rtx). A device
-  // this machine cannot run stops the game at startup. A compatible device whose runtime cannot be
-  // prepared (a failed download, a missing file) runs that session on what "auto" would pick, or
-  // the CPU, and is logged; this file is not changed, so the next start tries the selected device
-  // again. When that replacement needs a different ONNX Runtime than the session already loaded,
-  // the game stops instead. Only what the selected provider actually needs is downloaded:
-  // TensorRT RTX does not fetch the CUDA provider library it never loads, and CUDA on Windows fetches the cuBLAS, cuFFT,
-  // NVRTC and cuDNN libraries it links against (about 1 GB, once) only when the machine does not
-  // already have them, which it will if a CUDA toolkit and cuDNN are installed. Linux and macOS
-  // use the system CUDA install. OpenVINO and TensorRT RTX are opt-in: "auto" never selects them.
-  // Auto picks CoreML on macOS, DirectML on Windows, CUDA on Linux when this machine can run it,
-  // and CPU everywhere else.
-  "InferenceDevice": "auto",
-
-  // Where ONNX Runtime loads model graphs from: "memory", "file", or "auto". Memory makes GPU
-  // model switching faster. File uses about 1 GB less RAM with the current optimised models.
-  // Auto uses files for CPU inference, resident GPU sessions, and GPU hosts with less than 8 GB
-  // available; otherwise it keeps the graphs in memory.
-  "ModelLoadMode": "auto",
-
-  // Keep only one of the three models resident on the GPU at a time, holding peak VRAM near
-  // 1.5 GB instead of about 2.5 GB. Generating a single terrain tile runs the latent model and the
-  // decoder, so with this on every tile pays to rebuild a session for a graph of most of a
-  // gigabyte: measured on a 6 GB card it triples the average tile time, 66 ms to 197 ms. Turn it
-  // on only if the models will not fit on the card alongside everything else.
-  "OffloadModels": false,
-
-  // Share of the time, as a percentage, that world generation may keep the inference device busy.
-  // 100 is unlimited. Lower this if generating chunks makes the game stutter: the model runs on the
-  // same GPU the game renders with, and a graph that has been submitted runs to completion, so the
-  // only lever is how often one is submitted. After each model run the generator idles for long
-  // enough to hold the device to this share, which leaves the renderer regular windows to get a
-  // frame out. World generation slows by the reciprocal - at 50% a terrain tile takes about twice
-  // as long. Changeable while the server runs, with /tdiff gpulimit.
-  "GpuUtilizationPercent": 100,
-
   // How this mod answers Algernon's Terrain Sampler, which other mods use to predict terrain
   // without generating it: "full" or "coarse". Full builds the model's terrain tile around the
   // position and matches the generated terrain exactly, but runs the model for ground not generated
@@ -93,36 +68,6 @@ precision itself; all three precisions default to `fp32`.
   // to about 512 blocks (5 blocks off on average). The first sample in a new 32 km area also pays
   // for building Rivers' network there (~10 s), either way. Takes effect immediately.
   "TerrainSamplerHeight": "full",
-
-  // Check the SHA-256 of model files that are already on disk at every startup. Turning this off
-  // saves a few seconds of hashing per start; file sizes are still checked.
-  "ValidateModelHashes": true,
-
-  // Download the matching ONNX Runtime and, when selected, OpenVINO native libraries
-  // automatically. On 64-bit Windows this includes the Visual C++ runtime (6.8 MB, once, from
-  // Microsoft) when the machine's own is missing or older than 14.39. Turn off to supply them
-  // yourself under TerrainDiffusionModels/onnxruntime/, and install the Visual C++ Redistributable.
-  "DownloadRuntime": true,
-
-  // Decoder model precision: "fp32", "fp16" or "int8". The matching decoder is downloaded
-  // automatically; the others are not required. FP16 is for GPU providers, INT8 for the CPU and
-  // OpenVINO. Neither is ever selected automatically because both change newly generated terrain
-  // slightly. If the selected decoder cannot be downloaded or verified, loading stops instead of
-  // silently changing precision.
-  "DecoderPrecision": "fp32",
-
-  // Base (latent) model precision: "fp32" or "fp16". The base model is most of a tile's work, so
-  // this is the GPU speed setting. On an RTX 3060 over ten 128x128 regions: CUDA FP32 19.0 s,
-  // TensorRT RTX FP32 12.5 s (~0.3 m elevation difference), TensorRT RTX with FP16 base and
-  // decoder 7.6 s (~4 m mean, 23 m worst) — against ~2.6 m for the same world on a CPU rather than
-  // this GPU. Needs a GPU provider: ORT's CPU kernels widen fp16 back to float, which is slower
-  // than FP32 and still changes the terrain. The mod warns if you ask for that.
-  "BasePrecision": "fp32",
-
-  // Coarse model precision: "fp32" or "fp16". Worth its own setting because the trade is poor:
-  // the coarse sampler runs twenty steps per tile and compounds small differences, so on the same
-  // bench FP16 here saved 0.3 s and moved elevation a further 2 m. FP32 unless you measure better.
-  "CoarsePrecision": "fp32",
 
   // Total megabytes of decoded tensor windows kept across all pipeline stages.
   "TileCacheMegabytes": 256,
@@ -230,11 +175,11 @@ precision itself; all three precisions default to `fp32`.
     // rows spaced in its own units give coasts an even slope and shelving shallows instead. 0 turns
     // it off. Recorded in a world when it is created; existing worlds keep what they were
     // generated with.
-    "ShoreDetail": 2.0,
+    "ShoreDetail": 1.0,
 
     // How far the shore detail reaches, in square-root-of-metres: it falls by a factor of e every
     // this many units (9 m at 3) and is mostly gone by 60 m. High ground and deep sea end up moved
-    // by ShoreDetail x ShoreFade blocks, 6 at the defaults, not reshaped.
+    // by ShoreDetail x ShoreFade blocks, 3 at the defaults, not reshaped.
     "ShoreFade": 3.0,
 
     // ---- Climate and vegetation --------------------------------------------------------------
@@ -472,15 +417,15 @@ precision itself; all three precisions default to `fp32`.
     "StartingClimateNorthSouthCost": 2.0,
 
     // ---- World creation overrides ------------------------------------------------------------
-    // These three mirror settings on the world creation screen. A dedicated server has no such
-    // screen, so this is where you set them.
+    // These three override the world's own Terrain Diffusion settings on every world this machine
+    // loads. Leave them at their defaults to use the world's.
 
     // How much of the climate the model drives: "full" for model temperature, rainfall and
     // vegetation with no latitude bands, "off" to leave Vintage Story's climate alone. Empty uses
     // the world's own setting, which also defaults to full.
     "ClimateMode": "",
 
-    // Overrides the world's "Diffusion resolution" setting. It is a divisor of the model's native
+    // Overrides the world's "Resolution" setting. It is a divisor of the model's native
     // 30 m pixel, so 1 is 30 m per block, 2 (the default) is 15 m, 4 is 7.5 m. Zero uses the
     // world setting; values above 6 are only reachable from here. Finer costs generation time and
     // shrinks the world you can walk across; the climate map no longer limits it.
@@ -502,7 +447,6 @@ only has to stop the mod breaking, not stop the world looking silly.
 
 | Field | Clamped to | Useful | Default |
 | --- | --- | --- | --- |
-| `GpuUtilizationPercent` | 5 – 100 | 40 – 100 | 100 |
 | `DebugMapPort` | 0, or 1024 – 65535 | 8088 | 0 (off) |
 | `DebugMapHistoryTiles` | 64 – 65536 | 512 – 8192 | 2048 |
 | `TileCacheMegabytes`, `TerrainTileCacheMegabytes` | 32 – 4096 | 128 – 1024 | 256 |
@@ -518,7 +462,7 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `LinearKneeFraction` | 0.1 – 0.99 | 0.7 – 0.95 | 0.85 |
 | `OceanDepthFraction` | 0.05 – 1 | 0.6 – 1 | 0.9 |
 | `SlopeDetailStrength` | 0 – 8 | 0.5 – 2 | 1 |
-| `ShoreDetail` | 0 – 8 | 1 – 4 | 2 |
+| `ShoreDetail` | 0 – 8 | 1 – 4 | 1 |
 | `ShoreFade` | 0.5 – 20 | 2 – 6 | 3 |
 | `MoistureMedian` | 0.01 – 100 | 0.4 – 0.9 | 0.62 |
 | `MoistureSpread`, `RainfallSpread` | 0.1 – 4 | 0.7 – 1.4, 0.6 – 1.2 | 1, 0.8 |
@@ -543,24 +487,21 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `ScaleOverride` | 0, or 1 – 16 | 0, or 1 – 6 | 0 |
 | `VerticalExaggerationOverride` | 0, or 0.05 – 20 | 0, or 0.5 – 2 | 0 |
 
-An unrecognised `ModelLoadMode`, `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls
-back to its default. An unrecognised or incompatible `InferenceDevice`, `CoarsePrecision`,
-`BasePrecision` or `DecoderPrecision` stops the game.
+An unrecognised `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls back to its
+default.
 
 Only the selected models are downloaded, into `TerrainDiffusionModels/`:
 
 | setting | file |
 |---|---|
-| `decoderPrecision: "int8"` | `decoder_model.int8.onnx` |
-| `decoderPrecision: "fp16"` | `decoder_model.fp16.256.onnx` |
-| `basePrecision: "fp16"` | `base_model.fp16.onnx` |
-| `coarsePrecision: "fp16"` | `coarse_model.fp16.onnx` |
+| `terraindiffusionDecoderPrecision: "int8"` | `decoder_model.int8.onnx` |
+| `terraindiffusionDecoderPrecision: "fp16"` | `decoder_model.fp16.256.onnx` |
+| `terraindiffusionBasePrecision: "fp16"` | `base_model.fp16.onnx` |
+| `terraindiffusionCoarsePrecision: "fp16"` | `coarse_model.fp16.onnx` |
 
 The decoder's half-precision file carries a window size because a decoder graph is exported for one
 height and width and loads at no other. 256x256 is fixed in the pipeline; `TerrainTileSizeBlocks`
 changes how many windows run per tile, not their shape.
 
 Recipes are under `scripts/`; each model is built and published by a workflow in
-`.github/workflows/` that verifies its exact size and SHA-256. Keep
-`InferenceDevice` and the three precision settings fixed for an established world: changing any of
-them can introduce small numerical differences in newly generated terrain at chunk boundaries.
+`.github/workflows/` that verifies its exact size and SHA-256.

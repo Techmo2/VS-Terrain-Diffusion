@@ -50,11 +50,9 @@ if errorlevel 1 goto :fail
 
 copy /y "%output%\VSTerrainDiffusion.dll" "%staging%\" >nul
 if errorlevel 1 goto :fail
-copy /y "%output%\Microsoft.ML.OnnxRuntime.dll" "%staging%\" >nul
-if errorlevel 1 goto :fail
-copy /y "%output%\System.Numerics.Tensors.dll" "%staging%\" >nul
-if errorlevel 1 goto :fail
 copy /y "%project%\modinfo.json" "%staging%\" >nul
+if errorlevel 1 goto :fail
+copy /y "%project%\worldconfig.json" "%staging%\" >nul
 if errorlevel 1 goto :fail
 if exist "%project%\modicon.png" (
     copy /y "%project%\modicon.png" "%staging%\" >nul

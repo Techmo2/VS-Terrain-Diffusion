@@ -190,7 +190,7 @@ public sealed class DiffusionWorldSettings
     /// climate tables, so it cannot answer until the download has finished.
     /// </summary>
     public static bool EnabledForWorld(ICoreServerAPI api) =>
-        ReadWorldConfig(api.WorldManager.SaveGame.WorldConfiguration, "diffusionTerrain", "true").ToBool(true);
+        ReadWorldConfig(api.WorldManager.SaveGame.WorldConfiguration, "terraindiffusionEnabled", "true").ToBool(true);
 
     /// <summary>
     /// Reads the world's settings. Requires the model assets, so call it only once
@@ -203,11 +203,11 @@ public sealed class DiffusionWorldSettings
 
         int scale = shaping.ScaleOverride != 0
             ? shaping.ScaleOverride
-            : GameMathClamp(ReadWorldConfig(worldConfig, "diffusionScale", "2").ToInt(2), 1, 16);
+            : GameMathClamp(ReadWorldConfig(worldConfig, "terraindiffusionScale", "2").ToInt(2), 1, 16);
 
         float exaggeration = shaping.VerticalExaggerationOverride != 0f
             ? shaping.VerticalExaggerationOverride
-            : Math.Clamp(ReadWorldConfig(worldConfig, "diffusionVerticalExaggeration", "1").ToFloat(1f), 0.05f, 20f);
+            : Math.Clamp(ReadWorldConfig(worldConfig, "terraindiffusionVerticalExaggeration", "1").ToFloat(1f), 0.05f, 20f);
 
         // The two global climate settings are split between the climate the model is conditioned
         // on and a correction to what it produces; see ClimateShift. The model is asked for the
@@ -224,7 +224,7 @@ public sealed class DiffusionWorldSettings
             Enabled = EnabledForWorld(api),
             ClimateMode = ParseClimateMode(shaping.ClimateMode.Length > 0
                 ? shaping.ClimateMode
-                : ReadWorldConfig(worldConfig, "diffusionClimate", "full")),
+                : ReadWorldConfig(worldConfig, "terraindiffusionClimate", "full")),
             Scale = scale,
             VerticalExaggeration = exaggeration,
             SlopeDetailStrength = shaping.SlopeDetailStrength,
@@ -298,7 +298,7 @@ public sealed class DiffusionWorldSettings
     /// creation screen writes these as strings, but a value set in serverconfig.json arrives
     /// typed, and <c>ITreeAttribute.GetString</c> silently returns the fallback for those.
     /// </summary>
-    private static string ReadWorldConfig(ITreeAttribute config, string code, string fallback)
+    internal static string ReadWorldConfig(ITreeAttribute config, string code, string fallback)
     {
         object value = config?[code]?.GetValue();
         string text = value switch

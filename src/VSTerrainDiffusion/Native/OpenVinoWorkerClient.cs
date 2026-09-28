@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,13 +26,6 @@ public sealed class OpenVinoWorkerClient : IDisposable
 {
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RunTimeout = TimeSpan.FromSeconds(30);
-    private static readonly string[] WorkerFiles =
-    {
-        "VSTerrainDiffusion.OpenVinoWorker.dll",
-        "VSTerrainDiffusion.OpenVinoWorker.deps.json",
-        "VSTerrainDiffusion.OpenVinoWorker.runtimeconfig.json"
-    };
-
     private readonly object _gate = new();
     private readonly Process _process;
     private readonly BinaryWriter _writer;
@@ -50,30 +42,17 @@ public sealed class OpenVinoWorkerClient : IDisposable
     {
         _progress = progress;
         _modelName = modelName;
-        string workerDirectory = Path.Combine(Path.GetFullPath(nativeDirectory), "worker");
-        string workerPath = ExtractWorker(workerDirectory);
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = ResolveDotnetHost(),
-            WorkingDirectory = workerDirectory,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-        startInfo.ArgumentList.Add(workerPath);
-        startInfo.ArgumentList.Add(Path.GetFullPath(modelPath));
-        startInfo.ArgumentList.Add(Path.GetFullPath(cacheDirectory));
-        startInfo.ArgumentList.Add(Path.GetFullPath(nativeDirectory));
-        startInfo.ArgumentList.Add(Math.Max(1, threadCount).ToString(CultureInfo.InvariantCulture));
+        ProcessStartInfo startInfo = WorkerProcess.StartInfo(
+            "openvino",
+            Path.GetFullPath(modelPath),
+            Path.GetFullPath(cacheDirectory),
+            Path.GetFullPath(nativeDirectory),
+            Math.Max(1, threadCount).ToString(CultureInfo.InvariantCulture));
 
         string? inheritedLibraryPath = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH");
         startInfo.Environment["LD_LIBRARY_PATH"] = string.IsNullOrWhiteSpace(inheritedLibraryPath)
             ? Path.GetFullPath(nativeDirectory)
             : Path.GetFullPath(nativeDirectory) + Path.PathSeparator + inheritedLibraryPath;
-        startInfo.Environment.Remove("LD_PRELOAD");
 
         _process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Could not start the OpenVINO worker process");
@@ -208,49 +187,6 @@ public sealed class OpenVinoWorkerClient : IDisposable
         if (_process.HasExited) message += $" (exit code {_process.ExitCode})";
         if (details.Length != 0) message += ": " + details;
         return new OpenVinoWorkerException(message, inner);
-    }
-
-    private static string ExtractWorker(string directory)
-    {
-        Directory.CreateDirectory(directory);
-        Assembly assembly = typeof(OpenVinoWorkerClient).Assembly;
-        foreach (string name in WorkerFiles)
-        {
-            using Stream resource = assembly.GetManifestResourceStream(name)
-                ?? throw new FileNotFoundException($"Embedded OpenVINO worker file is missing: {name}");
-            string target = Path.Combine(directory, name);
-            string temporary = target + ".tmp-" + Guid.NewGuid().ToString("N");
-            try
-            {
-                using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                    resource.CopyTo(output);
-                File.Move(temporary, target, overwrite: true);
-            }
-            finally
-            {
-                try { File.Delete(temporary); } catch { }
-            }
-        }
-        return Path.Combine(directory, WorkerFiles[0]);
-    }
-
-    private static string ResolveDotnetHost()
-    {
-        string? configured = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
-        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured)) return configured;
-
-        string? processPath = Environment.ProcessPath;
-        if (!string.IsNullOrWhiteSpace(processPath) &&
-            string.Equals(Path.GetFileNameWithoutExtension(processPath), "dotnet", StringComparison.OrdinalIgnoreCase))
-            return processPath;
-
-        string? root = Environment.GetEnvironmentVariable("DOTNET_ROOT");
-        if (!string.IsNullOrWhiteSpace(root))
-        {
-            string candidate = Path.Combine(root, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
-            if (File.Exists(candidate)) return candidate;
-        }
-        return OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet";
     }
 
     private void ThrowIfDisposed()
