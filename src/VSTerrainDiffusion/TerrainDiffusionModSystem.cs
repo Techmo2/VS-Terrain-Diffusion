@@ -570,7 +570,10 @@ public class TerrainDiffusionModSystem : ModSystem
 
         ChunkColumnGenerationDelegate replacement = OnTerrainPass;
 
-        // Re-initialisation (for example /wgen regen) hits this a second time.
+        // Re-initialisation (for example /wgen regen) hits this a second time. Our handler may by
+        // then sit inside another mod's wrapper - ChunkLOD's worldgen profiler wraps every handler
+        // in the pass - where it cannot be swapped and need not be: it reads _generator on every
+        // call, so the wrapped copy already runs the generator this initialisation built.
         if (_installedHandler != null)
         {
             int existing = terrainPass.IndexOf(_installedHandler);
@@ -578,6 +581,13 @@ public class TerrainDiffusionModSystem : ModSystem
             {
                 terrainPass[existing] = replacement;
                 _installedHandler = replacement;
+                return;
+            }
+
+            if (terrainPass.Exists(d => Holds(d, _installedHandler, depth: 3)))
+            {
+                _api.Logger.VerboseDebug("[{0}] Terrain handler is still installed, inside another mod's wrapper",
+                    DiffusionPaths.ModId);
                 return;
             }
         }
@@ -599,6 +609,27 @@ public class TerrainDiffusionModSystem : ModSystem
         }
 
         _installedHandler = replacement;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="handler"/> is <paramref name="target"/>, or wraps it: a closure or
+    /// object whose fields hold it, to <paramref name="depth"/> wrappers deep.
+    /// </summary>
+    private static bool Holds(Delegate handler, Delegate target, int depth)
+    {
+        if (handler == null) return false;
+        if (handler.Equals(target)) return true;
+        if (depth <= 0 || handler.Target == null) return false;
+
+        foreach (System.Reflection.FieldInfo field in handler.Target.GetType().GetFields(
+                     System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public |
+                     System.Reflection.BindingFlags.NonPublic))
+        {
+            if (typeof(Delegate).IsAssignableFrom(field.FieldType) &&
+                Holds(field.GetValue(handler.Target) as Delegate, target, depth - 1))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
