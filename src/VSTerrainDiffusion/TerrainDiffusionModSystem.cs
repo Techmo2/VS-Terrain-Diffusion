@@ -76,6 +76,9 @@ public class TerrainDiffusionModSystem : ModSystem
         ConfigLibCompat.Install(api);
 
         api.Event.InitWorldGenerator(OnInitWorldGenerator, "standard");
+
+        // Before any world generator's set-up, one of which loads the tree bands it moves.
+        TreeHeightFrame.Install();
         api.Event.MapRegionGeneration(OnMapRegionGeneration, "standard");
 
         // After GenBlockLayers, which is registered on the same pass at execute order 0.4.
@@ -188,7 +191,7 @@ public class TerrainDiffusionModSystem : ModSystem
         if (_settings.ClimateMode != DiffusionClimateMode.Off)
         {
             ClimateScale.Install(_api.Logger, ClimateScale.ScaleFor(_settings.MeanMetersPerBlockVertical));
-            SurfaceClimateCompat.Install(_api);
+            SurfaceClimateCompat.Install(_api, _settings.Heights);
         }
         else
         {
@@ -196,18 +199,19 @@ public class TerrainDiffusionModSystem : ModSystem
             SurfaceClimateCompat.Uninstall();
         }
 
-        if (DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic)
+        // Always, even when there is nothing to move: the bands are shared by every world in the
+        // process, so one moved for the last world has to be put back for this one.
+        try
         {
-            try
-            {
-                BlockLayerAltitude.Apply(_api, _settings);
-            }
-            catch (Exception e)
-            {
-                throw DiffusionFailure.Fatal(_api.Logger,
-                    "The surface block layer altitudes could not be rescaled for this world's " +
-                    "vertical exaggeration.", e);
-            }
+            bool exaggerated = DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic;
+            BlockLayerAltitude.Apply(_api, _settings, exaggerated);
+            TreeHeightFrame.Use(_settings, exaggerated, _api.Logger);
+        }
+        catch (Exception e)
+        {
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "The altitude bands of surface layers and trees could not be fitted to this world's sea level " +
+                "and vertical scale.", e);
         }
 
         RecordSpawn(spawn);
@@ -1228,7 +1232,7 @@ public class TerrainDiffusionModSystem : ModSystem
             "",
             $"Terrain height: Y {terrainHeight}",
             $"Rain height: Y {rainHeight}",
-            $"Sea level: Y {_api.World.SeaLevel}",
+            $"Sea level: Y {_settings.SeaLevel}",
             "",
             "Blocks:"
         };
@@ -1282,6 +1286,7 @@ public class TerrainDiffusionModSystem : ModSystem
         WatershedsCompat.Uninstall();
         RiversCompat.Uninstall();
         TerrainSamplerCompat.Uninstall();
+        TreeHeightFrame.Uninstall();
         SurfaceClimateCompat.Uninstall();
         TranslocatorSearchCompat.Uninstall();
         ClimateScale.Uninstall();

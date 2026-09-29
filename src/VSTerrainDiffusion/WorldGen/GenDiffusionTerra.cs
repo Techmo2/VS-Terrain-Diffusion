@@ -38,8 +38,8 @@ public sealed class GenDiffusionTerra
         _provider = provider;
         _settings = settings;
         _globalConfig = GlobalConfig.GetInstance(api);
-        _mapSizeY = api.WorldManager.MapSizeY;
-        _seaLevel = api.World.SeaLevel;
+        _mapSizeY = settings.MapSizeY;
+        _seaLevel = settings.SeaLevel;
     }
 
     public void OnChunkColumnGen(IChunkColumnGenerateRequest request)

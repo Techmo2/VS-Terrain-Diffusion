@@ -56,6 +56,21 @@
     },
     {
       "category": "terraindiffusion",
+      "code": "terraindiffusionSeaLevel",
+      "dataType": "dropdown",
+      "values": [
+        "vanilla",
+        "128"
+      ],
+      "names": [
+        "vanilla",
+        "128"
+      ],
+      "default": "vanilla",
+      "onlyDuringWorldCreate": true
+    },
+    {
+      "category": "terraindiffusion",
       "code": "terraindiffusionClimate",
       "dataType": "dropdown",
       "values": [
