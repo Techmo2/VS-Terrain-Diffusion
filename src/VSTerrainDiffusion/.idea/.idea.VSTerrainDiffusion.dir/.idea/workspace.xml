@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="CMakeProjectFlavorService">
+    <option name="flavorId" value="CMakePlainProjectFlavor" />
+  </component>
+  <component name="CMakeSettings">
+    <configurations />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="be5bc7be-32fb-4df4-9619-ddf67acaac04" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/../../.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/../../.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../../CONFIG.md" beforeDir="false" afterPath="$PROJECT_DIR$/../../CONFIG.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../../README.md" beforeDir="false" afterPath="$PROJECT_DIR$/../../README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Core/DiffusionConfig.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Core/DiffusionConfig.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Core/DiffusionWorldSettings.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Core/DiffusionWorldSettings.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Core/InferenceSettings.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Core/InferenceSettings.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Core/LatitudeBands.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Core/LatitudeBands.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Debug/DebugMapServer.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Debug/DebugMapServer.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Debug/map.html" beforeDir="false" afterPath="$PROJECT_DIR$/Debug/map.html" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Pipeline/WorldPipeline.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Pipeline/WorldPipeline.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/TerrainDiffusionModSystem.cs" beforeDir="false" afterPath="$PROJECT_DIR$/TerrainDiffusionModSystem.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/WorldGen/DiffusionMapLayers.cs" beforeDir="false" afterPath="$PROJECT_DIR$/WorldGen/DiffusionMapLayers.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/WorldGen/OceanMapLandmask.cs" beforeDir="false" afterPath="$PROJECT_DIR$/WorldGen/OceanMapLandmask.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/WorldGen/RiverBasinMap.cs" beforeDir="false" afterPath="$PROJECT_DIR$/WorldGen/RiverBasinMap.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/WorldGen/TerrainDiffusionProvider.cs" beforeDir="false" afterPath="$PROJECT_DIR$/WorldGen/TerrainDiffusionProvider.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/assets/game/lang/worldconfig-en.json" beforeDir="false" afterPath="$PROJECT_DIR$/assets/game/lang/worldconfig-en.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/assets/vsterraindiffusion/config/configlib-patches.json" beforeDir="false" afterPath="$PROJECT_DIR$/assets/vsterraindiffusion/config/configlib-patches.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/assets/vsterraindiffusion/lang/en.json" beforeDir="false" afterPath="$PROJECT_DIR$/assets/vsterraindiffusion/lang/en.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/worldconfig.json" beforeDir="false" afterPath="$PROJECT_DIR$/worldconfig.json" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="EmbeddingIndexingInfo">
+    <option name="cachedIndexableFilesCount" value="81" />
+    <option name="fileBasedEmbeddingIndicesEnabled" value="true" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="JSON File" />
+      </list>
+    </option>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$/../.." />
+  </component>
+  <component name="HighlightingSettingsPerFile">
+    <setting file="file://$PROJECT_DIR$/Core/GpuInfo.cs" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Core/GpuInfoFactory.cs" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Core/SystemInfo.cs" root0="FORCE_HIGHLIGHTING" />
+  </component>
+  <component name="McpProjectServerCommands">
+    <commands />
+    <urls />
+  </component>
+  <component name="NextEditCompletionFeaturesState">
+    <decayedCancelled>
+      <entry key="MS100" value="1.000017916297483" />
+      <entry key="MS500" value="1.2077298800924225" />
+      <entry key="S2" value="3.476675614203344" />
+      <entry key="S5" value="6.33915597043108" />
+      <entry key="S10" value="8.213917130196052" />
+      <entry key="S30" value="9.94242335856331" />
+      <entry key="S60" value="10.452957069643421" />
+      <entry key="M2" value="10.72173509541169" />
+      <entry key="M5" value="10.887609921477877" />
+      <entry key="M10" value="11.02846961629029" />
+      <entry key="M15" value="11.891803625710182" />
+      <entry key="M30" value="24.6680152191598" />
+      <entry key="H1" value="85.84528884234187" />
+      <entry key="H2" value="210.75861182525563" />
+      <entry key="H4" value="347.6847571116806" />
+      <entry key="D1" value="538.5886472775824" />
+      <entry key="W1" value="581.4978233921628" />
+    </decayedCancelled>
+    <decayedSelected>
+      <entry key="MS100" value="0.0" />
+      <entry key="MS500" value="0.0" />
+      <entry key="S2" value="0.0" />
+      <entry key="S5" value="0.0" />
+      <entry key="S10" value="0.0" />
+      <entry key="S30" value="4.566198234547826E-110" />
+      <entry key="S60" value="4.745175721364569E-55" />
+      <entry key="M2" value="2.052017502144584E-27" />
+      <entry key="M5" value="1.1440001406220121E-10" />
+      <entry key="M10" value="5.5151117022795555E-5" />
+      <entry key="M15" value="0.0046175222563866105" />
+      <entry key="M30" value="0.4061057040728739" />
+      <entry key="H1" value="3.8947294309083498" />
+      <entry key="H2" value="12.138072501130258" />
+      <entry key="H4" value="21.464243590259308" />
+      <entry key="D1" value="34.54646062052937" />
+      <entry key="W1" value="37.48618896202513" />
+    </decayedSelected>
+    <decayedShown>
+      <entry key="MS100" value="0.9592814253278829" />
+      <entry key="MS500" value="1.1980134137993765" />
+      <entry key="S2" value="3.470204206552908" />
+      <entry key="S5" value="6.334255103728732" />
+      <entry key="S10" value="8.210641214946843" />
+      <entry key="S30" value="9.941065720648446" />
+      <entry key="S60" value="10.452238080497336" />
+      <entry key="M2" value="10.721364948209956" />
+      <entry key="M5" value="10.887459222581304" />
+      <entry key="M10" value="11.028448054803144" />
+      <entry key="M15" value="11.896351410941776" />
+      <entry key="M30" value="25.073389264221902" />
+      <entry key="H1" value="89.73651982452387" />
+      <entry key="H2" value="222.89110239573358" />
+      <entry key="H4" value="369.14399221817257" />
+      <entry key="D1" value="573.1337462708443" />
+      <entry key="W1" value="618.9838007785621" />
+    </decayedShown>
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 8,
+  &quot;fromUser&quot;: false
+}</component>
+  <component name="ProjectId" id="3Ii1Lpg3fUL4pk7UzUPtPzSbHqv" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.MCP Project settings loaded": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.cidr.known.project.marker": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.readMode.enableVisualFormatting": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "cidr.known.project.marker": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
+    "git-widget-placeholder": "main",
+    "junie.onboarding.icon.badge.shown": "true",
+    "last_opened_file_path": "/home/bradly/Projects/VSDiffusionTerrain/src/VSTerrainDiffusion",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "ml.llm.LLMConfigurable",
+    "to.speed.mode.migration.done": "true"
+  }
+}]]></component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="be5bc7be-32fb-4df4-9619-ddf67acaac04" name="Changes" comment="" />
+      <created>1788232523209</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1788232523209</updated>
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="UnityProjectConfiguration" hasMinimizedUI="false" />
+  <component name="VcsManagerConfiguration">
+    <option name="CLEAR_INITIAL_COMMIT_MESSAGE" value="true" />
+  </component>
+  <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <breakpoints>
+        <breakpoint enabled="true" type="DotNet_Exception_Breakpoints">
+          <properties exception="System.OperationCanceledException" breakIfHandledByOtherCode="false" displayValue="System.OperationCanceledException" />
+          <option name="timeStamp" value="1" />
+        </breakpoint>
+        <breakpoint enabled="true" type="DotNet_Exception_Breakpoints">
+          <properties exception="System.Threading.Tasks.TaskCanceledException" breakIfHandledByOtherCode="false" displayValue="System.Threading.Tasks.TaskCanceledException" />
+          <option name="timeStamp" value="2" />
+        </breakpoint>
+        <breakpoint enabled="true" type="DotNet_Exception_Breakpoints">
+          <properties exception="System.Threading.ThreadAbortException" breakIfHandledByOtherCode="false" displayValue="System.Threading.ThreadAbortException" />
+          <option name="timeStamp" value="3" />
+        </breakpoint>
+      </breakpoints>
+    </breakpoint-manager>
+  </component>
+  <component name="XSLT-Support.FileAssociations.UIState">
+    <expand />
+    <select />
+  </component>
+</project>

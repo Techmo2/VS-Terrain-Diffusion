@@ -511,7 +511,6 @@ Only the selected models are downloaded, into `TerrainDiffusionModels/`:
 | `terraindiffusionDecoderPrecision: "int8"` | `decoder_model.int8.onnx` |
 | `terraindiffusionDecoderPrecision: "fp16"` | `decoder_model.fp16.256.onnx` |
 | `terraindiffusionBasePrecision: "fp16"` | `base_model.fp16.onnx` |
-| `terraindiffusionCoarsePrecision: "fp16"` | `coarse_model.fp16.onnx` |
 
 The decoder's half-precision file carries a window size because a decoder graph is exported for one
 height and width and loads at no other. 256x256 is fixed in the pipeline; `TerrainTileSizeBlocks`

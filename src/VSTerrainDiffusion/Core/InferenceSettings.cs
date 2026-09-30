@@ -56,9 +56,6 @@ public sealed class InferenceSettings
     /// <summary>"fp32" or "fp16" for the base (latent) model, which is most of the work in a tile.</summary>
     public string BasePrecision { get; private init; } = "fp32";
 
-    /// <summary>"fp32" or "fp16" for the coarse model.</summary>
-    public string CoarsePrecision { get; private init; } = "fp32";
-
     private static InferenceSettings _current;
 
     /// <summary>The loaded world's settings, or the defaults when no world has been loaded (offline tools).</summary>
@@ -87,8 +84,7 @@ public sealed class InferenceSettings
             ValidateModelHashes = Read(world, nameof(ValidateModelHashes), "true").ToBool(defaults.ValidateModelHashes),
             DownloadRuntime = Read(world, nameof(DownloadRuntime), "true").ToBool(defaults.DownloadRuntime),
             DecoderPrecision = Normalize(Read(world, nameof(DecoderPrecision), defaults.DecoderPrecision)),
-            BasePrecision = Normalize(Read(world, nameof(BasePrecision), defaults.BasePrecision)),
-            CoarsePrecision = Normalize(Read(world, nameof(CoarsePrecision), defaults.CoarsePrecision))
+            BasePrecision = Normalize(Read(world, nameof(BasePrecision), defaults.BasePrecision))
         };
 
         if (Array.IndexOf(AllModelLoadModes, settings.ModelLoadMode) < 0)

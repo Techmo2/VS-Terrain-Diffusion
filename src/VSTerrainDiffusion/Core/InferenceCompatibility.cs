@@ -22,7 +22,6 @@ public sealed class InferenceCompatibility
     public static readonly string[] AllDevices =
         { "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "directml", "coreml" };
 
-    public static readonly string[] AllCoarsePrecisions = { "fp32", "fp16" };
     public static readonly string[] AllBasePrecisions = { "fp32", "fp16" };
     public static readonly string[] AllDecoderPrecisions = { "fp32", "fp16", "int8" };
 
@@ -93,7 +92,6 @@ public sealed class InferenceCompatibility
     public void Require(InferenceSettings settings, ILogger logger)
     {
         RequireDevice(settings.InferenceDevice, logger);
-        RequirePrecision(nameof(InferenceSettings.CoarsePrecision), settings.CoarsePrecision, AllCoarsePrecisions, logger);
         RequirePrecision(nameof(InferenceSettings.BasePrecision), settings.BasePrecision, AllBasePrecisions, logger);
         RequirePrecision(nameof(InferenceSettings.DecoderPrecision), settings.DecoderPrecision, AllDecoderPrecisions, logger);
     }
@@ -140,9 +138,8 @@ public sealed class InferenceCompatibility
             Gpu.GpuModelName, Gpu.Manufacturer, capability, RuntimeInformation.OSDescription,
             RuntimeInformation.OSArchitecture);
 
-        logger.Notification("[{0}] Compatible inference devices: {1} (auto = {2}); precisions: coarse {3}, base {4}, decoder {5}",
+        logger.Notification("[{0}] Compatible inference devices: {1} (auto = {2}); precisions: base {3}, decoder {4}",
             DiffusionPaths.ModId, string.Join(", ", CompatibleDevices()), AutomaticDevice(),
-            string.Join("/", CompatiblePrecisions(AllCoarsePrecisions)),
             string.Join("/", CompatiblePrecisions(AllBasePrecisions)),
             string.Join("/", CompatiblePrecisions(AllDecoderPrecisions)));
 

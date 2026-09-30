@@ -915,8 +915,8 @@ public class TerrainDiffusionModSystem : ModSystem
             "Terrain Diffusion active",
             "",
             $"Requested device: {InferenceSettings.Current.InferenceDevice}",
-            $"Model precision: coarse {InferenceSettings.Current.CoarsePrecision}, " +
-            $"base {InferenceSettings.Current.BasePrecision}, decoder {InferenceSettings.Current.DecoderPrecision}",
+            $"Model precision: coarse fp32, base {InferenceSettings.Current.BasePrecision}, " +
+            $"decoder {InferenceSettings.Current.DecoderPrecision}",
             $"Runtime: {OnnxRuntimeBootstrap.ActiveRuntimeDescription}",
             $"Provider: {OnnxModel.ActiveProvider}",
             $"Model resolution: {WorldPipelineModelConfig.Instance.NativeResolution:0.##} m per pixel",

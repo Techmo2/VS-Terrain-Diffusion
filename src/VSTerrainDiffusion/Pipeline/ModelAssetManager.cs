@@ -84,16 +84,6 @@ public static class ModelAssetManager
     /// model overflows its conditioning normalisation. Built by the *-fp16-release workflows, whose
     /// pinned hashes and these are updated together.
     /// </summary>
-    private static readonly Asset Fp16CoarseAsset = new()
-    {
-        FileName = "coarse_model.fp16.onnx",
-        SizeBytes = 5686151,
-        Sha256 = "f971de460284fe8d0e2a4467f2d5ec6673c16b6f4222b8a5f340e14c125fd44e",
-        // No release yet: the coarse model is not worth shipping in fp16 until its
-        // layernorms are re-exported, so this points at the tag it would use.
-        UrlOverride = ReleaseUrl("coarse-fp16-v1", "coarse_model.fp16.onnx")
-    };
-
     private static readonly Asset Fp16BaseAsset = new()
     {
         FileName = "base_model.fp16.onnx",
@@ -142,12 +132,11 @@ public static class ModelAssetManager
         var other => throw UnknownPrecision(nameof(InferenceSettings.DecoderPrecision), other)
     };
 
-    private static Asset SelectedCoarseAsset => InferenceSettings.Current.CoarsePrecision switch
-    {
-        "fp32" => Fp32CoarseAsset,
-        "fp16" => Fp16CoarseAsset,
-        var other => throw UnknownPrecision(nameof(InferenceSettings.CoarsePrecision), other)
-    };
+    /// <summary>
+    /// Always FP32: there is no half-precision coarse model to download, because it is not worth
+    /// shipping until its layernorms are re-exported.
+    /// </summary>
+    private static Asset SelectedCoarseAsset => Fp32CoarseAsset;
 
     private static Asset SelectedBaseAsset => InferenceSettings.Current.BasePrecision switch
     {
@@ -245,9 +234,9 @@ public static class ModelAssetManager
     public static string ResolveDecoderPath(ILogger logger) =>
         ResolveSelectedModel(SelectedDecoderAsset, "Decoder", InferenceSettings.Current.DecoderPrecision, logger);
 
-    /// <summary>The coarse model at the configured precision.</summary>
+    /// <summary>The coarse model, which only comes in FP32.</summary>
     public static string ResolveCoarsePath(ILogger logger) =>
-        ResolveSelectedModel(SelectedCoarseAsset, "Coarse model", InferenceSettings.Current.CoarsePrecision, logger);
+        ResolveSelectedModel(SelectedCoarseAsset, "Coarse model", "fp32", logger);
 
     /// <summary>The base (latent) model at the configured precision.</summary>
     public static string ResolveBasePath(ILogger logger) =>

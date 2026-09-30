@@ -105,7 +105,6 @@ public sealed class PipelineModels : IDisposable
 
         InferenceSettings config = InferenceSettings.Current;
         var half = new List<string>();
-        if (config.CoarsePrecision == "fp16") half.Add("coarse");
         if (config.BasePrecision == "fp16") half.Add("base");
         if (config.DecoderPrecision == "fp16") half.Add("decoder");
         if (half.Count == 0) return;
