@@ -20,6 +20,13 @@ namespace VSTerrainDiffusion.WorldGen;
 /// Resolution is the limit worth knowing about. One coarse conditioning pixel spans 256 model
 /// pixels, which is 512 blocks at the default diffusion resolution, so an ocean much smaller than
 /// that cannot be expressed in the conditioning at all and the model will fill it in as land.
+///
+/// Cost is the other. A conditioning pixel is <c>8 * Scale</c> ocean-map pixels across, and every
+/// one of them is a few simplex noise evaluations, so reading them all costs 0.4 s a coarse tile at
+/// scale 2 and 4 s at scale 6 - most of a new world's spawn search. Past
+/// <see cref="DefaultSamplesPerAxis"/> pixels across, a world created now reads a lattice of that
+/// many points per axis instead: 0.3 s a tile at any scale, and within 0.01 of the full average
+/// (0.03 at the 99th percentile).
 /// </summary>
 public sealed class OceanMapLandmask : ILandmaskSource
 {
@@ -29,11 +36,17 @@ public sealed class OceanMapLandmask : ILandmaskSource
     /// </summary>
     private const int MaxQuerySidePixels = 1024;
 
+    /// <summary>Points read along each axis of a conditioning pixel by worlds created with sampling.</summary>
+    public const int DefaultSamplesPerAxis = 16;
+
     private readonly Func<MapLayerBase> _resolveLayer;
     private readonly ILogger _logger;
 
     /// <summary>Ocean-map pixels spanned by one coarse conditioning pixel, along each axis.</summary>
     private readonly int _oceanPixelsPerCoarse;
+
+    /// <summary>Points read along each axis of a conditioning pixel, or 0 to read every ocean-map pixel.</summary>
+    private readonly int _samplesPerAxis;
 
     private readonly int _originOceanPixelX;
     private readonly int _originOceanPixelZ;
@@ -47,7 +60,12 @@ public sealed class OceanMapLandmask : ILandmaskSource
     /// Produces the ocean map to read. Called late and only until it answers, so that a mod which
     /// installs its own layer after this mod initialises is still the one that gets honoured.
     /// </param>
-    public OceanMapLandmask(Func<MapLayerBase> resolveLayer, DiffusionWorldSettings settings, ILogger logger)
+    /// <param name="samplesPerAxis">
+    /// Points to read along each axis of a conditioning pixel wider than that, or 0 for every
+    /// ocean-map pixel. Fixed per world: it moves the coastline slightly.
+    /// </param>
+    public OceanMapLandmask(Func<MapLayerBase> resolveLayer, DiffusionWorldSettings settings, int samplesPerAxis,
+                            ILogger logger)
     {
         _resolveLayer = resolveLayer;
         _logger = logger;
@@ -60,6 +78,7 @@ public sealed class OceanMapLandmask : ILandmaskSource
         _oceanPixelsPerCoarse = Math.Max(1, blocksPerCoarse / TerraGenConfig.oceanMapScale);
         _originOceanPixelX = settings.OriginBlockX / TerraGenConfig.oceanMapScale;
         _originOceanPixelZ = settings.OriginBlockZ / TerraGenConfig.oceanMapScale;
+        _samplesPerAxis = samplesPerAxis > 0 && samplesPerAxis < _oceanPixelsPerCoarse ? samplesPerAxis : 0;
     }
 
     public float[] SeaFraction(int x1, int y1, int x2, int y2)
@@ -69,6 +88,8 @@ public sealed class OceanMapLandmask : ILandmaskSource
 
         int w = x2 - x1, h = y2 - y1;
         if (w <= 0 || h <= 0) return null;
+
+        if (_samplesPerAxis > 0) return SampledSeaFraction(layer, x1, y1, w, h);
 
         int pixels = _oceanPixelsPerCoarse;
 
@@ -125,6 +146,51 @@ public sealed class OceanMapLandmask : ILandmaskSource
             catch (Exception e)
             {
                 Disable(layer, side, e);
+                return null;
+            }
+        }
+
+        return totals;
+    }
+
+    /// <summary>
+    /// The sea fraction from a lattice of single-pixel queries, one at the middle of each of
+    /// <see cref="_samplesPerAxis"/> squared sub-cells of a conditioning pixel. Single points spread
+    /// across the pixel come much closer to the full average than the same number of pixels read
+    /// as a few small squares, because the coast crosses more of them. A one-pixel query is still
+    /// square, and vanilla's blur passes it through unblurred, which averages out the same.
+    /// </summary>
+    private float[] SampledSeaFraction(MapLayerBase layer, int x1, int y1, int w, int h)
+    {
+        int pixels = _oceanPixelsPerCoarse, n = _samplesPerAxis;
+        var offsets = new int[n];
+        for (int s = 0; s < n; s++) offsets[s] = (2 * s + 1) * pixels / (2 * n);
+
+        float perSample = 1f / (255f * n * n);
+        var totals = new float[w * h];
+
+        lock (_gate)
+        {
+            try
+            {
+                for (int cz = 0; cz < h; cz++)
+                {
+                    int pixelZ = _originOceanPixelZ + (y1 + cz) * pixels;
+                    for (int cx = 0; cx < w; cx++)
+                    {
+                        int pixelX = _originOceanPixelX + (x1 + cx) * pixels;
+                        long sum = 0;
+                        foreach (int dz in offsets)
+                        {
+                            foreach (int dx in offsets) sum += layer.GenLayer(pixelX + dx, pixelZ + dz, 1, 1)[0];
+                        }
+                        totals[cz * w + cx] = Math.Clamp(sum * perSample, 0f, 1f);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Disable(layer, 1, e);
                 return null;
             }
         }
