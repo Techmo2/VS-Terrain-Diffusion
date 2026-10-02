@@ -674,6 +674,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         }
 
         float[] slope = SobelSlope(elevationPadded, size, size, pixelSizeMeters);
+        float[] modelElevation = climate == null ? null : (float[])elevation.Clone();
         AddSlopeNoise(elevation, slope, blockX, blockZ, size, pixelSizeMeters,
             WorldPipelineModelConfig.Instance.NativeResolution, _settings.SlopeDetailStrength);
 
@@ -691,8 +692,13 @@ public sealed class TerrainDiffusionProvider : IDisposable
             // the model is applied here rather than at the climate map, so that everything reading
             // a tile - the map, the freeze line, the surface rules, the seasons - sees one
             // consistent climate. Rows run along Z, which is the axis latitude is measured on.
+            //
+            // The model's temperature is for its own ground, sea-level baseline plus the local lapse
+            // rate times elevation; the slope detail moved the ground since, so it moves with it.
             int columnZ = tile.BlockZ + index / size;
-            tile.TemperatureC[index] = _settings.WorldTemperature(climate[index], columnZ);
+            float temperature = climate[index]
+                + climate[4 * plane + index] * (Math.Max(0f, meters) - Math.Max(0f, modelElevation[index]));
+            tile.TemperatureC[index] = _settings.WorldTemperature(temperature, columnZ);
             tile.TemperatureSeasonality[index] = climate[plane + index];
             tile.PrecipitationMm[index] =
                 Math.Max(0f, _settings.WorldPrecipitation(climate[2 * plane + index], columnZ));
@@ -807,12 +813,11 @@ public sealed class TerrainDiffusionProvider : IDisposable
     }
 
     /// <summary>
-    /// Climate planes the tile keeps: mean temperature, temperature seasonality, precipitation and
-    /// precipitation seasonality. The pipeline emits a fifth, the local lapse rate, which is only
-    /// meaningful when blending the model's temperature against a latitude baseline — something the
-    /// mod no longer does.
+    /// Climate planes carried to block resolution: mean temperature, temperature seasonality,
+    /// precipitation, precipitation seasonality and the local lapse rate (degrees per metre), which
+    /// moves the temperature with the slope detail added after the model.
     /// </summary>
-    private const int ClimateChannels = 4;
+    private const int ClimateChannels = 5;
 
     /// <summary>Native pixels along one edge of a coarse cell.</summary>
     private static int CoarseCellNativePixels => 32 * WorldPipelineModelConfig.Instance.LatentCompression;

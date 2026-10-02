@@ -111,6 +111,8 @@
   "vsterraindiffusion:setting-WorldGenShrubDensityMultiplier-hover": "Scales shrub cover the same way, with the same squaring.",
   "vsterraindiffusion:setting-WorldGenForestClearings": "Forest clearings",
   "vsterraindiffusion:setting-WorldGenForestClearings-hover": "How far vanilla's patchy forest noise opens the model's woods into fields and glens. About a third of vanilla's map is open ground, in patches roughly a kilometre across; this thins the trees there by this fraction. 0 turns it off, 1 leaves those patches bare. Applies to newly generated land.",
+  "vsterraindiffusion:setting-WorldGenShrubClearings": "Shrub clearings",
+  "vsterraindiffusion:setting-WorldGenShrubClearings-hover": "The same for shrubs, from vanilla's own patchy shrub noise. 0 turns it off, 1 leaves those patches bare. Applies to newly generated land.",
   "vsterraindiffusion:setting-WorldGenBaseRenoiseSigma": "Base model re-noise (experimental)",
   "vsterraindiffusion:setting-WorldGenBaseRenoiseSigma-hover": "How much of the base model's first draw its second step throws away and redraws. 0.35 is what the model's author found best for image quality; higher redraws more of the medium-scale relief, lower keeps the first draw. Changes newly generated terrain.",
   "vsterraindiffusion:setting-WorldGenRescaleBlockLayerAltitudes": "Rescale block layer altitudes",

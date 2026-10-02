@@ -318,6 +318,7 @@ a product that never exceeds 1, so its forest density is pure noise with no rela
 woodland in the foothills and nothing above the treeline are new behaviour. That noise is still used
 for the one thing it is good at, patchiness: where vanilla's map is open, the model's tree cover is
 thinned by `forestClearings`, so wet country gets fields and glens instead of one unbroken wood.
+Shrub cover is thinned the same way by vanilla's shrub map (`shrubClearings`).
 Everything that read that map still does, so animals and undergrowth follow the woods.
 
 **Temperature** is stored as sea-level temperature, and the mod replaces the lapse rate applied on
@@ -478,7 +479,8 @@ chunks disagree with old ones.
 | `temperatureOffsetC`             | 0             | -5 – 5       | Degrees added to every model temperature, after the latitude band and the world's global setting. A blunt instrument; prefer the world settings. |
 | `forestDensityMultiplier`        | 1             | 0.7 – 1.5    | Scales the forest cover the model's moisture implies. **Trees on the ground go as the square of this** — see below. |
 | `shrubDensityMultiplier`         | 1             | 0.5 – 2      | Scales shrub cover the same way, and with the same squaring. |
-| `forestClearings`                | 0.8           | 0.5 – 1      | How far vanilla's patchy forest noise opens the model's woods into fields and glens. 0 off, 1 bare clearings. Trees only. |
+| `forestClearings`                | 0.8           | 0.5 – 1      | How far vanilla's patchy forest noise opens the model's woods into fields and glens. 0 off, 1 bare clearings. |
+| `shrubClearings`                 | 0.8           | 0.5 – 1      | The same for shrubs, from vanilla's shrub noise. |
 | `baseRenoiseSigma`               | 0.35          | 0.2 – 1      | Experimental. How much of the base model's first draw its second step redraws. 0.35 is the author's quality optimum; 0.7–1 varies medium-scale detail (coast shapes, small valleys) by 10–17 m on average without seams. |
 
 **Seasons and surface**

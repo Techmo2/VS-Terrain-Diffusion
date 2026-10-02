@@ -245,8 +245,11 @@ values that would work. The mod never changes the device or a precision itself.
     // How far vanilla's forest noise opens the model's woods into fields and glens, 0 to 1. About a
     // third of vanilla's map is open ground, in patches roughly a kilometre across; trees there are
     // thinned by this fraction (then squared, like the density above). 0 turns it off; 1 leaves the
-    // open patches bare. Shrubs are left alone.
+    // open patches bare.
     "ForestClearings": 0.8,
+
+    // The same for shrubs, from vanilla's own shrub noise.
+    "ShrubClearings": 0.8,
 
     // Experimental. How much of the base model's first draw its second step throws away and
     // redraws, as a noise level. 0.35 is what the reference implementation's sweep found best for
@@ -484,6 +487,7 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `ForestDensityMultiplier` | 0 – 4 | 0.7 – 1.5 (squared on the ground) | 1 |
 | `ShrubDensityMultiplier` | 0 – 4 | 0.5 – 2 (squared on the ground) | 1 |
 | `ForestClearings` | 0 – 1 | 0.5 – 1 | 0.8 |
+| `ShrubClearings` | 0 – 1 | 0.5 – 1 | 0.8 |
 | `BaseRenoiseSigma` | 0.05 – 4 | 0.2 – 1 | 0.35 |
 | `SeasonalTemperatureStrength`, `SeasonalPrecipitationStrength` | 0 – 4 | 0.5 – 1.5 | 1 |
 | `SeasonalPrecipitationFloor` | 0 – 1 | 0.3 – 0.6 | 0.4 |

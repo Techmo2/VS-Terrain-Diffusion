@@ -758,17 +758,20 @@ public class TerrainDiffusionModSystem : ModSystem
 
         WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
 
-        // Vanilla's forest layer stays on as the source of clearings. On re-initialisation it may
-        // already be wrapped.
+        // Vanilla's forest and shrub layers stay on as the source of clearings. On
+        // re-initialisation they may already be wrapped.
         MapLayerBase vanillaForest = genMaps.Forest is DiffusionForestMapLayer wrappedForest
             ? wrappedForest.Clearings
             : genMaps.Forest;
+        MapLayerBase vanillaShrubs = genMaps.Bush is DiffusionForestMapLayer wrappedShrubs
+            ? wrappedShrubs.Clearings
+            : genMaps.Bush;
         genMaps.Forest = _forestLayer = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 2, _provider, TerraGenConfig.forestMapScale, false,
             worldGen.ForestDensityMultiplier, vanillaForest, worldGen.ForestClearings);
         genMaps.Bush = _shrubLayer = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 3, _provider, TerraGenConfig.shrubMapScale, true,
-            worldGen.ShrubDensityMultiplier);
+            worldGen.ShrubDensityMultiplier, vanillaShrubs, worldGen.ShrubClearings);
     }
 
     /// <summary>True when some of the world's climate settings had to be left to the output.</summary>

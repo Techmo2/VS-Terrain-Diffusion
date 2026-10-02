@@ -186,8 +186,10 @@ public sealed class DiffusionClimateMapLayer : DiffusionMapLayer
 /// treeline.
 ///
 /// Climate alone makes a wet region one unbroken wood, though. Vanilla's map is still good for what
-/// it is - patchy noise - so for trees it is kept and read as where the clearings go: its open
-/// ground thins the model's cover into fields and glens (<see cref="WorldGenConfig.ForestClearings"/>).
+/// it is - patchy noise - so it is kept and read as where the clearings go: its open ground thins
+/// the model's cover into fields and glens (<see cref="WorldGenConfig.ForestClearings"/>). Shrubs
+/// get the same from vanilla's shrub map, which is the same noise on its own seed and a finer grid
+/// (<see cref="WorldGenConfig.ShrubClearings"/>).
 /// </summary>
 public sealed class DiffusionForestMapLayer : DiffusionMapLayer
 {
@@ -214,7 +216,7 @@ public sealed class DiffusionForestMapLayer : DiffusionMapLayer
     public MapLayerBase Clearings => _clearings;
 
     /// <param name="clearings">
-    /// Vanilla's forest layer, whose open ground becomes clearings, or null for none.
+    /// Vanilla's forest or shrub layer, whose open ground becomes clearings, or null for none.
     /// </param>
     /// <param name="clearingStrength">How much of the model's cover the open ground takes away, 0 to 1.</param>
     public DiffusionForestMapLayer(long seed, TerrainDiffusionProvider provider, int blocksPerPixel,

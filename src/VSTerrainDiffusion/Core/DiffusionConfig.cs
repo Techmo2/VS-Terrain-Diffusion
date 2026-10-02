@@ -298,6 +298,9 @@ public class WorldGenConfig
     /// </summary>
     public float ForestClearings { get; set; } = 0.8f;
 
+    /// <summary>The same for shrubs, from vanilla's own shrub noise.</summary>
+    public float ShrubClearings { get; set; } = 0.8f;
+
     /// <summary>
     /// Swing temperature through the year using the model's temperature seasonality (BIO4) rather
     /// than from latitude alone, which is all vanilla has to go on. Continental interiors then get
@@ -567,6 +570,7 @@ public class WorldGenConfig
         ForestDensityMultiplier = Clamp(ForestDensityMultiplier, 0f, 4f, 1f);
         ShrubDensityMultiplier = Clamp(ShrubDensityMultiplier, 0f, 4f, 1f);
         ForestClearings = Clamp(ForestClearings, 0f, 1f, 0.8f);
+        ShrubClearings = Clamp(ShrubClearings, 0f, 1f, 0.8f);
         BaseRenoiseSigma = Clamp(BaseRenoiseSigma, 0.05f, 4f, 0.35f);
 
         SeasonalTemperatureStrength = Clamp(SeasonalTemperatureStrength, 0f, 4f, 1f);
