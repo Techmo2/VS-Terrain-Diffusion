@@ -567,17 +567,6 @@
       }
     },
     {
-      "code": "WorldGen/BaseRenoiseSigma",
-      "type": "number",
-      "default": 0.35,
-      "ingui": "setting-WorldGenBaseRenoiseSigma",
-      "comment": "setting-WorldGenBaseRenoiseSigma-hover",
-      "range": {
-        "min": 0.05,
-        "max": 4.0
-      }
-    },
-    {
       "code": "WorldGen/RescaleBlockLayerAltitudes",
       "type": "boolean",
       "default": true,

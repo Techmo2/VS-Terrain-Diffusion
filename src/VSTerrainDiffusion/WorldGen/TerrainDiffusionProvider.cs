@@ -249,7 +249,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
                                     IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f)
     {
         _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude,
-                                      riverBasins, riverBasinDepth, settings.CoarsePooling);
+                                      riverBasins, riverBasinDepth, settings.CoarsePooling,
+                                      settings.BaseRenoiseSigma, settings.CoarseHeightNoise);
         _seed = seed;
         _models = models;
         _landmask = landmask;
@@ -1332,7 +1333,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
                 _riverFreeCoarse = new OnnxModel(_models.Worker, ModelAssetManager.ResolveCoarsePath(_logger), "coarse", _logger);
                 _riverFreePipeline = new WorldPipeline(_seed, _models.WithCoarse(_riverFreeCoarse), _landmask,
                                                        _settings.Climate, _settings.Latitude,
-                                                       pooling: _settings.CoarsePooling);
+                                                       pooling: _settings.CoarsePooling,
+                                                       baseRenoiseSigma: _settings.BaseRenoiseSigma,
+                                                       coarseHeightNoise: _settings.CoarseHeightNoise);
             }
             return CoarseElevationRoot(_riverFreePipeline, blockX, blockZ) < 0.0;
         }

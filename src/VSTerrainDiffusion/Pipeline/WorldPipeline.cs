@@ -53,8 +53,14 @@ public sealed class WorldPipeline
     private readonly int _latentBatchSize;
     private readonly CoarsePooling _pooling;
 
-    /// <summary>The second latent step's re-noise angle; see <see cref="WorldGenConfig.BaseRenoiseSigma"/>.</summary>
+    /// <summary>The second latent step's re-noise angle; see <see cref="DiffusionWorldSettings.BaseRenoiseSigma"/>.</summary>
     private readonly float _renoiseT;
+
+    /// <summary>Noise added to the coarse elevation; see <see cref="DiffusionWorldSettings.CoarseHeightNoise"/>.</summary>
+    private readonly float _coarseHeightNoise;
+
+    /// <summary>Square-root metres of elevation over which <see cref="_coarseHeightNoise"/> fades in from sea level.</summary>
+    private const float CoarseNoiseShoreRamp = 10f;
 
 
 
@@ -88,7 +94,8 @@ public sealed class WorldPipeline
     public WorldPipeline(ulong seed, PipelineModels models, ILandmaskSource landmask = null,
                          ClimateShift climate = default, ILatitudeSource latitude = null,
                          IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f,
-                         CoarsePooling pooling = default)
+                         CoarsePooling pooling = default, float baseRenoiseSigma = 0.45f,
+                         float coarseHeightNoise = 0f)
     {
         _pooling = pooling.Factor >= 1 ? pooling : CoarsePooling.None;
         _riverBasins = riverBasins;
@@ -146,7 +153,8 @@ public sealed class WorldPipeline
 
         _mpConcatScales = BuildMpConcatScales();
 
-        _renoiseT = (float)Math.Atan(worldGen.BaseRenoiseSigma / SigmaData);
+        _renoiseT = (float)Math.Atan(baseRenoiseSigma / SigmaData);
+        _coarseHeightNoise = coarseHeightNoise;
 
         _coarseModel = models.Coarse;
         _baseModel = models.Base;
@@ -311,6 +319,7 @@ public sealed class WorldPipeline
             for (int px = 0; px < plane; px++)
                 output[ch * plane + px] = (sample[ch * plane + px] / SigmaData) * std + mean;
         }
+        if (_coarseHeightNoise > 0f) AddCoarseHeightNoise(output, i1, j1, s);
         for (int px = 0; px < plane; px++) output[plane + px] = output[px] - output[plane + px];
 
         int size = s;
@@ -327,6 +336,25 @@ public sealed class WorldPipeline
                 result.Data[ch * plane + px] = output[ch * plane + px] * weights[px];
         Array.Copy(weights, 0, result.Data, 6 * plane, plane);
         return result;
+    }
+
+    /// <summary>
+    /// Adds <see cref="_coarseHeightNoise"/> to the elevation channel of a denormalised coarse
+    /// output, before the fifth percentile is taken from it so the relief moves with it. The draw
+    /// is keyed to world position, so overlapping tiles agree and blend without seams. Land only,
+    /// faded in over the first <see cref="CoarseNoiseShoreRamp"/> above sea level, so it never
+    /// raises or sinks a coastline.
+    /// </summary>
+    private void AddCoarseHeightNoise(float[] output, int i1, int j1, int s)
+    {
+        float[] noise = GaussianNoisePatch.Generate(_seed + 7331, i1, j1, s, s, 1, s, s);
+        for (int px = 0; px < s * s; px++)
+        {
+            float elevation = output[px];
+            if (elevation <= 0f) continue;
+            float fade = Math.Min(1f, elevation / CoarseNoiseShoreRamp);
+            output[px] = Math.Max(0f, elevation + noise[px] * _coarseHeightNoise * fade);
+        }
     }
 
     /// <summary>

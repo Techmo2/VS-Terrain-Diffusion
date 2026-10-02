@@ -50,6 +50,8 @@ and `/worldconfig <code> <value>` changes one later.
 | Climate                  | `terraindiffusionClimate`              | model   | Whether the model drives climate as well as terrain. |
 | Terrain intensity        | `terraindiffusionCoarsePooling`        | off     | Packs 2x or 4x the landscape into the same distance: ranges, valleys and coasts closer together, relief steeper. |
 | Intensity mode           | `terraindiffusionCoarsePoolMode`       | average | `extreme` keeps each block's highest ground and deepest valley floor: taller peaks, deeper cuts, less realistic. |
+| Detail redraw            | `terraindiffusionBaseRenoiseSigma`     | 0.45    | How much of the detail model's first draw is redrawn. 0.7–1 varies coast shapes and small valleys by 10–17 m on average. |
+| Height noise             | `terraindiffusionCoarseHeightNoise`    | 0       | Random height per large-scale cell (~8 km) before detail is drawn, in sqrt-metres: 2 ≈ ±100 m at 600 m. None at the coast. |
 
 With sea level at 128 the terrain, climate, soil bands, trees and weather keep their height above
 the sea: a 512-block world is laid out like a vanilla world 675 blocks tall, with 128 blocks of rock
@@ -481,7 +483,6 @@ chunks disagree with old ones.
 | `shrubDensityMultiplier`         | 1             | 0.5 – 2      | Scales shrub cover the same way, and with the same squaring. |
 | `forestClearings`                | 0.8           | 0.5 – 1      | How far vanilla's patchy forest noise opens the model's woods into fields and glens. 0 off, 1 bare clearings. |
 | `shrubClearings`                 | 0.8           | 0.5 – 1      | The same for shrubs, from vanilla's shrub noise. |
-| `baseRenoiseSigma`               | 0.35          | 0.2 – 1      | Experimental. How much of the base model's first draw its second step redraws. 0.35 is the author's quality optimum; 0.7–1 varies medium-scale detail (coast shapes, small valleys) by 10–17 m on average without seams. |
 
 **Seasons and surface**
 

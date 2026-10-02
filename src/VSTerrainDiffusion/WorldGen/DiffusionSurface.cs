@@ -85,6 +85,7 @@ public sealed class DiffusionSurface
                 if (_config.GlacierIce && _glacierIceId != 0 && climate.IsPermanentIce)
                 {
                     Fill(chunks, lx, lz, surfaceY, GlacierDepth, _glacierIceId);
+                    ClearPlantAbove(chunks, lx, lz, surfaceY);
                     continue;
                 }
 
@@ -95,7 +96,8 @@ public sealed class DiffusionSurface
                 if (_config.BareSlopeRock && slope >= climate.BareSlopeThreshold)
                 {
                     int rockId = mapChunk.TopRockIdMap?[flat] ?? 0;
-                    if (rockId != 0) ScourToRock(chunks, lx, lz, surfaceY, rockId);
+                    if (rockId != 0 && ScourToRock(chunks, lx, lz, surfaceY, rockId))
+                        ClearPlantAbove(chunks, lx, lz, surfaceY);
                 }
             }
         }
@@ -104,14 +106,14 @@ public sealed class DiffusionSurface
     /// <summary>
     /// Strips the loose surface layers off a column and leaves the bedrock showing. Only soil,
     /// gravel and sand are removed - anything else there is something a later pass placed
-    /// deliberately, or the rock itself.
+    /// deliberately, or the rock itself. True if the top block was stripped.
     /// </summary>
-    private void ScourToRock(IServerChunk[] chunks, int lx, int lz, int topY, int rockId)
+    private bool ScourToRock(IServerChunk[] chunks, int lx, int lz, int topY, int rockId)
     {
         for (int depth = 0; depth < MaxSurfaceDepth; depth++)
         {
             int y = topY - depth;
-            if (y < 1) return;
+            if (y < 1) return depth > 0;
 
             int flat = (32 * (y % 32) + lz) * 32 + lx;
             IChunkBlocks data = chunks[y / 32].Data;
@@ -125,9 +127,26 @@ public sealed class DiffusionSurface
                     data.SetBlockUnsafe(flat, rockId);
                     continue;
                 default:
-                    return;
+                    return depth > 0;
             }
         }
+        return true;
+    }
+
+    /// <summary>
+    /// Removes the tall grass vanilla's block layers planted on the soil just replaced. It goes one
+    /// block above the rain heightmap, which is left at the soil, so stripping from the heightmap
+    /// down leaves it standing on bare rock or ice. Plants are all that pass places up there.
+    /// </summary>
+    private void ClearPlantAbove(IServerChunk[] chunks, int lx, int lz, int topY)
+    {
+        int y = topY + 1;
+        if (y >= _api.WorldManager.MapSizeY) return;
+
+        int flat = (32 * (y % 32) + lz) * 32 + lx;
+        IChunkBlocks data = chunks[y / 32].Data;
+        if (_api.World.Blocks[data.GetBlockIdUnsafe(flat)]?.BlockMaterial == EnumBlockMaterial.Plant)
+            data.SetBlockUnsafe(flat, 0);
     }
 
     private static void Fill(IServerChunk[] chunks, int lx, int lz, int topY, int depth, int blockId)

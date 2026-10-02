@@ -283,14 +283,6 @@ public class WorldGenConfig
     public float ShrubDensityMultiplier { get; set; } = 1f;
 
     /// <summary>
-    /// How much of the base model's first draw its second step throws away and redraws, as a noise
-    /// level (sigma). 0.35 is what the reference implementation's sweep found best for image
-    /// quality; higher redraws more of the medium-scale relief, lower keeps the first draw.
-    /// Experimental. Changes newly generated terrain.
-    /// </summary>
-    public float BaseRenoiseSigma { get; set; } = 0.35f;
-
-    /// <summary>
     /// How far vanilla's forest noise opens up the model's woods into fields and glens, 0 to 1.
     /// Vanilla's map is patchy noise - about a third of it open ground, in patches roughly a
     /// kilometre across - and this thins the trees there by that fraction, leaving the model's
@@ -571,7 +563,6 @@ public class WorldGenConfig
         ShrubDensityMultiplier = Clamp(ShrubDensityMultiplier, 0f, 4f, 1f);
         ForestClearings = Clamp(ForestClearings, 0f, 1f, 0.8f);
         ShrubClearings = Clamp(ShrubClearings, 0f, 1f, 0.8f);
-        BaseRenoiseSigma = Clamp(BaseRenoiseSigma, 0.05f, 4f, 0.35f);
 
         SeasonalTemperatureStrength = Clamp(SeasonalTemperatureStrength, 0f, 4f, 1f);
         SeasonalPrecipitationStrength = Clamp(SeasonalPrecipitationStrength, 0f, 4f, 1f);

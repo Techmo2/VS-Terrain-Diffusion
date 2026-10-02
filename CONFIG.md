@@ -251,12 +251,6 @@ values that would work. The mod never changes the device or a precision itself.
     // The same for shrubs, from vanilla's own shrub noise.
     "ShrubClearings": 0.8,
 
-    // Experimental. How much of the base model's first draw its second step throws away and
-    // redraws, as a noise level. 0.35 is what the reference implementation's sweep found best for
-    // image quality. 0.7-1 varies medium-scale detail - coast shapes, small valleys - by 10-17 m on
-    // average, without seams; lower keeps the first draw. Changes newly generated terrain.
-    "BaseRenoiseSigma": 0.35,
-
     // ---- Seasons -------------------------------------------------------------------------------
 
     // Swing temperature through the year using the model's temperature seasonality (BIO4) rather
@@ -488,7 +482,6 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `ShrubDensityMultiplier` | 0 – 4 | 0.5 – 2 (squared on the ground) | 1 |
 | `ForestClearings` | 0 – 1 | 0.5 – 1 | 0.8 |
 | `ShrubClearings` | 0 – 1 | 0.5 – 1 | 0.8 |
-| `BaseRenoiseSigma` | 0.05 – 4 | 0.2 – 1 | 0.35 |
 | `SeasonalTemperatureStrength`, `SeasonalPrecipitationStrength` | 0 – 4 | 0.5 – 1.5 | 1 |
 | `SeasonalPrecipitationFloor` | 0 – 1 | 0.3 – 0.6 | 0.4 |
 | `RiverBasinDepth` | 0 – 1 | 0.2 – 0.5 | 0.3 |

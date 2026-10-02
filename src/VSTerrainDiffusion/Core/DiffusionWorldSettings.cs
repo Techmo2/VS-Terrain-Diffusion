@@ -42,6 +42,20 @@ public sealed class DiffusionWorldSettings
     /// </summary>
     public float VerticalExaggeration { get; private set; } = 1f;
 
+    /// <summary>
+    /// How much of the base model's first draw its second step redraws, as a noise level. 0.35 is
+    /// the reference implementation's quality optimum; the default is a little above it. World
+    /// setting <c>terraindiffusionBaseRenoiseSigma</c>.
+    /// </summary>
+    public float BaseRenoiseSigma { get; private set; } = 0.45f;
+
+    /// <summary>
+    /// Standard deviation, in signed square-root metres, of noise added to the coarse model's
+    /// elevation before the base model draws the detail. 0 is off. World setting
+    /// <c>terraindiffusionCoarseHeightNoise</c>.
+    /// </summary>
+    public float CoarseHeightNoise { get; private set; }
+
     /// <summary>Pooling of the coarse model's output; see <see cref="Pipeline.CoarsePooling"/>.</summary>
     public Pipeline.CoarsePooling CoarsePooling { get; private set; } = Pipeline.CoarsePooling.None;
 
@@ -242,6 +256,10 @@ public sealed class DiffusionWorldSettings
                 : ReadWorldConfig(worldConfig, "terraindiffusionClimate", "full")),
             Scale = scale,
             VerticalExaggeration = exaggeration,
+            BaseRenoiseSigma = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionBaseRenoiseSigma", "0.45").ToFloat(0.45f), 0.05f, 4f),
+            CoarseHeightNoise = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionCoarseHeightNoise", "0").ToFloat(0f), 0f, 10f),
             CoarsePooling = Pipeline.CoarsePooling.Of(
                 ReadWorldConfig(worldConfig, "terraindiffusionCoarsePooling", "1").ToInt(1),
                 ReadWorldConfig(worldConfig, "terraindiffusionCoarsePoolMode", "average") == "extreme"),
