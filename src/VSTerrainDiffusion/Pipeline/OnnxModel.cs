@@ -37,13 +37,15 @@ public sealed class OnnxModel : IModelRunner
             Name = name,
             SourcePath = Path.GetFullPath(modelFilePath),
             // TensorRT RTX cannot import ONNX Runtime's contrib ops (QuickGelu and friends), and
-            // every fused node it cannot take splits the engine. Hand it the model as exported.
-            OptimizedPath = worker.Provider == InferenceProvider.TensorRtRtx
+            // every fused node it cannot take splits the engine. Hand it the model as exported, and
+            // MIGraphX likewise, which compiles whole graphs and has no kernels for those ops either.
+            OptimizedPath = worker.Provider is InferenceProvider.TensorRtRtx or InferenceProvider.Rocm
                 ? null
                 : OptimizedPath(modelFilePath, name, worker.Provider),
             LoadFromFile = settings.ModelLoadMode != "memory",
             Offload = settings.OffloadModels,
             TensorRtRtxCacheDirectory = OnnxRuntimeBootstrap.TensorRtRtxCacheDirectory,
+            RocmCacheDirectory = OnnxRuntimeBootstrap.RocmCacheDirectory,
             TensorRtRtxProfileMin = profile?.Min,
             TensorRtRtxProfileMax = profile?.Max
         };

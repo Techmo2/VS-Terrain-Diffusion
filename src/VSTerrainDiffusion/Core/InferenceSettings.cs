@@ -24,8 +24,8 @@ public sealed class InferenceSettings
     public static readonly string[] AllModelLoadModes = { "file", "memory" };
 
     /// <summary>
-    /// "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "directml" or "coreml". OpenVINO and
-    /// TensorRT RTX are used only when named.
+    /// "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "rocm", "directml" or "coreml". OpenVINO,
+    /// TensorRT RTX and ROCm are used only when named.
     /// </summary>
     public string InferenceDevice { get; private init; } = "auto";
 
@@ -107,6 +107,7 @@ public sealed class InferenceSettings
     {
         "dml" => "directml",
         "trt-rtx" or "tensorrtrtx" or "rtx" => "tensorrt-rtx",
+        "migraphx" => "rocm",
         var other => other
     };
 

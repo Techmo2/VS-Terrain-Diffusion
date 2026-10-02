@@ -67,6 +67,20 @@ public static class OnnxRuntimeBootstrap
             "45bb98cee3bf8d8c51499c7e9a3ad789b181a8878e7919cca866e52175782cb2")
     };
 
+    /// <summary>
+    /// AMD's ONNX Runtime build with the MIGraphX provider, from the onnxruntime-migraphx wheel on
+    /// PyPI, which is the same release as the managed binding. The wheel carries the C API runtime
+    /// as well as the Python module, and the provider links against the system's ROCm 7.
+    /// </summary>
+    private const string RocmWheelUrl =
+        "https://files.pythonhosted.org/packages/53/66/d0a9bcd1f261bff5f23d3dcc038c401f4251e9bd173911676f0b2a737a34/" +
+        "onnxruntime_migraphx-1.24.4-cp312-cp312-manylinux_2_34_x86_64.whl";
+    private const string RocmWheelSha256 =
+        "f2dee7e871a2e502492cf5f16f0bfc205190efd87cb8b4320056c3e5f833a911";
+
+    /// <summary>What the ROCm provider library links against from the system's ROCm install.</summary>
+    public static readonly string[] RocmSystemLibraries = { "libamdhip64.so.7", "libmigraphx_c.so.3" };
+
     /// <summary>TensorRT RTX version carried by the plugin wheels below.</summary>
     public const string TensorRtRtxVersion = "1.6.1";
 
@@ -320,6 +334,8 @@ public static class OnnxRuntimeBootstrap
             $"OpenVINO {OpenVinoVersion} decoder, ONNX Runtime {OnnxRuntimeVersion} coarse/base",
         InferenceProvider.TensorRtRtx =>
             $"TensorRT RTX {TensorRtRtxVersion} on ONNX Runtime {OnnxRuntimeVersion}",
+        InferenceProvider.Rocm =>
+            $"MIGraphX on AMD's ONNX Runtime {OnnxRuntimeVersion}",
         _ => $"ONNX Runtime {ActiveRuntimeVersion}"
     };
 
@@ -793,6 +809,10 @@ public static class OnnxRuntimeBootstrap
     /// <summary>Directory holding the TensorRT RTX plugin provider, once initialised.</summary>
     public static string TensorRtRtxDirectory => _tensorRtRtxDirectory;
 
+    /// <summary>Where MIGraphX keeps the programs it compiles for this machine's GPU.</summary>
+    public static string RocmCacheDirectory =>
+        Path.Combine(DiffusionPaths.OptimizedModelDirectory, "migraphx", OnnxRuntimeVersion);
+
     /// <summary>Where TensorRT RTX keeps the engines it builds for this machine.</summary>
     public static string TensorRtRtxCacheDirectory =>
         Path.Combine(DiffusionPaths.OptimizedModelDirectory, "tensorrt-rtx", TensorRtRtxVersion);
@@ -906,6 +926,7 @@ public static class OnnxRuntimeBootstrap
         InferenceProvider.CoreMl => "coreml",
         InferenceProvider.OpenVino => "openvino",
         InferenceProvider.TensorRtRtx => "tensorrt-rtx",
+        InferenceProvider.Rocm => "rocm",
         _ => "cpu"
     };
 
@@ -925,6 +946,7 @@ public static class OnnxRuntimeBootstrap
             "coreml" => InferenceProvider.CoreMl,
             "openvino" => InferenceProvider.OpenVino,
             "tensorrt-rtx" => InferenceProvider.TensorRtRtx,
+            "rocm" => InferenceProvider.Rocm,
             _ => InferenceProvider.Cpu
         };
     }
@@ -1389,6 +1411,30 @@ public static class OnnxRuntimeBootstrap
                 }
                 break;
             }
+
+            case InferenceProvider.Rocm when rid == "linux-x64":
+                // A wheel, so a ZIP; pinned, so it is fetched whole and checked. The runtime inside
+                // carries its version in the file name, and the managed binding loads the plain one.
+                sources.Add(new NativeSource
+                {
+                    Name = $"onnxruntime-migraphx {OnnxRuntimeVersion}",
+                    Url = RocmWheelUrl,
+                    Kind = ArchiveKind.Zip,
+                    Sha256 = RocmWheelSha256,
+                    EntryPaths = new[]
+                    {
+                        $"onnxruntime/capi/libonnxruntime.so.{OnnxRuntimeVersion}",
+                        "onnxruntime/capi/libonnxruntime_providers_shared.so",
+                        "onnxruntime/capi/libonnxruntime_providers_migraphx.so"
+                    },
+                    TargetFileNames = new[]
+                    {
+                        "libonnxruntime.so",
+                        "libonnxruntime_providers_shared.so",
+                        "libonnxruntime_providers_migraphx.so"
+                    }
+                });
+                break;
 
             case InferenceProvider.DirectMl:
                 sources.Add(new NativeSource

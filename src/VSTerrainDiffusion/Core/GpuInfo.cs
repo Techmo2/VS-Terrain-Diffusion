@@ -37,10 +37,11 @@ public readonly struct GpuInfo
     public readonly bool SupportsOpenVino; // The GPU plugin could run here. The mod's pinned OpenVINO ships only the CPU plugin.
     public readonly bool SupportsTensorrtRtx;
     public readonly bool SupportsCoreMl;
+    public readonly string AmdGfxTarget; // The first AMD GPU ROCm can see, as its LLVM target ("gfx1100"); null when there is none
 
     GpuInfo(GpuManufacturer manufacturer, String gpuModelName, bool supportsCuda12, bool supportsCuda13,
         int computeCapabilityMajor, int computeCapabilityMinor, int driverCudaVersion, bool supportsDirectMl,
-        bool supportsOpenVino, bool supportsTensorrtRtx, bool supportsCoreMl)
+        bool supportsOpenVino, bool supportsTensorrtRtx, bool supportsCoreMl, string amdGfxTarget)
     {
         Manufacturer = manufacturer;
         GpuModelName = gpuModelName;
@@ -54,6 +55,7 @@ public readonly struct GpuInfo
         SupportsOpenVino = supportsOpenVino;
         SupportsTensorrtRtx = supportsTensorrtRtx;
         SupportsCoreMl = supportsCoreMl;
+        AmdGfxTarget = amdGfxTarget;
     }
 
     /// <summary>Whether this GPU runs the given CUDA major version, e.g. the one <c>DetectCudaMajorVersion</c> picked.</summary>
@@ -78,7 +80,7 @@ public readonly struct GpuInfo
         catch
         {
             return new GpuInfo(GpuManufacturer.Unknown, "Unknown", false, false, 0, 0, 0,
-                false, false, false, false);
+                false, false, false, false, null);
         }
     }
 
@@ -98,10 +100,11 @@ public readonly struct GpuInfo
         bool supportsOpenVino = Probe(() => DoesSupportOpenVino(manufacturer, adapter));
         bool supportsTensorrtRtx = Probe(() => DoesSupportTensorrtRtx(manufacturer, nvidia));
         bool supportsCoreMl = Probe(DoesSupportCoreMl);
+        string amdGfxTarget = OperatingSystem.IsLinux() ? KfdGfxTarget() : null;
 
         return new GpuInfo(manufacturer, gpuModelName, supportsCuda12, supportsCuda13,
             (nvidia?.ComputeCapability ?? 0) / 10, (nvidia?.ComputeCapability ?? 0) % 10, nvidia?.CudaDriverVersion ?? 0,
-            supportsDirectMl, supportsOpenVino, supportsTensorrtRtx, supportsCoreMl);
+            supportsDirectMl, supportsOpenVino, supportsTensorrtRtx, supportsCoreMl, amdGfxTarget);
     }
 
     private static bool Probe(Func<bool> check)
@@ -276,6 +279,47 @@ public readonly struct GpuInfo
     }
 
     // Linux
+
+    /// <summary>
+    /// The first GPU in ROCm's kernel topology, as the LLVM target its runtime compiles for. Each
+    /// node's <c>gfx_target_version</c> is major * 10000 + minor * 100 + stepping, with minor and
+    /// stepping written in hex in the target name (90010 is gfx90a); CPU nodes read 0. Null when
+    /// the amdgpu driver exposes no GPU to ROCm, or ROCm's device node cannot be opened.
+    /// </summary>
+    private static string KfdGfxTarget()
+    {
+        const string root = "/sys/class/kfd/kfd/topology/nodes";
+        if (!Directory.Exists(root) || !File.Exists("/dev/kfd")) return null;
+
+        try
+        {
+            // ROCm opens it read-write, and a user outside the render group cannot.
+            using (new FileStream("/dev/kfd", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) { }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        var nodes = new List<int>();
+        foreach (string node in Directory.EnumerateDirectories(root))
+            if (int.TryParse(Path.GetFileName(node), out int index)) nodes.Add(index);
+        nodes.Sort();
+
+        foreach (int node in nodes)
+        {
+            string properties = Path.Combine(root, node.ToString(CultureInfo.InvariantCulture), "properties");
+            if (!File.Exists(properties)) continue;
+            foreach (string line in File.ReadLines(properties))
+            {
+                if (!line.StartsWith("gfx_target_version ", StringComparison.Ordinal)) continue;
+                if (!int.TryParse(line.AsSpan("gfx_target_version ".Length), NumberStyles.Integer,
+                        CultureInfo.InvariantCulture, out int version) || version == 0) break;
+                return $"gfx{version / 10000}{version / 100 % 100:x}{version % 100:x}";
+            }
+        }
+        return null;
+    }
 
     private static List<Adapter> LinuxAdapters()
     {

@@ -296,6 +296,7 @@
         "openvino",
         "cuda",
         "tensorrt-rtx",
+        "rocm",
         "directml",
         "coreml"
       ],
@@ -305,6 +306,7 @@
         "openvino",
         "cuda",
         "tensorrt-rtx",
+        "rocm",
         "directml",
         "coreml"
       ],

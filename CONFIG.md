@@ -48,6 +48,7 @@ values that would work. The mod never changes the device or a precision itself.
 | `openvino` | 64-bit Linux, CPU with SSE4.2 |
 | `cuda` | 64-bit Windows or Linux, NVIDIA GPU and driver supporting the CUDA build in use (12: compute 5.0+, driver 525+; 13: compute 7.5+, driver 580+). Linux also needs the CUDA toolkit and cuDNN 9 installed |
 | `tensorrt-rtx` | 64-bit Windows or Linux, compute capability 8.6, 8.9, 12.0 or 12.1, driver 580+ |
+| `rocm` | 64-bit Linux, an AMD GPU visible to ROCm (`/dev/kfd` openable, so the user is in the `render` group), and ROCm 7 with MIGraphX installed (`libamdhip64.so.7`, `libmigraphx_c.so.3`) |
 | `directml` | Windows 10 1903+, Direct3D 12 GPU |
 | `coreml` | macOS 10.15+ |
 
