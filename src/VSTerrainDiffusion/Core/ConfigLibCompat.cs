@@ -61,7 +61,7 @@ public static class ConfigLibCompat
         if (data is not ITreeAttribute tree) return;
 
         // The setting code is the path into the config file, so a nested one arrives as
-        // "WorldGen/ForestDensityMultiplier".
+        // "WorldGen/ForestClearings".
         string code = tree.GetAsString("setting");
         if (string.IsNullOrEmpty(code)) return;
 

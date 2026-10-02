@@ -50,8 +50,12 @@ and `/worldconfig <code> <value>` changes one later.
 | Climate                  | `terraindiffusionClimate`              | model   | Whether the model drives climate as well as terrain. |
 | Terrain intensity        | `terraindiffusionCoarsePooling`        | off     | Packs 2x or 4x the landscape into the same distance: ranges, valleys and coasts closer together, relief steeper. |
 | Intensity mode           | `terraindiffusionCoarsePoolMode`       | average | `extreme` keeps each block's highest ground and deepest valley floor: taller peaks, deeper cuts, less realistic. |
-| Detail redraw            | `terraindiffusionBaseRenoiseSigma`     | 0.45    | How much of the detail model's first draw is redrawn. 0.7–1 varies coast shapes and small valleys by 10–17 m on average. |
-| Height noise             | `terraindiffusionCoarseHeightNoise`    | 0       | Random height per large-scale cell (~8 km) before detail is drawn, in sqrt-metres: 2 ≈ ±100 m at 600 m. None at the coast. |
+| Detail redraw            | `terraindiffusionDetailRedraw`         | 35      | Hundredths. How much of the detail model's first draw is redrawn. 70–100 varies coast shapes and small valleys by 10–17 m on average. |
+| Height noise             | `terraindiffusionHeightNoise`          | 0       | Random height per large-scale cell (~8 km) before detail is drawn, in hundredths of a sqrt-metre: 200 ≈ ±100 m at 600 m. None at the coast. |
+| Altitude cooling         | `terraindiffusionAltitudeCooling`      | 100%    | Multiplies the model's lapse rate: above 100% mountains are colder, with lower treelines and snowlines. Sea level is unchanged. |
+| Forest density           | `terraindiffusionForestDensity`        | 100%    | Scales the forest cover the climate implies. Trees on the ground go as its square — see below. |
+| Shrub density            | `terraindiffusionShrubDensity`         | 100%    | Scales shrub cover the same way. |
+| River valley depth       | `terraindiffusionRiverValleyDepth`     | 30%     | With the Rivers mod, how far the land is lowered along rivers so the model draws valleys for them. 100% drowns a fifth of each corridor into inlets. |
 
 With sea level at 128 the terrain, climate, soil bands, trees and weather keep their height above
 the sea: a 512-block world is laid out like a vanilla world 675 blocks tall, with 128 blocks of rock
@@ -479,8 +483,6 @@ chunks disagree with old ones.
 | `rainfallMedianMm` / `rainfallSpread` | 540 / 0.8 | 300 – 900 / 0.6 – 1.2 | The same for `"precipitation"` basis. |
 | `rainfallBias`                   | 0.05          | -0.1 – 0.2   | Added to the rainfall byte, as a fraction. Raise for a lusher world; see the note below the tables. |
 | `temperatureOffsetC`             | 0             | -5 – 5       | Degrees added to every model temperature, after the latitude band and the world's global setting. A blunt instrument; prefer the world settings. |
-| `forestDensityMultiplier`        | 1             | 0.7 – 1.5    | Scales the forest cover the model's moisture implies. **Trees on the ground go as the square of this** — see below. |
-| `shrubDensityMultiplier`         | 1             | 0.5 – 2      | Scales shrub cover the same way, and with the same squaring. |
 | `forestClearings`                | 0.8           | 0.5 – 1      | How far vanilla's patchy forest noise opens the model's woods into fields and glens. 0 off, 1 bare clearings. |
 | `shrubClearings`                 | 0.8           | 0.5 – 1      | The same for shrubs, from vanilla's shrub noise. |
 
@@ -525,14 +527,14 @@ chunks disagree with old ones.
 the climate map cancels (the model does orography properly) but vanilla's biome thresholds were
 tuned with.
 
-**`forestDensityMultiplier` is squared on its way to the ground.** Vanilla accepts each candidate
-tree with probability `(byte / 255)²`, so 1.0 → 1.4 is roughly double the trees, and the setting
-bites hardest where cover is already low. The byte saturates at 255, so much above 1.2 flattens the
-wet end; 0 still scatters lone trees, because the acceptance probability floors at 0.0025. For a
+**Forest density is squared on its way to the ground.** Vanilla accepts each candidate
+tree with probability `(byte / 255)²`, so 100% → 140% is roughly double the trees, and the setting
+bites hardest where cover is already low. The byte saturates at 255, so much above 120% flattens the
+wet end; 0% still scatters lone trees, because the acceptance probability floors at 0.0025. For a
 treeless world use "Forestation & shrubs" at −100%.
 
 The two differ: "Forestation & shrubs" is *additive*, lifting deserts as much as forests;
-`forestDensityMultiplier` is *proportional*, preserving the climate pattern. Both apply.
+Forest density is *proportional*, preserving the climate pattern. Both apply.
 
 ## Building
 

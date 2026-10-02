@@ -153,7 +153,7 @@ public class TerrainDiffusionModSystem : ModSystem
 
         _provider = new TerrainDiffusionProvider(
             WorldSeed(), models, _settings, _api.Logger, BuildLandmask(),
-            _riverBasins, DiffusionConfig.Instance.WorldGen.RiverBasinDepth);
+            _riverBasins, _settings.RiverBasinDepth);
 
         // Before anything builds a Rivers region, which the spawn search below is the first to do.
         if (RiversCompat.Installed) RiversCompat.UseModelSea(_provider.IsCoarseSea);
@@ -190,7 +190,9 @@ public class TerrainDiffusionModSystem : ModSystem
         // tall a block is, and before any chunk generates, because the map layer writes through it.
         if (_settings.ClimateMode != DiffusionClimateMode.Off)
         {
-            ClimateScale.Install(_api.Logger, ClimateScale.ScaleFor(_settings.MeanMetersPerBlockVertical));
+            ClimateScale.Install(_api.Logger,
+                ClimateScale.ScaleFor(_settings.MeanMetersPerBlockVertical) * _settings.AltitudeCooling,
+                ClimateScale.ReferenceLapseCPerKm * _settings.AltitudeCooling);
             SurfaceClimateCompat.Install(_api, _settings.Heights);
         }
         else
@@ -768,10 +770,10 @@ public class TerrainDiffusionModSystem : ModSystem
             : genMaps.Bush;
         genMaps.Forest = _forestLayer = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 2, _provider, TerraGenConfig.forestMapScale, false,
-            worldGen.ForestDensityMultiplier, vanillaForest, worldGen.ForestClearings);
+            _settings.ForestDensity, vanillaForest, worldGen.ForestClearings);
         genMaps.Bush = _shrubLayer = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 3, _provider, TerraGenConfig.shrubMapScale, true,
-            worldGen.ShrubDensityMultiplier, vanillaShrubs, worldGen.ShrubClearings);
+            _settings.ShrubDensity, vanillaShrubs, worldGen.ShrubClearings);
     }
 
     /// <summary>True when some of the world's climate settings had to be left to the output.</summary>

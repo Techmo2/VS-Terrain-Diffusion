@@ -478,17 +478,6 @@
       }
     },
     {
-      "code": "WorldGen/RiverBasinDepth",
-      "type": "number",
-      "default": 0.3,
-      "ingui": "setting-WorldGenRiverBasinDepth",
-      "comment": "setting-WorldGenRiverBasinDepth-hover",
-      "range": {
-        "min": 0.0,
-        "max": 1.0
-      }
-    },
-    {
       "code": "WorldGen/TranslocatorPeekPauseSeconds",
       "type": "integer",
       "default": 30,
@@ -521,28 +510,6 @@
       "type": "separator",
       "title": "configsep-vegetationandsurface",
       "text": "configsep-vegetationandsurface-text"
-    },
-    {
-      "code": "WorldGen/ForestDensityMultiplier",
-      "type": "number",
-      "default": 1.0,
-      "ingui": "setting-WorldGenForestDensityMultiplier",
-      "comment": "setting-WorldGenForestDensityMultiplier-hover",
-      "range": {
-        "min": 0.0,
-        "max": 4.0
-      }
-    },
-    {
-      "code": "WorldGen/ShrubDensityMultiplier",
-      "type": "number",
-      "default": 1.0,
-      "ingui": "setting-WorldGenShrubDensityMultiplier",
-      "comment": "setting-WorldGenShrubDensityMultiplier-hover",
-      "range": {
-        "min": 0.0,
-        "max": 4.0
-      }
     },
     {
       "code": "WorldGen/ForestClearings",

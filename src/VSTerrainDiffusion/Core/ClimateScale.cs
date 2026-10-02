@@ -83,7 +83,8 @@ public static class ClimateScale
     /// Puts the correction in place, or updates it. Idempotent: in single player the server and the
     /// client share one process and both will ask for it.
     /// </summary>
-    public static void Install(ILogger logger, float lapseScale)
+    /// <param name="lapseCPerKm">The rate that scale amounts to, for the log.</param>
+    public static void Install(ILogger logger, float lapseScale, float lapseCPerKm = ReferenceLapseCPerKm)
     {
         _logger = logger;
         LapseScale = lapseScale;
@@ -132,7 +133,7 @@ public static class ClimateScale
         logger?.Notification(
             "[{0}] Climate lapse rate set to {1:0.#} C/km ({2:0.###}x the game's own; it is already " +
             "right at {3:0.#} m per block).",
-            DiffusionPaths.ModId, ReferenceLapseCPerKm, LapseScale, NeutralMetersPerBlock);
+            DiffusionPaths.ModId, lapseCPerKm, LapseScale, NeutralMetersPerBlock);
     }
 
     private static HarmonyMethod Method(string name) =>

@@ -44,17 +44,42 @@ public sealed class DiffusionWorldSettings
 
     /// <summary>
     /// How much of the base model's first draw its second step redraws, as a noise level. 0.35 is
-    /// the reference implementation's quality optimum; the default is a little above it. World
-    /// setting <c>terraindiffusionBaseRenoiseSigma</c>.
+    /// the reference implementation's quality optimum, and the default. World
+    /// setting <c>terraindiffusionDetailRedraw</c>, in hundredths.
     /// </summary>
-    public float BaseRenoiseSigma { get; private set; } = 0.45f;
+    public float BaseRenoiseSigma { get; private set; } = 0.35f;
 
     /// <summary>
     /// Standard deviation, in signed square-root metres, of noise added to the coarse model's
     /// elevation before the base model draws the detail. 0 is off. World setting
-    /// <c>terraindiffusionCoarseHeightNoise</c>.
+    /// <c>terraindiffusionHeightNoise</c>, in hundredths.
     /// </summary>
     public float CoarseHeightNoise { get; private set; }
+
+    /// <summary>
+    /// Multiplies the model's local lapse rate, so temperature falls faster (above 1) or slower with
+    /// altitude; sea level keeps its temperature. World setting <c>terraindiffusionAltitudeCooling</c>,
+    /// in percent.
+    /// </summary>
+    public float AltitudeCooling { get; private set; } = 1f;
+
+    /// <summary>
+    /// Scales the forest cover the model's moisture implies. Trees on the ground go as its square:
+    /// vanilla accepts each candidate tree with probability <c>(byte / 255)^2</c>. World setting
+    /// <c>terraindiffusionForestDensity</c>, in percent.
+    /// </summary>
+    public float ForestDensity { get; private set; } = 1f;
+
+    /// <summary>Scales shrub cover the same way. World setting <c>terraindiffusionShrubDensity</c>, in percent.</summary>
+    public float ShrubDensity { get; private set; } = 1f;
+
+    /// <summary>
+    /// How far the land is lowered where sneeze's Rivers runs a river, 0 to 1, so the model draws a
+    /// valley for it rather than a ridge to be cut through. Nothing without that mod. Measured against
+    /// ~505 m either side of a corridor: 0.3 brings it to 334 m, 0.5 to 251 m, 1.0 to 28 m but
+    /// drowns a fifth of it. World setting <c>terraindiffusionRiverValleyDepth</c>, in percent.
+    /// </summary>
+    public float RiverBasinDepth { get; private set; } = 0.3f;
 
     /// <summary>Pooling of the coarse model's output; see <see cref="Pipeline.CoarsePooling"/>.</summary>
     public Pipeline.CoarsePooling CoarsePooling { get; private set; } = Pipeline.CoarsePooling.None;
@@ -256,10 +281,19 @@ public sealed class DiffusionWorldSettings
                 : ReadWorldConfig(worldConfig, "terraindiffusionClimate", "full")),
             Scale = scale,
             VerticalExaggeration = exaggeration,
+            // Both in hundredths: the mod DB refuses the decimal slider type, so they are integer sliders.
             BaseRenoiseSigma = Math.Clamp(
-                ReadWorldConfig(worldConfig, "terraindiffusionBaseRenoiseSigma", "0.45").ToFloat(0.45f), 0.05f, 4f),
+                ReadWorldConfig(worldConfig, "terraindiffusionDetailRedraw", "35").ToInt(35) / 100f, 0.05f, 4f),
             CoarseHeightNoise = Math.Clamp(
-                ReadWorldConfig(worldConfig, "terraindiffusionCoarseHeightNoise", "0").ToFloat(0f), 0f, 10f),
+                ReadWorldConfig(worldConfig, "terraindiffusionHeightNoise", "0").ToInt(0) / 100f, 0f, 10f),
+            AltitudeCooling = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionAltitudeCooling", "100").ToInt(100) / 100f, 0.1f, 5f),
+            ForestDensity = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionForestDensity", "100").ToInt(100) / 100f, 0f, 4f),
+            ShrubDensity = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionShrubDensity", "100").ToInt(100) / 100f, 0f, 4f),
+            RiverBasinDepth = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionRiverValleyDepth", "30").ToInt(30) / 100f, 0f, 1f),
             CoarsePooling = Pipeline.CoarsePooling.Of(
                 ReadWorldConfig(worldConfig, "terraindiffusionCoarsePooling", "1").ToInt(1),
                 ReadWorldConfig(worldConfig, "terraindiffusionCoarsePoolMode", "average") == "extreme"),
@@ -588,7 +622,7 @@ public sealed class DiffusionWorldSettings
     public float TemperatureCeilingMeters(float temperatureC)
     {
         float headroom = 40f - temperatureC;
-        return headroom <= 0f ? 0f : headroom / ClimateScale.ReferenceLapseCPerKm * 1000f;
+        return headroom <= 0f ? 0f : headroom / (ClimateScale.ReferenceLapseCPerKm * AltitudeCooling) * 1000f;
     }
 
     /// <summary>

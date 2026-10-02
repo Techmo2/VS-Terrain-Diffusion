@@ -268,21 +268,6 @@ public class WorldGenConfig
     public float TemperatureOffsetC { get; set; }
 
     /// <summary>
-    /// Scales the forest cover the model's moisture implies. Vintage Story's own forest map is
-    /// noise with no climate signal at all, so this replaces it outright; raise for denser woods.
-    ///
-    /// Trees on the ground go as the <em>square</em> of this. What the mod writes is a 0-255 forest
-    /// byte; vanilla draws candidate tree positions from the climate and accepts each one with
-    /// probability <c>(byte / 255)^2</c>, so 1.4 is about twice the trees rather than four tenths
-    /// more. The byte also saturates, which is why much above 1.2 only flattens the wet end, and
-    /// why the setting bites hardest where cover was low to begin with.
-    /// </summary>
-    public float ForestDensityMultiplier { get; set; } = 1f;
-
-    /// <summary>Scales shrub cover the same way, with the same squaring.</summary>
-    public float ShrubDensityMultiplier { get; set; } = 1f;
-
-    /// <summary>
     /// How far vanilla's forest noise opens up the model's woods into fields and glens, 0 to 1.
     /// Vanilla's map is patchy noise - about a third of it open ground, in patches roughly a
     /// kilometre across - and this thins the trees there by that fraction, leaving the model's
@@ -336,26 +321,6 @@ public class WorldGenConfig
     /// spacetime..." until its chunk is unloaded and read back from disk.
     /// </summary>
     public int TranslocatorSearchTimeoutSeconds { get; set; } = 120;
-
-    /// <summary>
-    /// How far the land is lowered where sneeze's Rivers runs a river, from 0 (leave the model's
-    /// own landscape alone) to 1. Does nothing without that mod.
-    ///
-    /// The rivers are routed before the terrain is generated - they come from the world's ocean
-    /// map, not from its height - so the model can be told where they will be and put a valley
-    /// there rather than a ridge for one to be cut through afterwards.
-    ///
-    /// Measured at the default conditioning strength, a corridor against ~505 m either side:
-    /// 0.3 brings it to 334 m (a 28% drop), 0.5 to 251 m (45%), and 1.0 to 28 m (94%) but drowns a
-    /// fifth of the corridor, which turns rivers into sea inlets.
-    ///
-    /// The default is 0.3 rather than the 0.5 first shipped because the basin reaches a full coarse
-    /// cell either side of a river. At Rivers' own default density that sweeps roughly a third of
-    /// the world, and pressing all of it halfway to sea level reads as a plain rather than as river
-    /// valleys. Raise it for deeper valleys, or lower <c>riverSpawnChance</c> in Rivers' own config
-    /// for fewer of them.
-    /// </summary>
-    public float RiverBasinDepth { get; set; } = 0.3f;
 
     /// <summary>
     /// How long the server may wait for world generation to pause before a chunk peek, in seconds.
@@ -559,8 +524,6 @@ public class WorldGenConfig
         RainfallBias = Clamp(RainfallBias, -1f, 1f, 0f);
         TemperatureOffsetC = Clamp(TemperatureOffsetC, -40f, 40f, 0f);
 
-        ForestDensityMultiplier = Clamp(ForestDensityMultiplier, 0f, 4f, 1f);
-        ShrubDensityMultiplier = Clamp(ShrubDensityMultiplier, 0f, 4f, 1f);
         ForestClearings = Clamp(ForestClearings, 0f, 1f, 0.8f);
         ShrubClearings = Clamp(ShrubClearings, 0f, 1f, 0.8f);
 
@@ -569,7 +532,6 @@ public class WorldGenConfig
         SeasonalPrecipitationFloor = Clamp(SeasonalPrecipitationFloor, 0f, 1f, 0.4f);
         TranslocatorSearchTimeoutSeconds = (int)Clamp(TranslocatorSearchTimeoutSeconds, 0f, 1800f, 120f);
         TranslocatorPeekPauseSeconds = (int)Clamp(TranslocatorPeekPauseSeconds, 0f, 120f, 30f);
-        RiverBasinDepth = Clamp(RiverBasinDepth, 0f, 1f, 0.3f);
         TranslocatorMaxRangeBlocks = (int)Clamp(TranslocatorMaxRangeBlocks, 0f, 8000f, 0f);
 
         OceanMap = (OceanMap ?? "input").Trim().ToLowerInvariant();

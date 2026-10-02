@@ -59,6 +59,9 @@ public sealed class WorldPipeline
     /// <summary>Noise added to the coarse elevation; see <see cref="DiffusionWorldSettings.CoarseHeightNoise"/>.</summary>
     private readonly float _coarseHeightNoise;
 
+    /// <summary>Multiplies the fitted lapse rate; see <see cref="DiffusionWorldSettings.AltitudeCooling"/>.</summary>
+    private readonly float _altitudeCooling;
+
     /// <summary>Square-root metres of elevation over which <see cref="_coarseHeightNoise"/> fades in from sea level.</summary>
     private const float CoarseNoiseShoreRamp = 10f;
 
@@ -94,8 +97,8 @@ public sealed class WorldPipeline
     public WorldPipeline(ulong seed, PipelineModels models, ILandmaskSource landmask = null,
                          ClimateShift climate = default, ILatitudeSource latitude = null,
                          IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f,
-                         CoarsePooling pooling = default, float baseRenoiseSigma = 0.45f,
-                         float coarseHeightNoise = 0f)
+                         CoarsePooling pooling = default, float baseRenoiseSigma = 0.35f,
+                         float coarseHeightNoise = 0f, float altitudeCooling = 1f)
     {
         _pooling = pooling.Factor >= 1 ? pooling : CoarsePooling.None;
         _riverBasins = riverBasins;
@@ -155,6 +158,7 @@ public sealed class WorldPipeline
 
         _renoiseT = (float)Math.Atan(baseRenoiseSigma / SigmaData);
         _coarseHeightNoise = coarseHeightNoise;
+        _altitudeCooling = altitudeCooling;
 
         _coarseModel = models.Coarse;
         _baseModel = models.Base;
@@ -807,7 +811,7 @@ public sealed class WorldPipeline
                 int idx = r * w + c;
 
                 float tBase = BilinearSample2D(lapse[0], lh, lw, gridY, gridX);
-                float beta = BilinearSample2D(lapse[1], lh, lw, gridY, gridX);
+                float beta = BilinearSample2D(lapse[1], lh, lw, gridY, gridX) * _altitudeCooling;
 
                 climate[idx] = tBase + beta * Math.Max(0f, elevation[idx]);
                 climate[plane + idx] = BilinearSample2D(centralCoarse[3], cenH, cenW, gridY, gridX);

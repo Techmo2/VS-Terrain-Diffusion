@@ -220,28 +220,6 @@ values that would work. The mod never changes the device or a precision itself.
     // Degrees Celsius added to every model temperature, for a warmer or colder world.
     "TemperatureOffsetC": 0.0,
 
-    // Scales the forest cover the model's moisture implies. Vintage Story's own forest map is
-    // noise with no climate signal at all, so this replaces it outright; raise for denser woods.
-    //
-    // TREES ON THE GROUND GO AS THE SQUARE OF THIS. The mod writes a 0-255 forest byte; vanilla
-    // draws candidate tree positions from the climate and accepts each with probability
-    // (byte / 255) squared. So 1.0 -> 1.4 is roughly double the trees, not 40% more. Two corollaries:
-    // the byte saturates at 255, so much above 1.2 only flattens the wet end while still lifting
-    // dry ground; and 0 does not give a bare world, because that acceptance probability has a floor
-    // of 0.0025 which still scatters the odd lone tree. For no trees at all, use the world's own
-    // "Forestation & shrubs" setting at -100%.
-    //
-    // That world setting is additive where this is proportional: it shifts every place by the same
-    // amount, deserts included, while this preserves the climate pattern and scales the contrast.
-    // Both apply, the world setting on top of this one.
-    //
-    // Water and ground too steep to hold soil are cut to zero before this is applied, so it cannot
-    // put woods on a cliff or the sea.
-    "ForestDensityMultiplier": 1.0,
-
-    // Scales shrub cover the same way, with the same squaring.
-    "ShrubDensityMultiplier": 1.0,
-
     // How far vanilla's forest noise opens the model's woods into fields and glens, 0 to 1. About a
     // third of vanilla's map is open ground, in patches roughly a kilometre across; trees there are
     // thinned by this fraction (then squared, like the density above). 0 turns it off; 1 leaves the
@@ -274,23 +252,6 @@ values that would work. The mod never changes the device or a precision itself.
     // extreme (BIO15 above roughly 100%). 0 removes it, and those places then go months with no
     // rain at all, which stalls unirrigated crops until the rains return.
     "SeasonalPrecipitationFloor": 0.4,
-
-    // How far the land is lowered where the Rivers mod runs a river, from 0 to 1. Does nothing
-    // without that mod.
-    //
-    // Rivers are routed from the world's ocean map rather than from terrain height, so they can be
-    // worked out before the landscape and the model told where they will be - it then puts a
-    // valley there instead of a ridge for one to be cut through afterwards.
-    //
-    // Measured against ~505 m either side of a river corridor: 0.3 brings it to 334 m (a 28%
-    // drop), 0.5 to 251 m (45%), 1.0 to 28 m but drowns a fifth of the corridor and turns rivers
-    // into sea inlets.
-    //
-    // The basin reaches a full coarse cell either side of a river, which at Rivers' own default
-    // density covers roughly a third of the world - hence 0.3 rather than 0.5, so that ground
-    // reads as river valleys instead of a plain. For fewer, deeper valleys, raise this and lower
-    // "riverSpawnChance" in Rivers' own config.
-    "RiverBasinDepth": 0.3,
 
     // ---- Translocators -------------------------------------------------------------------------
 
@@ -478,13 +439,10 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `RainfallMedianMm` | 10 – 10 000 | 300 – 900 | 540 |
 | `RainfallBias` | -1 – 1 | -0.1 – 0.1 | 0 |
 | `TemperatureOffsetC` | -40 – 40 | -5 – 5 | 0 |
-| `ForestDensityMultiplier` | 0 – 4 | 0.7 – 1.5 (squared on the ground) | 1 |
-| `ShrubDensityMultiplier` | 0 – 4 | 0.5 – 2 (squared on the ground) | 1 |
 | `ForestClearings` | 0 – 1 | 0.5 – 1 | 0.8 |
 | `ShrubClearings` | 0 – 1 | 0.5 – 1 | 0.8 |
 | `SeasonalTemperatureStrength`, `SeasonalPrecipitationStrength` | 0 – 4 | 0.5 – 1.5 | 1 |
 | `SeasonalPrecipitationFloor` | 0 – 1 | 0.3 – 0.6 | 0.4 |
-| `RiverBasinDepth` | 0 – 1 | 0.2 – 0.5 | 0.3 |
 | `TranslocatorSearchTimeoutSeconds` | 0 – 1800 | 90 – 300 | 120 |
 | `TranslocatorPeekPauseSeconds` | 0 – 120 | 20 – 60 | 30 |
 | `TranslocatorMaxRangeBlocks` | 0, or up to 8000 | 0, or 1500 – 3000 | 0 |

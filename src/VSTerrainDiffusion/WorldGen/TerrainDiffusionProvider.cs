@@ -250,7 +250,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
     {
         _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude,
                                       riverBasins, riverBasinDepth, settings.CoarsePooling,
-                                      settings.BaseRenoiseSigma, settings.CoarseHeightNoise);
+                                      settings.BaseRenoiseSigma, settings.CoarseHeightNoise,
+                                      settings.AltitudeCooling);
         _seed = seed;
         _models = models;
         _landmask = landmask;
@@ -1251,11 +1252,18 @@ public sealed class TerrainDiffusionProvider : IDisposable
     }
 
     /// <summary>Mean temperature of a coarse cell, in degrees, straight from the model.</summary>
-    private static float CellTemperature(FloatTensor coarse, int plane, int width, int row, int col)
+    private float CellTemperature(FloatTensor coarse, int plane, int width, int row, int col)
     {
         int index = row * width + col;
         float weight = coarse.Data[6 * plane + index];
-        return weight > 1e-6f ? coarse.Data[2 * plane + index] / weight : 0f;
+        if (weight <= 1e-6f) return 0f;
+
+        // The coarse model's temperature is at its own ground, on the model's lapse rate; altitude
+        // cooling steepens that, which the survey takes at the reference rate rather than fitting it.
+        float temperature = coarse.Data[2 * plane + index] / weight;
+        float elevation = Math.Max(0f, coarse.Data[index] / weight);
+        return temperature - (_settings.AltitudeCooling - 1f) * ClimateScale.ReferenceLapseCPerKm / 1000f
+                             * elevation * elevation;
     }
 
     /// <summary>Whether a coarse cell at this offset from the origin is inside the world's bounds.</summary>
@@ -1335,7 +1343,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
                                                        _settings.Climate, _settings.Latitude,
                                                        pooling: _settings.CoarsePooling,
                                                        baseRenoiseSigma: _settings.BaseRenoiseSigma,
-                                                       coarseHeightNoise: _settings.CoarseHeightNoise);
+                                                       coarseHeightNoise: _settings.CoarseHeightNoise,
+                                                       altitudeCooling: _settings.AltitudeCooling);
             }
             return CoarseElevationRoot(_riverFreePipeline, blockX, blockZ) < 0.0;
         }
