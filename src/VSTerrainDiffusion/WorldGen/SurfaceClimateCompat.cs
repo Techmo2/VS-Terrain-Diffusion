@@ -78,13 +78,13 @@ public static class SurfaceClimateCompat
     /// </summary>
     private static readonly ThreadLocal<int> PendingChunkDistance = new(() => int.MinValue);
 
-    public static void Install(ICoreServerAPI api)
+    public static void Install(ICoreServerAPI api, HeightFrame heights)
     {
         Uninstall();
 
         _api = api;
-        _seaLevel = api.World.SeaLevel;
-        _mapSizeY = api.WorldManager.MapSizeY;
+        _seaLevel = heights.SeaLevel;
+        _mapSizeY = heights.MapSizeY;
 
         MethodInfo spawnerClimate = AccessTools.Method(
             typeof(ServerSystemEntitySpawner), "GetSuitableClimateTemperatureRainfall");

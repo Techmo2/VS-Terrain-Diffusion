@@ -76,6 +76,9 @@ public class TerrainDiffusionModSystem : ModSystem
         ConfigLibCompat.Install(api);
 
         api.Event.InitWorldGenerator(OnInitWorldGenerator, "standard");
+
+        // Before any world generator's set-up, one of which loads the tree bands it moves.
+        TreeHeightFrame.Install();
         api.Event.MapRegionGeneration(OnMapRegionGeneration, "standard");
 
         // After GenBlockLayers, which is registered on the same pass at execute order 0.4.
@@ -188,7 +191,7 @@ public class TerrainDiffusionModSystem : ModSystem
         if (_settings.ClimateMode != DiffusionClimateMode.Off)
         {
             ClimateScale.Install(_api.Logger, ClimateScale.ScaleFor(_settings.MeanMetersPerBlockVertical));
-            SurfaceClimateCompat.Install(_api);
+            SurfaceClimateCompat.Install(_api, _settings.Heights);
         }
         else
         {
@@ -196,18 +199,19 @@ public class TerrainDiffusionModSystem : ModSystem
             SurfaceClimateCompat.Uninstall();
         }
 
-        if (DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic)
+        // Always, even when there is nothing to move: the bands are shared by every world in the
+        // process, so one moved for the last world has to be put back for this one.
+        try
         {
-            try
-            {
-                BlockLayerAltitude.Apply(_api, _settings);
-            }
-            catch (Exception e)
-            {
-                throw DiffusionFailure.Fatal(_api.Logger,
-                    "The surface block layer altitudes could not be rescaled for this world's " +
-                    "vertical exaggeration.", e);
-            }
+            bool exaggerated = DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic;
+            BlockLayerAltitude.Apply(_api, _settings, exaggerated);
+            TreeHeightFrame.Use(_settings, exaggerated, _api.Logger);
+        }
+        catch (Exception e)
+        {
+            throw DiffusionFailure.Fatal(_api.Logger,
+                "The altitude bands of surface layers and trees could not be fitted to this world's sea level " +
+                "and vertical scale.", e);
         }
 
         RecordSpawn(spawn);
@@ -286,7 +290,33 @@ public class TerrainDiffusionModSystem : ModSystem
     {
         if (DiffusionConfig.Instance.WorldGen.OceanMap != "input") return null;
         return new OceanMapLandmask(
-            () => WorldMapLayers.Resolve(_api)?.Ocean, _settings, _api.Logger);
+            () => WorldMapLayers.Resolve(_api)?.Ocean, _settings, ResolveOceanMapSamples(), _api.Logger);
+    }
+
+    /// <summary>Save game key holding how many ocean-map points a conditioning pixel reads per axis.</summary>
+    private const string OceanMapSamplesSaveKey = "vsterraindiffusion:oceanmapsamples";
+
+    /// <summary>
+    /// How finely this world reads the ocean map: a new world samples it, a world from before
+    /// sampling existed reads every pixel as it always has. Written down either way, because it
+    /// nudges the coastline, and new chunks that disagreed with old ones would leave a step.
+    /// </summary>
+    private int ResolveOceanMapSamples()
+    {
+        ISaveGame save = _api.WorldManager.SaveGame;
+        try
+        {
+            byte[] stored = save.GetData(OceanMapSamplesSaveKey);
+            if (stored is { Length: sizeof(int) }) return BitConverter.ToInt32(stored, 0);
+
+            int samples = save.IsNew ? OceanMapLandmask.DefaultSamplesPerAxis : 0;
+            save.StoreData(OceanMapSamplesSaveKey, BitConverter.GetBytes(samples));
+            return samples;
+        }
+        catch (Exception e)
+        {
+            throw DiffusionFailure.Fatal(_api.Logger, "This world's ocean map sampling could not be read or saved.", e);
+        }
     }
 
     /// <summary>Loads the ONNX models. Stops the game rather than returning without them.</summary>
@@ -570,7 +600,10 @@ public class TerrainDiffusionModSystem : ModSystem
 
         ChunkColumnGenerationDelegate replacement = OnTerrainPass;
 
-        // Re-initialisation (for example /wgen regen) hits this a second time.
+        // Re-initialisation (for example /wgen regen) hits this a second time. Our handler may by
+        // then sit inside another mod's wrapper - ChunkLOD's worldgen profiler wraps every handler
+        // in the pass - where it cannot be swapped and need not be: it reads _generator on every
+        // call, so the wrapped copy already runs the generator this initialisation built.
         if (_installedHandler != null)
         {
             int existing = terrainPass.IndexOf(_installedHandler);
@@ -578,6 +611,13 @@ public class TerrainDiffusionModSystem : ModSystem
             {
                 terrainPass[existing] = replacement;
                 _installedHandler = replacement;
+                return;
+            }
+
+            if (terrainPass.Exists(d => Holds(d, _installedHandler, depth: 3)))
+            {
+                _api.Logger.VerboseDebug("[{0}] Terrain handler is still installed, inside another mod's wrapper",
+                    DiffusionPaths.ModId);
                 return;
             }
         }
@@ -599,6 +639,27 @@ public class TerrainDiffusionModSystem : ModSystem
         }
 
         _installedHandler = replacement;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="handler"/> is <paramref name="target"/>, or wraps it: a closure or
+    /// object whose fields hold it, to <paramref name="depth"/> wrappers deep.
+    /// </summary>
+    private static bool Holds(Delegate handler, Delegate target, int depth)
+    {
+        if (handler == null) return false;
+        if (handler.Equals(target)) return true;
+        if (depth <= 0 || handler.Target == null) return false;
+
+        foreach (System.Reflection.FieldInfo field in handler.Target.GetType().GetFields(
+                     System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public |
+                     System.Reflection.BindingFlags.NonPublic))
+        {
+            if (typeof(Delegate).IsAssignableFrom(field.FieldType) &&
+                Holds(field.GetValue(handler.Target) as Delegate, target, depth - 1))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -1197,7 +1258,7 @@ public class TerrainDiffusionModSystem : ModSystem
             "",
             $"Terrain height: Y {terrainHeight}",
             $"Rain height: Y {rainHeight}",
-            $"Sea level: Y {_api.World.SeaLevel}",
+            $"Sea level: Y {_settings.SeaLevel}",
             "",
             "Blocks:"
         };
@@ -1251,6 +1312,7 @@ public class TerrainDiffusionModSystem : ModSystem
         WatershedsCompat.Uninstall();
         RiversCompat.Uninstall();
         TerrainSamplerCompat.Uninstall();
+        TreeHeightFrame.Uninstall();
         SurfaceClimateCompat.Uninstall();
         TranslocatorSearchCompat.Uninstall();
         ClimateScale.Uninstall();

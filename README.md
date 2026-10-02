@@ -46,9 +46,16 @@ and `/worldconfig <code> <value>` changes one later.
 | Terrain Diffusion        | `terraindiffusionEnabled`              | on      | Turn off to fall back to vanilla terrain, keeping the mod installed. |
 | Resolution               | `terraindiffusionScale`                | 15 m    | Real-world metres per block, horizontally *and* vertically. |
 | Vertical exaggeration    | `terraindiffusionVerticalExaggeration` | 1x      | Multiplies terrain height. 1x is true scale. |
+| Sea level                | `terraindiffusionSeaLevel`             | vanilla | `128` fixes the sea at Y 128, so every block a taller world adds goes above it. |
 | Climate                  | `terraindiffusionClimate`              | model   | Whether the model drives climate as well as terrain. |
 | Terrain intensity        | `terraindiffusionCoarsePooling`        | off     | Packs 2x or 4x the landscape into the same distance: ranges, valleys and coasts closer together, relief steeper. |
 | Intensity mode           | `terraindiffusionCoarsePoolMode`       | average | `extreme` keeps each block's highest ground and deepest valley floor: taller peaks, deeper cuts, less realistic. |
+
+With sea level at 128 the terrain, climate, soil bands, trees and weather keep their height above
+the sea: a 512-block world is laid out like a vanilla world 675 blocks tall, with 128 blocks of rock
+and ocean below the sea instead of 220. Vanilla data written as fractions of world height (block
+layers, lake and ocean beds, tree altitude bands) is moved to the same height above the sea in that
+equivalent world. Rivers resets sea level to vanilla's as it starts; that is overridden.
 
 Terrain intensity is the reference implementation's `coarse_pooling`: the model's large-scale map is
 drawn as usual and each 2x2 or 4x4 block of it becomes one cell of the world. Measured over nine

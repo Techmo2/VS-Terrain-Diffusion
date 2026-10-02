@@ -62,6 +62,9 @@ public sealed class DiffusionWorldSettings
 
     public int SeaLevel { get; private set; }
     public int MapSizeY { get; private set; }
+
+    /// <summary>Sea level and the room around it; see <see cref="HeightFrame"/>.</summary>
+    public HeightFrame Heights => new(SeaLevel, MapSizeY);
     public int MapSizeX { get; private set; }
     public int MapSizeZ { get; private set; }
 
@@ -601,14 +604,19 @@ public sealed class DiffusionWorldSettings
     /// </summary>
     public bool IsWorldTooShort => !IsCalibrated && LinearRangeMeters < 3200f;
 
-    /// <summary>World height that would keep terrain up to 5000 m perfectly to scale.</summary>
+    /// <summary>
+    /// World height that would keep terrain up to 5000 m perfectly to scale. A vanilla sea level
+    /// rises with the world, so the room it needs is scaled up by the share above the sea; a fixed
+    /// sea level stays put, so the room is simply added on top of it.
+    /// </summary>
     public int RecommendedMapSizeY
     {
         get
         {
-            float neededHeadroom = LandBlocks(5000f) / _shaping.LinearKneeFraction;
-            float sealevelFraction = MapSizeY > 0 ? (float)SeaLevel / MapSizeY : 0.4313725f;
-            int needed = (int)Math.Ceiling((neededHeadroom + 3) / Math.Max(0.05f, 1f - sealevelFraction));
+            float neededHeadroom = LandBlocks(5000f) / _shaping.LinearKneeFraction + 3;
+            int needed = MapSizeY <= 0 || Heights.IsVanilla
+                ? (int)Math.Ceiling(neededHeadroom / (1 - HeightFrame.VanillaSeaFraction))
+                : SeaLevel + (int)Math.Ceiling(neededHeadroom);
             return Math.Min(4096, ((needed + 127) / 128) * 128);
         }
     }

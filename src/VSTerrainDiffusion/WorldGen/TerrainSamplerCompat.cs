@@ -17,7 +17,9 @@ namespace VSTerrainDiffusion.WorldGen;
 ///
 /// So only the height is taken over, at the two places the sampler computes one:
 /// <c>TerrainSamplerGenTerra.GetBlockColumnHeight</c>, and <c>SampleColumn</c> when it has not been
-/// handed a height already. The answer is <see cref="TerrainDiffusionProvider.SampleSurfaceY"/>,
+/// handed a height already. 1.2.0 - the version ChunkLOD requires, and draws its placeholder LODs
+/// from - has only the first, and keeps <c>WorldMapCoordinate</c> in another namespace, so the
+/// coordinate type is taken from the method rather than named, and <c>SampleColumn</c> is optional. The answer is <see cref="TerrainDiffusionProvider.SampleSurfaceY"/>,
 /// from the terrain tile or, with <c>terrainSamplerHeight: "coarse"</c>, from the coarse model.
 /// With Watersheds installed the sampler asks it first, and this mod answers that already.
 ///
@@ -47,25 +49,28 @@ public static class TerrainSamplerCompat
         try
         {
             Type genTerra = AccessTools.TypeByName("AlgernonsTerrainSampler.TerrainSamplerGenTerra");
-            Type coordinate = AccessTools.TypeByName("AlgernonsTerrainSampler.WorldMapCoordinate");
-            MethodInfo height = genTerra == null || coordinate == null
-                ? null
-                : AccessTools.Method(genTerra, "GetBlockColumnHeight", new[] { coordinate });
-            MethodInfo sample = genTerra == null || coordinate == null
+            MethodInfo height = genTerra == null ? null : Array.Find(
+                genTerra.GetMethods(BindingFlags.Instance | BindingFlags.Public),
+                m => m.Name == "GetBlockColumnHeight" && m.GetParameters() is { Length: 1 } p &&
+                     p[0].ParameterType.Name == "WorldMapCoordinate");
+            Type coordinate = height?.GetParameters()[0].ParameterType;
+            MethodInfo sample = coordinate == null
                 ? null
                 : AccessTools.Method(genTerra, "SampleColumn", new[] { coordinate, typeof(int?) });
             _x = coordinate == null ? null : AccessTools.Property(coordinate, "X");
             _z = coordinate == null ? null : AccessTools.Property(coordinate, "Z");
-            if (height == null || sample == null || _x == null || _z == null)
-                throw new MissingMethodException("TerrainSamplerGenTerra.GetBlockColumnHeight or SampleColumn");
+            if (height == null || _x == null || _z == null)
+                throw new MissingMethodException("TerrainSamplerGenTerra.GetBlockColumnHeight(WorldMapCoordinate)");
 
             _harmony = new Harmony(HarmonyId);
             _harmony.Patch(height, prefix: new HarmonyMethod(typeof(TerrainSamplerCompat), nameof(BeforeGetBlockColumnHeight)));
-            _harmony.Patch(sample, prefix: new HarmonyMethod(typeof(TerrainSamplerCompat), nameof(BeforeSampleColumn)));
+            if (sample != null)
+                _harmony.Patch(sample, prefix: new HarmonyMethod(typeof(TerrainSamplerCompat), nameof(BeforeSampleColumn)));
 
             api.Logger.Notification(
-                "[{0}] Algernon's Terrain Sampler is installed; its heights now come from the model ({1}).",
-                DiffusionPaths.ModId, DiffusionConfig.Instance.TerrainSamplerHeight);
+                "[{0}] Algernon's Terrain Sampler {1} is installed; its heights now come from the model ({2}).",
+                DiffusionPaths.ModId, api.ModLoader.GetMod(SamplerModId)?.Info.Version ?? "?",
+                DiffusionConfig.Instance.TerrainSamplerHeight);
         }
         catch (Exception e)
         {
