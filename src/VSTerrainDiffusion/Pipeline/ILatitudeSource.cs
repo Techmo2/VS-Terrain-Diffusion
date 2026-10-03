@@ -27,4 +27,12 @@ public interface ILatitudeSource
     /// the region's departure from it rather than the climate itself.
     /// </summary>
     void BandAt(int coarseRow, out float temperatureC, out float precipitationMm);
+
+    /// <summary>
+    /// What latitude adherence pulls the model's output towards at a fractional row (a pixel's
+    /// centre, not its corner): the temperature the conditioning asked for, in the same terms as
+    /// <see cref="BandAt"/>, and the seasonal spread vanilla gives this latitude, as the standard
+    /// deviation of its monthly means in Celsius.
+    /// </summary>
+    void AdherenceTargetsAt(double coarseRow, out float conditioningC, out float seasonalSigmaC);
 }

@@ -59,7 +59,23 @@ public sealed class WorldPipeline
     /// <summary>Noise added to the coarse elevation; see <see cref="DiffusionWorldSettings.CoarseHeightNoise"/>.</summary>
     private readonly float _coarseHeightNoise;
 
-    /// <summary>Multiplies the fitted lapse rate; see <see cref="DiffusionWorldSettings.AltitudeCooling"/>.</summary>
+    /// <summary>How far the climate is pulled to its latitude; see <see cref="DiffusionWorldSettings.LatitudeAdherence"/>.</summary>
+    private readonly float _latitudeAdherence;
+
+    /// <summary>
+    /// Pulls a sea-level temperature the model produced towards what its latitude's band asked for,
+    /// keeping <c>1 - adherence</c> of the difference. <paramref name="coarseRow"/> is a world coarse
+    /// cell row, as <see cref="GetCoarseSlice"/> indexes them. For the spawn search, which reads the
+    /// coarse map directly and has to see the climate the world will have.
+    /// </summary>
+    public float AdhereSeaLevelTemperature(float seaLevelC, int coarseRow)
+    {
+        if (_latitude == null || _latitudeAdherence <= 0f) return seaLevelC;
+        _latitude.AdherenceTargetsAt((coarseRow + 0.5) * _pooling.Factor, out float target, out _);
+        return target + (1f - _latitudeAdherence) * (seaLevelC - target);
+    }
+
+    /// <summary>Extra cooling with height, in reference lapse rates; see <see cref="DiffusionWorldSettings.AltitudeCooling"/>.</summary>
     private readonly float _altitudeCooling;
 
     /// <summary>Square-root metres of elevation over which <see cref="_coarseHeightNoise"/> fades in from sea level.</summary>
@@ -98,7 +114,8 @@ public sealed class WorldPipeline
                          ClimateShift climate = default, ILatitudeSource latitude = null,
                          IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f,
                          CoarsePooling pooling = default, float baseRenoiseSigma = 0.35f,
-                         float coarseHeightNoise = 0f, float altitudeCooling = 1f)
+                         float coarseHeightNoise = 0f, float altitudeCooling = 1f,
+                         float latitudeAdherence = 0f)
     {
         _pooling = pooling.Factor >= 1 ? pooling : CoarsePooling.None;
         _riverBasins = riverBasins;
@@ -159,6 +176,7 @@ public sealed class WorldPipeline
         _renoiseT = (float)Math.Atan(baseRenoiseSigma / SigmaData);
         _coarseHeightNoise = coarseHeightNoise;
         _altitudeCooling = altitudeCooling;
+        _latitudeAdherence = Math.Clamp(latitudeAdherence, 0f, 1f);
 
         _coarseModel = models.Coarse;
         _baseModel = models.Base;
@@ -802,16 +820,28 @@ public sealed class WorldPipeline
 
         var climate = new float[5 * h * w];
         int plane = h * w;
+        bool adhere = _latitude != null && _latitudeAdherence > 0f;
         for (int r = 0; r < h; r++)
         {
             float gridY = (i1 + r + 0.5f) / s - ci1 + 0.5f;
+
+            // Rows run along Z, so one latitude per row. The conditioning grid is the pooling
+            // factor finer than the coarse one.
+            float targetC = 0f;
+            if (adhere) _latitude.AdherenceTargetsAt((i1 + r + 0.5) / s * _pooling.Factor, out targetC, out _);
             for (int c = 0; c < w; c++)
             {
                 float gridX = (j1 + c + 0.5f) / s - cj1 + 0.5f;
                 int idx = r * w + c;
 
                 float tBase = BilinearSample2D(lapse[0], lh, lw, gridY, gridX);
-                float beta = BilinearSample2D(lapse[1], lh, lw, gridY, gridX) * _altitudeCooling;
+                if (adhere) tBase = targetC + (1f - _latitudeAdherence) * (tBase - targetC);
+                // Altitude cooling adds to the model's own fitted rate rather than scaling it: that
+                // rate is often shallow, a few degrees a kilometre, and tripling it barely showed,
+                // while the air above the ground cooled at the game-side reference rate times the
+                // setting. Extra cooling at the reference rate keeps the two the same.
+                float beta = BilinearSample2D(lapse[1], lh, lw, gridY, gridX)
+                             - (_altitudeCooling - 1f) * ClimateScale.ReferenceLapseCPerKm / 1000f;
 
                 climate[idx] = tBase + beta * Math.Max(0f, elevation[idx]);
                 climate[plane + idx] = BilinearSample2D(centralCoarse[3], cenH, cenW, gridY, gridX);

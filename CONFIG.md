@@ -396,7 +396,7 @@ values that would work. The mod never changes the device or a precision itself.
     "ClimateMode": "",
 
     // Overrides the world's "Resolution" setting. It is a divisor of the model's native
-    // 30 m pixel, so 1 is 30 m per block, 2 (the default) is 15 m, 4 is 7.5 m. Zero uses the
+    // 30 m pixel, so 1 is 30 m per block, 2 is 15 m, 3 (the world default) is 10 m. Zero uses the
     // world setting; values above 6 are only reachable from here. Finer costs generation time and
     // shrinks the world you can walk across; the climate map no longer limits it.
     "ScaleOverride": 0,

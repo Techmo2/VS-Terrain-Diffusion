@@ -57,11 +57,30 @@ public sealed class DiffusionWorldSettings
     public float CoarseHeightNoise { get; private set; }
 
     /// <summary>
-    /// Multiplies the model's local lapse rate, so temperature falls faster (above 1) or slower with
-    /// altitude; sea level keeps its temperature. World setting <c>terraindiffusionAltitudeCooling</c>,
-    /// in percent.
+    /// How fast temperature falls with height, as a share of the reference 6.5 C/km: above 1, the
+    /// difference is added to the model's own local rate, at the ground and in the air above it
+    /// alike, so 300% is 13 C/km colder than the model; sea level keeps its temperature. World
+    /// setting <c>terraindiffusionAltitudeCooling</c>, in percent.
     /// </summary>
     public float AltitudeCooling { get; private set; } = 1f;
+
+    /// <summary>
+    /// How far each place's climate is pulled to its latitude, 0 to 1: its sea-level temperature
+    /// towards the band's here, and its winters towards vanilla's for that latitude in
+    /// <see cref="WorldGen.DiffusionSeasons"/>. The model's regional character - coasts,
+    /// interiors, rain shadows - keeps the rest. The temperature part needs latitude bands.
+    /// World setting <c>terraindiffusionLatitudeAdherence</c>, in percent.
+    /// </summary>
+    public float LatitudeAdherence { get; private set; }
+
+    /// <summary>
+    /// Degrees added to every temperature in the world, sea level and summit alike. Vanilla's own
+    /// "temperate" world runs several degrees colder than its band's label, so this is what makes
+    /// one of these feel like it. The spawn search ignores it (<see cref="SpawnBandTemperature"/>),
+    /// so a colder world is still entered at the chosen band's latitude rather than walked south.
+    /// World setting <c>terraindiffusionTemperatureShift</c>.
+    /// </summary>
+    public float TemperatureShiftC { get; private set; }
 
     /// <summary>
     /// Scales the forest cover the model's moisture implies. Trees on the ground go as its square:
@@ -144,13 +163,21 @@ public sealed class DiffusionWorldSettings
     /// The Z coordinate is what decides latitude in Vintage Story, and the latitude band the model
     /// could not be conditioned all the way into is added here.
     /// </summary>
+    /// <summary>
+    /// The temperature the starting climate band is matched against: the world's, before the
+    /// player's own shifts. A shift is a preference about the world, not about where to start, and
+    /// matching on it would walk a colder world's spawn towards the equator and undo it.
+    /// </summary>
+    public float SpawnBandTemperature(float worldTemperatureC)
+        => worldTemperatureC - TemperatureShiftC - _shaping.TemperatureOffsetC;
+
     public float WorldTemperature(float modelTemperatureC, int blockZ)
     {
         // Latitude first, because the world's global setting scales the whole climate including
         // its north-south gradient: half a world is half its tropics and half its ice.
         float banded = modelTemperatureC + Latitude.TemperatureOffsetC(blockZ);
         float celsius = ClimateShift.ApplyTemperature(banded, TemperatureCorrection)
-                        + _shaping.TemperatureOffsetC;
+                        + _shaping.TemperatureOffsetC + TemperatureShiftC;
 
         // The far ends of the temperature setting ask for climates that are not on any scale the
         // game has: four times a 15 C world is 120 C. Vanilla arrives at the same place from the
@@ -255,6 +282,10 @@ public sealed class DiffusionWorldSettings
         ITreeAttribute worldConfig = api.WorldManager.SaveGame.WorldConfiguration;
         WorldGenConfig shaping = DiffusionConfig.Instance.WorldGen;
 
+        // Every fallback below is what the world did before its setting existed, not the setting's
+        // default: the game writes defaults only into worlds it creates, so a save from before a
+        // setting has nothing stored, and reading the new default would change its new chunks
+        // against the ones already on disk. New worlds get the defaults in worldconfig.json.
         int scale = shaping.ScaleOverride != 0
             ? shaping.ScaleOverride
             : GameMathClamp(ReadWorldConfig(worldConfig, "terraindiffusionScale", "2").ToInt(2), 1, 16);
@@ -286,6 +317,10 @@ public sealed class DiffusionWorldSettings
                 ReadWorldConfig(worldConfig, "terraindiffusionDetailRedraw", "35").ToInt(35) / 100f, 0.05f, 4f),
             CoarseHeightNoise = Math.Clamp(
                 ReadWorldConfig(worldConfig, "terraindiffusionHeightNoise", "0").ToInt(0) / 100f, 0f, 10f),
+            TemperatureShiftC = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionTemperatureShift", "0").ToInt(0), -30, 30),
+            LatitudeAdherence = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionLatitudeAdherence", "0").ToInt(0) / 100f, 0f, 1f),
             AltitudeCooling = Math.Clamp(
                 ReadWorldConfig(worldConfig, "terraindiffusionAltitudeCooling", "100").ToInt(100) / 100f, 0.1f, 5f),
             ForestDensity = Math.Clamp(

@@ -830,8 +830,9 @@ public class TerrainDiffusionModSystem : ModSystem
         if (spawn.MatchedClimate)
         {
             _api.Logger.Notification(
-                "[{0}] Starting climate {1}: spawning at about {2:0.#} C, {3} blocks from the map centre.",
-                DiffusionPaths.ModId, band.Value, spawn.TemperatureC, distance);
+                "[{0}] Starting climate {1}: spawning at about {2:0.#} C, {3} blocks from the map centre{4}.",
+                DiffusionPaths.ModId, band.Value, spawn.TemperatureC, distance,
+                float.IsNaN(spawn.ElevationMeters) ? "" : $", {spawn.ElevationMeters:0} m above the sea");
             return;
         }
 

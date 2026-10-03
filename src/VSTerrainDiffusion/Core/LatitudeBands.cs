@@ -316,6 +316,26 @@ public sealed class LatitudeBands : ILatitudeSource
     }
 
     /// <summary>
+    /// Vanilla's seasonal swing, <c>|latitude| * 65</c> degrees from midwinter to midsummer, as the
+    /// standard deviation of a sine with that range - the form the model's BIO4 takes.
+    /// </summary>
+    private const float VanillaSwingPerPole = 65f / 2.8284271f;
+
+    public void AdherenceTargetsAt(double coarseRow, out float conditioningC, out float seasonalSigmaC)
+    {
+        if (_latitude == null)
+        {
+            conditioningC = 0f;
+            seasonalSigmaC = 0f;
+            return;
+        }
+
+        float pole01 = Pole01(_originBlockZ + coarseRow * _blocksPerCoarsePixel);
+        conditioningC = Lookup(_conditioningC, pole01);
+        seasonalSigmaC = pole01 * VanillaSwingPerPole;
+    }
+
+    /// <summary>
     /// The mean annual temperature this latitude's band is aiming for, in Celsius: the zonal mean
     /// over land, after the world's global temperature setting and the band strength. What the
     /// ground actually reads should scatter around it, colder on high land and warmer on a coast.

@@ -44,18 +44,22 @@ and `/worldconfig <code> <value>` changes one later.
 | Setting                  | Code                                   | Default | What it does |
 | ------------------------ | -------------------------------------- | ------- | ------------ |
 | Terrain Diffusion        | `terraindiffusionEnabled`              | on      | Turn off to fall back to vanilla terrain, keeping the mod installed. |
-| Resolution               | `terraindiffusionScale`                | 15 m    | Real-world metres per block, horizontally *and* vertically. |
+| Resolution               | `terraindiffusionScale`                | 10 m    | Real-world metres per block, horizontally *and* vertically. |
 | Vertical exaggeration    | `terraindiffusionVerticalExaggeration` | 1x      | Multiplies terrain height. 1x is true scale. |
-| Sea level                | `terraindiffusionSeaLevel`             | vanilla | `128` fixes the sea at Y 128, so every block a taller world adds goes above it. |
+| Sea level                | `terraindiffusionSeaLevel`             | 128     | `128` fixes the sea at Y 128, so every block a taller world adds goes above it. |
 | Climate                  | `terraindiffusionClimate`              | model   | Whether the model drives climate as well as terrain. |
 | Terrain intensity        | `terraindiffusionCoarsePooling`        | off     | Packs 2x or 4x the landscape into the same distance: ranges, valleys and coasts closer together, relief steeper. |
 | Intensity mode           | `terraindiffusionCoarsePoolMode`       | average | `extreme` keeps each block's highest ground and deepest valley floor: taller peaks, deeper cuts, less realistic. |
 | Detail redraw            | `terraindiffusionDetailRedraw`         | 35      | Hundredths. How much of the detail model's first draw is redrawn. 70–100 varies coast shapes and small valleys by 10–17 m on average. |
 | Height noise             | `terraindiffusionHeightNoise`          | 0       | Random height per large-scale cell (~8 km) before detail is drawn, in hundredths of a sqrt-metre: 200 ≈ ±100 m at 600 m. None at the coast. |
-| Altitude cooling         | `terraindiffusionAltitudeCooling`      | 100%    | Multiplies the model's lapse rate: above 100% mountains are colder, with lower treelines and snowlines. Sea level is unchanged. |
+| Temperature shift        | `terraindiffusionTemperatureShift`     | −2 °C   | Added to every temperature, all year. The spawn search ignores it, so you still start at the chosen band's latitude. Vanilla's temperate world is about 6 °C colder at sea level than its band says, so −6 feels like vanilla; 0 follows the band literally. |
+| Latitude adherence       | `terraindiffusionLatitudeAdherence`    | 75%     | Pulls each place's sea-level temperature towards its latitude's, and its winters towards vanilla's for that latitude; summers keep the model's swing. Halves the temperature spread along a latitude. |
+| Altitude cooling         | `terraindiffusionAltitudeCooling`      | 100%    | Every 100% above 100% takes another 6.5 °C off per km of height, on the ground and in the air, on top of the model's own rate: lower treelines and snowlines. Sea level is unchanged. |
+| Winter severity          | `terraindiffusionWinterSeverity`       | 1x      | Multiplies how far the cold half of the year falls below the annual average; summers are unchanged. Stored in hundredths (200 = 2x). Weather only, so it can be changed later. |
+| Winter cold shift        | `terraindiffusionWinterColdShift`      | 6 °C    | Takes this many degrees off midwinter everywhere, easing to nothing by the equinoxes. Weather only, so it can be changed later. |
 | Forest density           | `terraindiffusionForestDensity`        | 100%    | Scales the forest cover the climate implies. Trees on the ground go as its square — see below. |
 | Shrub density            | `terraindiffusionShrubDensity`         | 100%    | Scales shrub cover the same way. |
-| River valley depth       | `terraindiffusionRiverValleyDepth`     | 30%     | With the Rivers mod, how far the land is lowered along rivers so the model draws valleys for them. 100% drowns a fifth of each corridor into inlets. |
+| River valley depth       | `terraindiffusionRiverValleyDepth`     | 10%     | With the Rivers mod, how far the land is lowered along rivers so the model draws valleys for them. 100% drowns a fifth of each corridor into inlets. |
 
 With sea level at 128 the terrain, climate, soil bands, trees and weather keep their height above
 the sea: a 512-block world is laid out like a vanilla world 675 blocks tall, with 128 blocks of rock
@@ -127,7 +131,7 @@ untouched afterwards.
 - **Conditioning is soft.** The coast wanders around the one it was given rather than tracing it,
   which is what makes it look natural. Sea fraction comes out within ~4 points of the setting;
   column by column 88% agree, nearly all disagreement within one cell of a coastline.
-- **Resolution floor.** One conditioning pixel spans 512 blocks at the default resolution, so
+- **Resolution floor.** One conditioning pixel spans 768 blocks at the default resolution, so
   anything smaller fills in as land. Low "Ocean scale" worlds lose their smallest islands and lakes.
 
 Vanilla's defaults (97.5% land, 500% ocean scale) give a nearly unbroken continent. 40–60% land is
@@ -268,17 +272,21 @@ world rather than generating a broken one.
 
 ### Scale, and why the world needs to be tall
 
-By default a block is as tall as it is wide — 15 m in every direction at the default resolution —
-so a 2 000 m massif is 133 blocks of climbing and every slope has its real-world grade.
+By default a block is as tall as it is wide — 10 m in every direction at the default resolution —
+so a 2 000 m massif is 200 blocks of climbing and every slope has its real-world grade.
 
 Real mountains need room. The model's land runs to about 3 000 m at the 95th percentile and 5 000 m
-at the extreme, which at 15 m per block is 200 and 333 blocks *above sea level*:
+at the extreme, which at 10 m per block is 300 and 500 blocks *above sea level*. With the default sea
+level of 128:
 
 | World height | Blocks above sea | Terrain held at true scale |
 | ------------ | ---------------- | -------------------------- |
-| 256          | 145              | up to ~1 900 m             |
-| 512          | 289              | up to ~3 700 m             |
-| 1024         | 578              | up to ~7 400 m             |
+| 256          | 128              | up to ~1 100 m             |
+| 512          | 384              | up to ~3 200 m             |
+| 768          | 640              | up to ~5 400 m             |
+| 1024         | 896              | up to ~7 500 m             |
+
+The mod logs the exact figure for a world as "linear up to N m" when it starts.
 
 Past that the mapping bends towards the ceiling on `u / (1 + u)` rather than clipping, so summits
 round off instead of shearing into mesas — at the cost of the highest ground's faithfulness.

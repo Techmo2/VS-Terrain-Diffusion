@@ -251,7 +251,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
         _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude,
                                       riverBasins, riverBasinDepth, settings.CoarsePooling,
                                       settings.BaseRenoiseSigma, settings.CoarseHeightNoise,
-                                      settings.AltitudeCooling);
+                                      settings.AltitudeCooling, settings.LatitudeAdherence);
         _seed = seed;
         _models = models;
         _landmask = landmask;
@@ -1013,12 +1013,17 @@ public sealed class TerrainDiffusionProvider : IDisposable
         /// <summary>True when a starting climate was asked for and this spot is inside its band.</summary>
         public readonly bool MatchedClimate;
 
-        public SpawnCandidate(int blockX, int blockZ, float temperatureC, bool matchedClimate)
+        /// <summary>The column's height above the sea in metres, or NaN when only the coarse survey placed it.</summary>
+        public readonly float ElevationMeters;
+
+        public SpawnCandidate(int blockX, int blockZ, float temperatureC, bool matchedClimate,
+                              float elevationMeters = float.NaN)
         {
             BlockX = blockX;
             BlockZ = blockZ;
             TemperatureC = temperatureC;
             MatchedClimate = matchedClimate;
+            ElevationMeters = elevationMeters;
         }
     }
 
@@ -1037,6 +1042,10 @@ public sealed class TerrainDiffusionProvider : IDisposable
     /// a cell can be three degrees off that, which is enough to land a "temperate" spawn in the
     /// cool band, so the cells the survey likes are then checked at full resolution and the spawn
     /// is placed on a column that really is in the band.
+    ///
+    /// The spawn is also kept near sea level (<see cref="SpawnLowlandMeters"/>), so that the band
+    /// describes the sea-level climate the player starts in, and the colder heights around are
+    /// what the world's altitude settings make of them rather than the place the search settled on.
     /// </summary>
     /// <returns>Where to put the spawn, or null if the search found only sea.</returns>
     public SpawnCandidate? FindSpawn(int initialSizeCoarsePixels = 16)
@@ -1096,6 +1105,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
                 for (int c = 1; c < w - 1; c++)
                 {
                     if (!IsLandWithLandNeighbours(coarse, plane, w, r, c)) continue;
+                    if (!HasLowland(coarse, plane, w, r, c)) continue;
 
                     int dr = r - half, dc = c - half;
                     if (!InsideWorld(dr, dc, coarseToNative)) continue;
@@ -1103,7 +1113,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
                     double cost = SpawnCost(dr, dc, northSouthCost);
                     int cellBlockZ = _settings.OriginBlockZ + dr * blocksPerCoarseCell;
                     float temperature = _settings.WorldTemperature(
-                        CellTemperature(coarse, plane, w, r, c), cellBlockZ);
+                        _pipeline.AdhereSeaLevelTemperature(CellSeaLevelTemperature(coarse, plane, w, r, c), dr),
+                        cellBlockZ);
 
                     if (band == null)
                     {
@@ -1113,7 +1124,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
                         continue;
                     }
 
-                    float miss = band.Value.Miss(temperature);
+                    float miss = band.Value.Miss(_settings.SpawnBandTemperature(temperature));
                     if (miss <= 0f)
                     {
                         shortlist.Add((cost, r, c, temperature));
@@ -1132,14 +1143,14 @@ public sealed class TerrainDiffusionProvider : IDisposable
                 _logger.Notification("[{0}] Spawn search scanned a {1}x{1} coarse box ({2} blocks across).",
                     DiffusionPaths.ModId, boxSize, boxSize * blocksPerCoarseCell);
 
+                shortlist.Sort((a, b) => a.Cost.CompareTo(b.Cost));
+                SpawnCandidate? refined = RefineWithinCells(shortlist, half, band, northSouthCost);
+                if (refined != null) return refined;
+
                 if (band == null)
                 {
                     return ToCandidate(shortlist[0].Row, shortlist[0].Col, half, shortlist[0].TemperatureC, false);
                 }
-
-                shortlist.Sort((a, b) => a.Cost.CompareTo(b.Cost));
-                SpawnCandidate? refined = RefineWithinCells(shortlist, half, band.Value, northSouthCost);
-                if (refined != null) return refined;
 
                 // Every cell the survey liked turned out to be wrong about itself. Widening will
                 // not help - the next box contains these same cells - so take the survey's word.
@@ -1165,50 +1176,83 @@ public sealed class TerrainDiffusionProvider : IDisposable
     }
 
     /// <summary>
-    /// How many of the surveyed cells are checked at full resolution before the search gives up and
-    /// trusts the survey. Usually the first one is right, and the tile it generates is one the
-    /// spawn needs anyway, so the common case costs nothing; the rest are insurance against a cell
-    /// whose average hides its own terrain.
+    /// How many tiles, across all the surveyed cells, are checked at full resolution before the
+    /// search gives up and trusts the survey. Usually the first is right, and the tile it generates
+    /// is one the spawn needs anyway, so the common case costs nothing; the rest are insurance
+    /// against cells whose averages hide their own terrain, which a narrow band on low ground
+    /// needs more of. About two seconds a tile on a GPU.
     /// </summary>
-    private const int MaxRefinedCells = 4;
+    private const int MaxRefinedTiles = 48;
 
     /// <summary>
-    /// Looks inside the surveyed cells at full resolution and returns the nearest land column that
-    /// really is in the band, or null if none of them holds one.
+    /// Looks inside the surveyed cells at full resolution and returns the nearest low land column
+    /// that really is in the band (any low land, without one), or null if none of them holds one.
+    /// A cell is several tiles across and its low ground can be anywhere in it, so its tiles are
+    /// walked outwards from the centre, up to <see cref="MaxTilesPerCell"/>.
     /// </summary>
     private SpawnCandidate? RefineWithinCells(
         List<(double Cost, int Row, int Col, float TemperatureC)> shortlist, int half,
-        StartingClimate band, float northSouthCost)
+        StartingClimate? band, float northSouthCost)
     {
+        int tilesPerCell = Math.Max(1, CoarseCellNativePixels * _settings.Scale / TileSize);
+        var offsets = new List<(int X, int Z)>();
+        for (int tz = 0; tz < tilesPerCell; tz++)
+            for (int tx = 0; tx < tilesPerCell; tx++)
+                offsets.Add((tx, tz));
+        double middle = (tilesPerCell - 1) / 2.0;
+        offsets.Sort((a, b) =>
+            (Math.Abs(a.X - middle) + Math.Abs(a.Z - middle)).CompareTo(Math.Abs(b.X - middle) + Math.Abs(b.Z - middle)));
+
         int examined = 0;
         foreach ((double _, int row, int col, float _) in shortlist)
         {
-            if (examined++ >= MaxRefinedCells) break;
+            if (examined >= MaxRefinedTiles) break;
 
             SpawnCandidate centre = ToCandidate(row, col, half, 0f, false);
-            TerrainTile tile;
-            try
-            {
-                tile = GetTileAt(centre.BlockX, centre.BlockZ);
-            }
-            catch (Exception e)
-            {
-                throw DiffusionFailure.Fatal(_logger,
-                    $"The model failed on the spawn search climate check at " +
-                    $"({centre.BlockX}, {centre.BlockZ}).", e);
-            }
+            int cellBlocks = tilesPerCell * TileSize;
+            int cellX = centre.BlockX - cellBlocks / 2, cellZ = centre.BlockZ - cellBlocks / 2;
 
-            SpawnCandidate? best = BestColumnInTile(tile, band, northSouthCost);
-            if (best != null) return best;
+            for (int t = 0; t < offsets.Count && t < MaxTilesPerCell && examined < MaxRefinedTiles; t++, examined++)
+            {
+                int x = cellX + offsets[t].X * TileSize + TileSize / 2;
+                int z = cellZ + offsets[t].Z * TileSize + TileSize / 2;
+                TerrainTile tile;
+                try
+                {
+                    tile = GetTileAt(x, z);
+                }
+                catch (Exception e)
+                {
+                    throw DiffusionFailure.Fatal(_logger,
+                        $"The model failed on the spawn search climate check at ({x}, {z}).", e);
+                }
+
+                SpawnCandidate? best = BestColumnInTile(tile, band, northSouthCost);
+                if (best != null) return best;
+            }
         }
         return null;
     }
 
     /// <summary>
+    /// Highest ground the spawn may be on, in metres above the sea. Low enough that the column's
+    /// temperature is its sea-level temperature to within a degree at any altitude cooling the
+    /// world settings offer; land this low is near every coast and along most rivers.
+    /// </summary>
+    private const float SpawnLowlandMeters = 100f;
+
+    /// <summary>
+    /// Tiles of one surveyed cell checked at full resolution before moving to the next. At the
+    /// default scale a cell is two tiles across, so this covers it; at the finest it covers the
+    /// middle of it.
+    /// </summary>
+    private const int MaxTilesPerCell = 9;
+
+    /// <summary>
     /// The land column in a tile that is in the band and costs least to walk to from the map
     /// centre, or null if the tile has none.
     /// </summary>
-    private SpawnCandidate? BestColumnInTile(TerrainTile tile, StartingClimate band, float northSouthCost)
+    private SpawnCandidate? BestColumnInTile(TerrainTile tile, StartingClimate? band, float northSouthCost)
     {
         SpawnCandidate? best = null;
         double bestCost = double.MaxValue;
@@ -1219,20 +1263,21 @@ public sealed class TerrainDiffusionProvider : IDisposable
             for (int x = 0; x < tile.Size; x++)
             {
                 int index = tile.Index(x, z);
-                if (tile.ElevationMeters[index] <= 0f) continue;
+                float elevation = tile.ElevationMeters[index];
+                if (elevation <= 0f || elevation > SpawnLowlandMeters) continue;
 
                 int blockX = tile.BlockX + x;
                 if (!_settings.IsInsideWorld(blockX, blockZ)) continue;
 
                 float temperature = tile.TemperatureC[index];
-                if (!band.Contains(temperature)) continue;
+                if (band is StartingClimate wanted && !wanted.Contains(_settings.SpawnBandTemperature(temperature))) continue;
 
                 double cost = SpawnCost(blockZ - _settings.OriginBlockZ, blockX - _settings.OriginBlockX,
                                         northSouthCost);
                 if (cost >= bestCost) continue;
 
                 bestCost = cost;
-                best = new SpawnCandidate(blockX, blockZ, temperature, true);
+                best = new SpawnCandidate(blockX, blockZ, temperature, band != null, elevation);
             }
         }
         return best;
@@ -1252,18 +1297,31 @@ public sealed class TerrainDiffusionProvider : IDisposable
     }
 
     /// <summary>Mean temperature of a coarse cell, in degrees, straight from the model.</summary>
-    private float CellTemperature(FloatTensor coarse, int plane, int width, int row, int col)
+    private static float CellSeaLevelTemperature(FloatTensor coarse, int plane, int width, int row, int col)
     {
         int index = row * width + col;
         float weight = coarse.Data[6 * plane + index];
         if (weight <= 1e-6f) return 0f;
 
-        // The coarse model's temperature is at its own ground, on the model's lapse rate; altitude
-        // cooling steepens that, which the survey takes at the reference rate rather than fitting it.
+        // The coarse model's temperature is at the cell's own average ground. Back to sea level at
+        // the reference lapse rate - the survey has no fitted one - which is also what altitude
+        // cooling leaves alone.
         float temperature = coarse.Data[2 * plane + index] / weight;
         float elevation = Math.Max(0f, coarse.Data[index] / weight);
-        return temperature - (_settings.AltitudeCooling - 1f) * ClimateScale.ReferenceLapseCPerKm / 1000f
-                             * elevation * elevation;
+        return temperature + ClimateScale.ReferenceLapseCPerKm / 1000f * elevation * elevation;
+    }
+
+    /// <summary>
+    /// Whether a coarse cell's lowest ground - its fifth percentile, channel 1, in signed-sqrt
+    /// metres - comes within <see cref="SpawnLowlandMeters"/> of sea level.
+    /// </summary>
+    private static bool HasLowland(FloatTensor coarse, int plane, int width, int row, int col)
+    {
+        int index = row * width + col;
+        float weight = coarse.Data[6 * plane + index];
+        if (weight <= 1e-6f) return false;
+        float p5 = coarse.Data[plane + index] / weight;
+        return Math.Sign(p5) * p5 * p5 <= SpawnLowlandMeters;
     }
 
     /// <summary>Whether a coarse cell at this offset from the origin is inside the world's bounds.</summary>
@@ -1344,7 +1402,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
                                                        pooling: _settings.CoarsePooling,
                                                        baseRenoiseSigma: _settings.BaseRenoiseSigma,
                                                        coarseHeightNoise: _settings.CoarseHeightNoise,
-                                                       altitudeCooling: _settings.AltitudeCooling);
+                                                       altitudeCooling: _settings.AltitudeCooling,
+                                                       latitudeAdherence: _settings.LatitudeAdherence);
             }
             return CoarseElevationRoot(_riverFreePipeline, blockX, blockZ) < 0.0;
         }
