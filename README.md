@@ -55,7 +55,7 @@ and `/worldconfig <code> <value>` changes one later.
 | Altitude cooling         | `terraindiffusionAltitudeCooling`      | 100%    | Multiplies the model's lapse rate: above 100% mountains are colder, with lower treelines and snowlines. Sea level is unchanged. |
 | Forest density           | `terraindiffusionForestDensity`        | 100%    | Scales the forest cover the climate implies. Trees on the ground go as its square — see below. |
 | Shrub density            | `terraindiffusionShrubDensity`         | 100%    | Scales shrub cover the same way. |
-| River valley depth       | `terraindiffusionRiverValleyDepth`     | 30%     | With the Rivers mod, how far the land is lowered along rivers so the model draws valleys for them. 100% drowns a fifth of each corridor into inlets. |
+| River valley depth       | `terraindiffusionRiverValleyDepth`     | 20%     | With the Rivers mod, how far the land is lowered along rivers so the model draws valleys for them. 100% drowns a fifth of each corridor into inlets. |
 
 With sea level at 128 the terrain, climate, soil bands, trees and weather keep their height above
 the sea: a 512-block world is laid out like a vanilla world 675 blocks tall, with 128 blocks of rock
