@@ -188,7 +188,7 @@ public sealed class DiffusionSurface
 
         public int At(int lx, int lz) => _self[lz * 32 + lx];
 
-        /// <summary>Height at a column up to one block outside the chunk, or -1 where unknown.</summary>
+        /// <summary>Height at a column up to a chunk outside this one along one axis, or -1 where unknown.</summary>
         private int Around(int lx, int lz)
         {
             ushort[] map = lx < 0 ? _west : lx > 31 ? _east : lz < 0 ? _north : lz > 31 ? _south : _self;
@@ -197,18 +197,28 @@ public sealed class DiffusionSurface
             return h > 0 ? h : -1;
         }
 
-        /// <summary>Rise over run, in blocks, by central differences where both sides are known.</summary>
+        /// <summary>
+        /// Blocks either side the built slope is measured across. Ground is whole blocks, so gentle
+        /// ground is flat runs joined by one-block steps, and measured from its next-door columns a
+        /// step reads 0.5, or 0.71 where it runs diagonally - steeper than an arid threshold - which
+        /// laid a line of bare stone along every step of a shallow desert river bank. Across three a
+        /// lone step reads 0.17, or 0.24 diagonally, while a wall of many blocks still reads as steep
+        /// as it is.
+        /// </summary>
+        private const int Baseline = 3;
+
+        /// <summary>Rise over run, in blocks, across <see cref="Baseline"/> either side where both are known.</summary>
         public float SlopeAt(int lx, int lz)
         {
             float centre = At(lx, lz);
-            return MathF.Sqrt(Square(Gradient(Around(lx - 1, lz), centre, Around(lx + 1, lz))) +
-                              Square(Gradient(Around(lx, lz - 1), centre, Around(lx, lz + 1))));
+            return MathF.Sqrt(Square(Gradient(Around(lx - Baseline, lz), centre, Around(lx + Baseline, lz))) +
+                              Square(Gradient(Around(lx, lz - Baseline), centre, Around(lx, lz + Baseline))));
         }
 
         private static float Gradient(int before, float centre, int after) =>
-            before >= 0 && after >= 0 ? (after - before) / 2f
-            : after >= 0 ? after - centre
-            : before >= 0 ? centre - before
+            before >= 0 && after >= 0 ? (after - before) / (2f * Baseline)
+            : after >= 0 ? (after - centre) / Baseline
+            : before >= 0 ? (centre - before) / Baseline
             : 0f;
 
         private static float Square(float v) => v * v;
