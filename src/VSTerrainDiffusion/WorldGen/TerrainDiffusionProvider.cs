@@ -1416,11 +1416,18 @@ public sealed class TerrainDiffusionProvider : IDisposable
     /// and channel as <see cref="GenDiffusionTerra"/> builds it: the ground the world actually has
     /// there. The model surface itself outside a river valley, or without Rivers.
     /// </summary>
-    public int BuiltSurfaceY(int modelY, int blockX, int blockZ)
+    public int BuiltSurfaceY(int modelY, int blockX, int blockZ) =>
+        BuiltSurfaceY(modelY, blockX, blockZ, RiversCompat.Installed ? RiversCompat.SampleAt(blockX, blockZ) : null);
+
+    /// <summary>
+    /// <see cref="BuiltSurfaceY(int, int, int)"/> with Rivers' sample for the column already taken,
+    /// or null where there is no river network.
+    /// </summary>
+    public int BuiltSurfaceY(int modelY, int blockX, int blockZ, RiversCompat.Sample? sample)
     {
         int y = modelY;
         int seaLevel = _settings.SeaLevel, mapSizeY = _settings.MapSizeY;
-        if (RiversCompat.Installed && RiversCompat.SampleAt(blockX, blockZ) is { } river)
+        if (RiversCompat.Installed && sample is { } river)
         {
             y = Math.Clamp(RiversCompat.ValleyHeight(y, river, blockX, blockZ, seaLevel), 1, mapSizeY - 2);
             if (river.Distance <= 0.0) y = Math.Min(y, RiversCompat.ChannelFloorY(river, seaLevel, mapSizeY));

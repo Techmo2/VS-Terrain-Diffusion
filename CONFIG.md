@@ -97,7 +97,7 @@ values that would work. The mod never changes the device or a precision itself.
   // server logs a warning if you do.
   "DebugMapBindAddress": "127.0.0.1",
 
-  // How many generated tiles the debug map remembers, at about 8 KB each; the oldest are dropped
+  // How many generated tiles the debug map remembers, at about 28 KB each; the oldest are dropped
   // past this. It keeps its own record because the generator's tile cache drops a tile as soon as
   // it has moved on, which is exactly when you want to look at it.
   "DebugMapHistoryTiles": 2048,

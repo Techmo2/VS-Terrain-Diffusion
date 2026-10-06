@@ -173,15 +173,17 @@ const RAMPS = {
   // Coarse model input
   inElevation: greyRamp, inTemperature: tempRamp, inTempSeasonality: seasonRamp,
   inPrecipitation: wetRamp, inPrecipCv: seasonRamp,
-  inSeaFraction: greyRamp, riverBasin: greyRamp,
+  riverBasin: greyRamp, inSeaFraction: greyRamp,
   // Coarse model output
   coarseElevation: greyRamp, coarseTemperature: tempRamp, coarseTempSeasonality: seasonRamp,
   coarsePrecipitation: wetRamp, coarsePrecipCv: seasonRamp,
   // Full resolution
-  surfaceY: greyRamp, elevation: greyRamp, slope: greyRamp,
+  elevation: greyRamp, slope: greyRamp,
   temperature: tempRamp, tempSeasonality: seasonRamp,
   precipitation: wetRamp, precipCv: seasonRamp, rainfall: wetRamp,
-  forest: coverRamp, shrub: coverRamp,
+  forestModel: coverRamp, forest: coverRamp, shrubModel: coverRamp, shrub: coverRamp,
+  // Vanilla channels
+  surfaceY: greyRamp, vanillaForest: coverRamp, vanillaShrub: coverRamp,
 };
 
 /* ---------- data ---------------------------------------------------------- */
@@ -430,7 +432,7 @@ function buildLayerList() {
   let shown = null;
   state.layers.forEach((layer, i) => {
     // A heading whenever the group changes, so input, coarse output and full resolution read as
-    // three answers to the same question rather than one long list.
+    // three answers to the same question rather than one long list, with vanilla's maps apart.
     if (layer.category && layer.category !== shown) {
       shown = layer.category;
       const head = document.createElement("div");

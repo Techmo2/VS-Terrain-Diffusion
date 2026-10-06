@@ -93,7 +93,7 @@
   "worldconfig-terraindiffusionHeightNoise-4.75": "4.75",
   "worldconfig-terraindiffusionHeightNoise-5": "5",
   "worldattribute-terraindiffusionAltitudeCooling": "Altitude cooling",
-  "worldattribute-terraindiffusionAltitudeCooling-desc": "How fast it gets colder going up, against the model's own lapse rate. Above 100% mountains are colder, with lower treelines and snowlines; sea level is unchanged.",
+  "worldattribute-terraindiffusionAltitudeCooling-desc": "How fast it gets colder going up. 100% is the model's own climate; every 100% above that takes another 6.5 C off per kilometre of height, at the ground and in the air alike, so mountains get colder with lower treelines and snowlines. Sea level is unchanged.",
   "worldattribute-terraindiffusionAltitudeCooling-unit": "{0}%",
   "worldattribute-terraindiffusionForestDensity": "Forest density",
   "worldattribute-terraindiffusionForestDensity-desc": "Scales the forest cover the model's climate implies. Trees on the ground go roughly as the square of this: 140% is about twice the trees.",

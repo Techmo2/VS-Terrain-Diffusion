@@ -196,7 +196,7 @@ public sealed class DiffusionForestMapLayer : DiffusionMapLayer
     private readonly FastNoiseLite _variation;
     private readonly float _multiplier;
     private readonly bool _shrubs;
-    private readonly MapLayerBase _clearings;
+    private readonly MapLayerBase _vanilla;
     private readonly float _clearingStrength;
 
     /// <summary>
@@ -212,8 +212,12 @@ public sealed class DiffusionForestMapLayer : DiffusionMapLayer
     /// </summary>
     private const float VariationAmplitude = 0.18f;
 
-    /// <summary>The vanilla layer read for clearings, or null; kept so re-initialisation does not wrap twice.</summary>
-    public MapLayerBase Clearings => _clearings;
+    /// <summary>
+    /// The vanilla layer this one reads clearings from, or null. Kept even with clearings off, so
+    /// that re-initialisation unwraps to vanilla's layer instead of losing it, and the debug map
+    /// can show it.
+    /// </summary>
+    public MapLayerBase Vanilla => _vanilla;
 
     /// <param name="clearings">
     /// Vanilla's forest or shrub layer, whose open ground becomes clearings, or null for none.
@@ -226,7 +230,7 @@ public sealed class DiffusionForestMapLayer : DiffusionMapLayer
     {
         _shrubs = shrubs;
         _multiplier = multiplier;
-        _clearings = clearingStrength > 0f ? clearings : null;
+        _vanilla = clearings;
         _clearingStrength = clearingStrength;
 
         _variation = new FastNoiseLite((int)seed);
@@ -245,23 +249,31 @@ public sealed class DiffusionForestMapLayer : DiffusionMapLayer
     public int BlocksPerMapPixel => BlocksPerPixel;
 
     /// <summary>
-    /// This map's pixels over one terrain tile, clearings and all, read from that tile alone: the
-    /// same bytes the game gets for that ground. Row-major, <c>tile.Size / BlocksPerMapPixel</c> a
-    /// side. For the debug map, which records tiles as they finish.
+    /// This map's pixels over one terrain tile, read from that tile alone, at each stage: the
+    /// model's cover, vanilla's map (null without one), and the two combined - the same bytes the
+    /// game gets for that ground. Row-major, <c>tile.Size / BlocksPerMapPixel</c> a side. For the
+    /// debug map, which records tiles as they finish.
     /// </summary>
-    public int[] CoverWithin(TerrainTile tile)
+    public (int[] Model, int[] Vanilla, int[] Applied) CoverWithin(TerrainTile tile)
     {
         int size = Math.Max(1, tile.Size / BlocksPerPixel);
         int xCoord = FloorDiv(tile.BlockX, BlocksPerPixel), zCoord = FloorDiv(tile.BlockZ, BlocksPerPixel);
-        return Clear(Sample(xCoord, zCoord, size, size, tile), xCoord, zCoord, size, size);
+        int[] model = Sample(xCoord, zCoord, size, size, tile);
+        int[] vanilla = _vanilla == null ? null : VanillaCover(xCoord, zCoord, size, size);
+        return (model, vanilla, Clear((int[])model.Clone(), vanilla));
     }
 
     /// <summary>Thins <paramref name="cover"/> where vanilla's map is open.</summary>
     private int[] Clear(int[] cover, int xCoord, int zCoord, int sizeX, int sizeZ)
     {
-        if (_clearings == null) return cover;
+        if (_vanilla == null || _clearingStrength <= 0f) return cover;
+        return Clear(cover, VanillaCover(xCoord, zCoord, sizeX, sizeZ));
+    }
 
-        int[] vanilla = VanillaCover(xCoord, zCoord, sizeX, sizeZ);
+    private int[] Clear(int[] cover, int[] vanilla)
+    {
+        if (vanilla == null || _clearingStrength <= 0f) return cover;
+
         for (int i = 0; i < cover.Length; i++)
         {
             float open = 1f - SmoothStep(vanilla[i] / 255f / ClearingEdge);
@@ -284,10 +296,10 @@ public sealed class DiffusionForestMapLayer : DiffusionMapLayer
         var output = new IntDataMap2D { Data = new int[sizeX * sizeZ], Size = sizeX };
 
         // The input maps are fields on the shared vanilla instance.
-        lock (_clearings)
+        lock (_vanilla)
         {
-            _clearings.SetInputMap(input, output);
-            return _clearings.GenLayer(xCoord, zCoord, sizeX, sizeZ);
+            _vanilla.SetInputMap(input, output);
+            return _vanilla.GenLayer(xCoord, zCoord, sizeX, sizeZ);
         }
     }
 

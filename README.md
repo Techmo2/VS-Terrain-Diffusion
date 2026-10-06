@@ -52,7 +52,7 @@ and `/worldconfig <code> <value>` changes one later.
 | Intensity mode           | `terraindiffusionCoarsePoolMode`       | average | `extreme` keeps each block's highest ground and deepest valley floor: taller peaks, deeper cuts, less realistic. |
 | Detail redraw            | `terraindiffusionDetailRedraw`         | 35      | Hundredths. How much of the detail model's first draw is redrawn. 70–100 varies coast shapes and small valleys by 10–17 m on average. |
 | Height noise             | `terraindiffusionHeightNoise`          | 0       | Random height per large-scale cell (~8 km) before detail is drawn, in hundredths of a sqrt-metre: 200 ≈ ±100 m at 600 m. None at the coast. |
-| Altitude cooling         | `terraindiffusionAltitudeCooling`      | 100%    | Multiplies the model's lapse rate: above 100% mountains are colder, with lower treelines and snowlines. Sea level is unchanged. |
+| Altitude cooling         | `terraindiffusionAltitudeCooling`      | 100%    | Every 100% above 100% takes another 6.5 °C off per km of height, on the ground and in the air, on top of the model's own rate: lower treelines and snowlines. Sea level is unchanged. |
 | Forest density           | `terraindiffusionForestDensity`        | 100%    | Scales the forest cover the climate implies. Trees on the ground go as its square — see below. |
 | Shrub density            | `terraindiffusionShrubDensity`         | 100%    | Scales shrub cover the same way. |
 | River valley depth       | `terraindiffusionRiverValleyDepth`     | 30%     | With the Rivers mod, how far the land is lowered along rivers so the model draws valleys for them. 100% drowns a fifth of each corridor into inlets. |
@@ -412,7 +412,7 @@ Machine settings, in the mod config:
 | `terrainTileSizeBlocks`      | 0       | 0, 128 – 512 | Blocks generated per model invocation, a multiple of 32. Zero chooses 128 on CPU and 256 on GPU; larger values amortise the model better but make first-visit stalls longer. |
 | `debugMapPort`               | 0 (off) | 8088         | Serves the [debug map](#debug-map) on this port. 0 opens no port. |
 | `debugMapBindAddress`        | `127.0.0.1` | loopback | Where the debug map listens. `0.0.0.0` publishes your world's terrain to the network. |
-| `debugMapHistoryTiles`       | 2048    | 512 – 8192   | Tiles the debug map remembers, about 8 KB each. |
+| `debugMapHistoryTiles`       | 2048    | 512 – 8192   | Tiles the debug map remembers, about 28 KB each. |
 | `verboseInference`           | false   | on / off     | Log every terrain tile at notification level. Noisy; for diagnosing slowness. Off, those lines still go to the debug log and only a tile that stalls — a second or more, and four times the session average — reaches the main one. |
 
 #### Stuttering
@@ -436,13 +436,18 @@ world. On a dedicated server set it to 100 unless you want the card for somethin
 Set `debugMapPort` and the mod serves a read-only page of what the model is producing, updating as
 tiles are generated. `/tdiff map` prints the address; the default binding is loopback.
 
-Eight layers: surface height, model elevation, slope, mean temperature, temperature seasonality,
-annual precipitation, precipitation seasonality, and the 0–255 rainfall byte the game reads. Drag to
-pan, wheel to zoom, hover a column for all eight.
+| Category | Layers |
+|---|---|
+| Coarse model input | elevation, temperature, temperature seasonality, precipitation, precipitation seasonality asked for; river basin conditioning |
+| Coarse model output | elevation, mean temperature, temperature seasonality, annual precipitation, precipitation seasonality |
+| Full resolution | model elevation, slope, mean temperature, temperature seasonality, annual precipitation, precipitation seasonality, rainfall byte, forest and shrub cover from the model, forest and shrub maps as the game reads them |
+| Vanilla channels | surface height as built (Rivers' valleys and channels included), ocean map, vanilla forest map, vanilla shrub map |
+
+Drag to pan, wheel to zoom, hover a column for every layer.
 
 It keeps its own record, because the generator's tile cache drops a tile as soon as it has moved on.
 Each is a 32×32 thumbnail, a byte per column per layer, so the default 2048-tile history costs about
-17 MB. Point it at `0.0.0.0` only to publish your world's terrain to the network; the server logs a
+60 MB. Point it at `0.0.0.0` only to publish your world's terrain to the network; the server logs a
 warning if you do.
 
 ### World generation

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Datastructures;
@@ -67,6 +68,7 @@ public class TerrainDiffusionModSystem : ModSystem
 
         DiffusionConfig.Load(api);
         InferenceThrottle.UtilizationPercent = InferenceSettings.Load((ICoreServerAPI)api).GpuUtilizationPercent;
+        PinWorldValues((ICoreServerAPI)api);
     }
 
     public override void StartServerSide(ICoreServerAPI api)
@@ -295,32 +297,6 @@ public class TerrainDiffusionModSystem : ModSystem
             () => WorldMapLayers.Resolve(_api)?.Ocean, _settings, ResolveOceanMapSamples(), _api.Logger);
     }
 
-    /// <summary>Save game key holding how many ocean-map points a conditioning pixel reads per axis.</summary>
-    private const string OceanMapSamplesSaveKey = "vsterraindiffusion:oceanmapsamples";
-
-    /// <summary>
-    /// How finely this world reads the ocean map: a new world samples it, a world from before
-    /// sampling existed reads every pixel as it always has. Written down either way, because it
-    /// nudges the coastline, and new chunks that disagreed with old ones would leave a step.
-    /// </summary>
-    private int ResolveOceanMapSamples()
-    {
-        ISaveGame save = _api.WorldManager.SaveGame;
-        try
-        {
-            byte[] stored = save.GetData(OceanMapSamplesSaveKey);
-            if (stored is { Length: sizeof(int) }) return BitConverter.ToInt32(stored, 0);
-
-            int samples = save.IsNew ? OceanMapLandmask.DefaultSamplesPerAxis : 0;
-            save.StoreData(OceanMapSamplesSaveKey, BitConverter.GetBytes(samples));
-            return samples;
-        }
-        catch (Exception e)
-        {
-            throw DiffusionFailure.Fatal(_api.Logger, "This world's ocean map sampling could not be read or saved.", e);
-        }
-    }
-
     /// <summary>Loads the ONNX models. Stops the game rather than returning without them.</summary>
     private PipelineModels LoadModels()
     {
@@ -429,44 +405,88 @@ public class TerrainDiffusionModSystem : ModSystem
         }
     }
 
-    /// <summary>Save game key holding the world's shore detail and fade, two floats.</summary>
-    private const string ShoreDetailSaveKey = "vsterraindiffusion:shoredetail";
+    /// <summary>World settings this mod decides for itself, once, when a world is created.</summary>
+    private const string ShoreDetailCode = "terraindiffusionShoreDetail";
+    private const string ShoreFadeCode = "terraindiffusionShoreFade";
+    private const string OceanMapSamplesCode = "terraindiffusionOceanMapSamples";
+
+    /// <summary>Where these lived before they were world settings: save game mod data.</summary>
+    private const string LegacyShoreDetailKey = "vsterraindiffusion:shoredetail";
+    private const string LegacyOceanMapSamplesKey = "vsterraindiffusion:oceanmapsamples";
 
     /// <summary>
-    /// The shore detail this world was created with. A new world takes the config's values and
-    /// keeps them; a world from before the setting existed was generated without it and stays that
-    /// way. Either way it is written down, because it decides the height of every coastal block,
-    /// and a world whose new chunks used a different value would have a step at every old border.
+    /// Settles, once per world, the values that shape its terrain without being on the Customize
+    /// screen - shore detail and how finely the ocean map is read - and writes them into the world's
+    /// settings, so that the same seed and settings always generate the same ground.
+    ///
+    /// It has to happen here, before the game first writes a new world's save game at asset
+    /// finalisation. Until the world's first autosave or a completed shutdown that is the only copy
+    /// on disk, and the world generator's set-up comes after it: a world closed before either lost
+    /// values written there, and on its next load was taken for one from before they existed,
+    /// generating the rest of its terrain differently from the ground already there.
+    ///
+    /// A new world takes the config's shore detail and the sampled ocean map. A world that kept these
+    /// in save game mod data carries them over. Any other world predates them, and keeps the plain
+    /// metre mapping and the full ocean map it was generated with.
     /// </summary>
-    private (float Detail, float Fade) ResolveShoreDetail()
+    private static void PinWorldValues(ICoreServerAPI api)
     {
-        ISaveGame save = _api.WorldManager.SaveGame;
+        ISaveGame save = api.WorldManager.SaveGame;
+        ITreeAttribute world = save?.WorldConfiguration;
+        if (world == null) return;
+
         try
         {
-            byte[] stored = save.GetData(ShoreDetailSaveKey);
-            if (stored is { Length: 2 * sizeof(float) })
-                return (BitConverter.ToSingle(stored, 0), BitConverter.ToSingle(stored, sizeof(float)));
-
             WorldGenConfig shaping = DiffusionConfig.Instance.WorldGen;
-            float detail = save.IsNew ? shaping.ShoreDetail : 0f;
-            float fade = shaping.ShoreFade;
-            var record = new byte[2 * sizeof(float)];
-            BitConverter.GetBytes(detail).CopyTo(record, 0);
-            BitConverter.GetBytes(fade).CopyTo(record, sizeof(float));
-            save.StoreData(ShoreDetailSaveKey, record);
-            if (!save.IsNew && shaping.ShoreDetail != 0f)
+
+            if (!world.HasAttribute(ShoreDetailCode) || !world.HasAttribute(ShoreFadeCode))
             {
-                _api.Logger.Notification(
-                    "[{0}] This world was generated before shore detail existed, so its coasts keep the " +
-                    "plain metre mapping; shoreDetail applies to worlds created from now on.", DiffusionPaths.ModId);
+                float detail, fade = shaping.ShoreFade;
+                if (save.GetData(LegacyShoreDetailKey) is { Length: 2 * sizeof(float) } stored)
+                {
+                    detail = BitConverter.ToSingle(stored, 0);
+                    fade = BitConverter.ToSingle(stored, sizeof(float));
+                }
+                else
+                {
+                    detail = save.IsNew ? shaping.ShoreDetail : 0f;
+                    if (!save.IsNew && shaping.ShoreDetail != 0f)
+                    {
+                        api.Logger.Notification(
+                            "[{0}] This world was generated before shore detail existed, so its coasts keep the " +
+                            "plain metre mapping; shoreDetail applies to worlds created from now on.", DiffusionPaths.ModId);
+                    }
+                }
+                world.SetString(ShoreDetailCode, detail.ToString(CultureInfo.InvariantCulture));
+                world.SetString(ShoreFadeCode, fade.ToString(CultureInfo.InvariantCulture));
             }
-            return (detail, fade);
+
+            if (!world.HasAttribute(OceanMapSamplesCode))
+            {
+                int samples = save.GetData(LegacyOceanMapSamplesKey) is { Length: sizeof(int) } stored
+                    ? BitConverter.ToInt32(stored, 0)
+                    : save.IsNew ? OceanMapLandmask.DefaultSamplesPerAxis : 0;
+                world.SetString(OceanMapSamplesCode, samples.ToString(CultureInfo.InvariantCulture));
+            }
         }
         catch (Exception e)
         {
-            throw DiffusionFailure.Fatal(_api.Logger, "This world's vertical scale could not be read or saved.", e);
+            throw DiffusionFailure.Fatal(api.Logger, "This world's terrain settings could not be read or saved.", e);
         }
     }
+
+    /// <summary>The shore detail and fade <see cref="PinWorldValues"/> settled for this world.</summary>
+    private (float Detail, float Fade) ResolveShoreDetail()
+    {
+        ITreeAttribute world = _api.WorldManager.SaveGame.WorldConfiguration;
+        return (DiffusionWorldSettings.ReadWorldConfig(world, ShoreDetailCode, "0").ToFloat(0f),
+                DiffusionWorldSettings.ReadWorldConfig(world, ShoreFadeCode, "3").ToFloat(3f));
+    }
+
+    /// <summary>The ocean map sampling <see cref="PinWorldValues"/> settled for this world.</summary>
+    private int ResolveOceanMapSamples() =>
+        DiffusionWorldSettings.ReadWorldConfig(_api.WorldManager.SaveGame.WorldConfiguration, OceanMapSamplesCode, "0")
+            .ToInt(0);
 
     /// <summary>Save game key holding the measured peak elevation, in metres.</summary>
     private const string CalibrationSaveKey = "vsterraindiffusion:peakelevation";
@@ -763,10 +783,10 @@ public class TerrainDiffusionModSystem : ModSystem
         // Vanilla's forest and shrub layers stay on as the source of clearings. On
         // re-initialisation they may already be wrapped.
         MapLayerBase vanillaForest = genMaps.Forest is DiffusionForestMapLayer wrappedForest
-            ? wrappedForest.Clearings
+            ? wrappedForest.Vanilla
             : genMaps.Forest;
         MapLayerBase vanillaShrubs = genMaps.Bush is DiffusionForestMapLayer wrappedShrubs
-            ? wrappedShrubs.Clearings
+            ? wrappedShrubs.Vanilla
             : genMaps.Bush;
         genMaps.Forest = _forestLayer = new DiffusionForestMapLayer(
             _api.WorldManager.Seed + 2, _provider, TerraGenConfig.forestMapScale, false,

@@ -57,9 +57,10 @@ public sealed class DiffusionWorldSettings
     public float CoarseHeightNoise { get; private set; }
 
     /// <summary>
-    /// Multiplies the model's local lapse rate, so temperature falls faster (above 1) or slower with
-    /// altitude; sea level keeps its temperature. World setting <c>terraindiffusionAltitudeCooling</c>,
-    /// in percent.
+    /// How fast temperature falls with height, as a share of the reference 6.5 C/km: above 1, the
+    /// difference is added to the model's own local rate, at the ground and in the air above it
+    /// alike, so 300% is 13 C/km colder than the model; sea level keeps its temperature. World
+    /// setting <c>terraindiffusionAltitudeCooling</c>, in percent.
     /// </summary>
     public float AltitudeCooling { get; private set; } = 1f;
 
