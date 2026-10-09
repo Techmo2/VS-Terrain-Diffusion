@@ -44,7 +44,7 @@ and `/worldconfig <code> <value>` changes one later.
 | Setting                  | Code                                   | Default | What it does |
 | ------------------------ | -------------------------------------- | ------- | ------------ |
 | Terrain Diffusion        | `terraindiffusionEnabled`              | on      | Turn off to fall back to vanilla terrain, keeping the mod installed. |
-| Resolution               | `terraindiffusionScale`                | 15 m    | Real-world metres per block, horizontally *and* vertically. |
+| Resolution               | `terraindiffusionScale`                | 15 m    | Real-world metres per block, horizontally *and* vertically. In `serverconfig.json`: `1` = 30 m, `2` = 15 m, `3` = 10 m, `4` = 7.5 m, `5` = 6 m, `6` = 5 m. |
 | Vertical exaggeration    | `terraindiffusionVerticalExaggeration` | 1x      | Multiplies terrain height. 1x is true scale. |
 | Sea level                | `terraindiffusionSeaLevel`             | vanilla | `128` fixes the sea at Y 128, so every block a taller world adds goes above it. |
 | Climate                  | `terraindiffusionClimate`              | model   | Whether the model drives climate as well as terrain. |
