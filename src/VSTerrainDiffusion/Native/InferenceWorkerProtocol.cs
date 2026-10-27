@@ -163,6 +163,9 @@ internal sealed class ModelSpec
 
     public string? TensorRtRtxCacheDirectory { get; set; }
 
+    /// <summary>Where MIGraphX keeps the programs it compiles.</summary>
+    public string? RocmCacheDirectory { get; set; }
+
     /// <summary>TensorRT RTX shape profile, min and max, in its <c>name:dimxdim</c> notation.</summary>
     public string? TensorRtRtxProfileMin { get; set; }
 

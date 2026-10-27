@@ -169,6 +169,22 @@ internal sealed class OnnxSession : IDisposable
         options.AppendExecutionProvider(environment, devices, providerOptions);
     }
 
+    /// <summary>
+    /// MIGraphX compiles each graph for the GPU the first time it sees an input shape, which can take
+    /// minutes, so the compiled programs are cached on disk and reused by every later world.
+    /// </summary>
+    private void AppendMigraphx(SessionOptions options)
+    {
+        string cache = _spec.RocmCacheDirectory
+                       ?? throw new InvalidOperationException("No MIGraphX cache directory");
+        Directory.CreateDirectory(cache);
+        options.AppendExecutionProvider("MIGraphX", new Dictionary<string, string>
+        {
+            { "device_id", "0" },
+            { "migraphx_model_cache_dir", cache }
+        });
+    }
+
     private InferenceSession CreateSessionCore(bool useConfiguredProvider)
     {
         var options = new SessionOptions
@@ -216,6 +232,10 @@ internal sealed class OnnxSession : IDisposable
 
                 case InferenceProvider.TensorRtRtx:
                     AppendTensorRtRtx(options);
+                    break;
+
+                case InferenceProvider.Rocm:
+                    AppendMigraphx(options);
                     break;
             }
         }

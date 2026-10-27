@@ -20,13 +20,13 @@ public sealed class InferenceCompatibility
 {
     /// <summary>Every device the world settings understand, in the order the Customize screen lists them.</summary>
     public static readonly string[] AllDevices =
-        { "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "directml", "coreml" };
+        { "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "rocm", "directml", "coreml" };
 
     public static readonly string[] AllBasePrecisions = { "fp32", "fp16" };
     public static readonly string[] AllDecoderPrecisions = { "fp32", "fp16", "int8" };
 
     /// <summary>The providers that run on a GPU, and so the only ones FP16 models are worth running on.</summary>
-    private static readonly string[] GpuDevices = { "cuda", "tensorrt-rtx", "directml", "coreml" };
+    private static readonly string[] GpuDevices = { "cuda", "tensorrt-rtx", "rocm", "directml", "coreml" };
 
     private static readonly Lazy<InferenceCompatibility> _current = new(() => new InferenceCompatibility(GpuInfo.Current));
 
@@ -53,7 +53,7 @@ public sealed class InferenceCompatibility
         }
 
         if (!Array.Exists(GpuDevices, IsDeviceCompatible))
-            _halfPrecisionProblem = "FP16 models need a GPU provider (cuda, tensorrt-rtx, directml or coreml), " +
+            _halfPrecisionProblem = "FP16 models need a GPU provider (cuda, tensorrt-rtx, rocm, directml or coreml), " +
                                     "and none can run on this machine";
     }
 
@@ -74,8 +74,8 @@ public sealed class InferenceCompatibility
 
     /// <summary>
     /// What "auto" runs on here: CoreML on macOS, DirectML on Windows and CUDA on Linux when this
-    /// machine can run them, and the CPU otherwise. OpenVINO and TensorRT RTX are only ever chosen
-    /// by name.
+    /// machine can run them, and the CPU otherwise. OpenVINO, TensorRT RTX and ROCm are only ever
+    /// chosen by name.
     /// </summary>
     public string AutomaticDevice()
     {
@@ -134,6 +134,7 @@ public sealed class InferenceCompatibility
             ? $", compute capability {Gpu.ComputeCapabilityMajor}.{Gpu.ComputeCapabilityMinor}" +
               $", driver CUDA {Gpu.DriverCudaVersion / 1000}.{Gpu.DriverCudaVersion % 1000 / 10}"
             : "";
+        if (Gpu.AmdGfxTarget != null) capability += $", ROCm sees an AMD {Gpu.AmdGfxTarget}";
         logger.Notification("[{0}] GPU: {1} ({2}{3}) on {4} {5}", DiffusionPaths.ModId,
             Gpu.GpuModelName, Gpu.Manufacturer, capability, RuntimeInformation.OSDescription,
             RuntimeInformation.OSArchitecture);
@@ -220,6 +221,19 @@ public sealed class InferenceCompatibility
                                : "");
                 return null;
 
+            case "rocm":
+            {
+                if (!linux || !x64) return "ROCm needs 64-bit Linux; on Windows, use directml for an AMD GPU";
+                if (gpu.AmdGfxTarget == null)
+                    return $"it needs an AMD GPU that the amdgpu driver exposes to ROCm (/dev/kfd); found {gpuName}";
+
+                List<string> missing = MissingLibraries(OnnxRuntimeBootstrap.RocmSystemLibraries, "/opt/rocm/lib");
+                if (missing.Count > 0)
+                    return $"ROCm 7 and MIGraphX are not installed (missing {string.Join(", ", missing)}); " +
+                           "the ROCm provider uses the system's ROCm install";
+                return null;
+            }
+
             case "directml":
                 if (!windows) return "DirectML is only available on Windows";
                 if (!gpu.SupportsDirectMl)
@@ -248,10 +262,22 @@ public sealed class InferenceCompatibility
             "libcurand.so.10", major >= 13 ? "libcufft.so.12" : "libcufft.so.11", "libcudnn.so.9"
         };
 
+        return MissingLibraries(libraries);
+    }
+
+    /// <summary>
+    /// Which of <paramref name="libraries"/> cannot be loaded from the usual search path, or from
+    /// <paramref name="fallbackDirectory"/>, where a provider's RUNPATH would find it.
+    /// </summary>
+    private static List<string> MissingLibraries(string[] libraries, string fallbackDirectory = null)
+    {
         var missing = new List<string>();
         foreach (string library in libraries)
         {
-            if (NativeLibrary.TryLoad(library, out IntPtr handle)) NativeLibrary.Free(handle);
+            if (NativeLibrary.TryLoad(library, out IntPtr handle) ||
+                fallbackDirectory != null &&
+                NativeLibrary.TryLoad(System.IO.Path.Combine(fallbackDirectory, library), out handle))
+                NativeLibrary.Free(handle);
             else missing.Add(library);
         }
         return missing;
