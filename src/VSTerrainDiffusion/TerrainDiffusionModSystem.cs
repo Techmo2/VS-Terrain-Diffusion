@@ -160,9 +160,20 @@ public class TerrainDiffusionModSystem : ModSystem
         bool rivers = !WatershedsCompat.IsPresent(_api) && RiversCompat.IsPresent(_api);
         if (rivers) RiversCompat.TryInstall(_api);
 
-        _riverBasins = rivers && RiversCompat.CanSampleNetwork
+        // At a valley depth of 0 the basins would weigh nothing, and building them costs Rivers a
+        // whole region for every 32 km a coarse window covers - minutes at high scales.
+        _riverBasins = rivers && RiversCompat.CanSampleNetwork && _settings.RiverBasinDepth > 0f
             ? new RiverBasinMap(_settings, _api.Logger)
             : null;
+        if (RiversCompat.Installed)
+        {
+            string shaping = _riverBasins != null
+                ? "The model shapes valleys for the rivers, {1:0}% deep (terraindiffusionRiverValleyDepth)."
+                : _settings.RiverBasinDepth > 0f
+                    ? "This Rivers version does not expose its river network, so the model is not shaped around the rivers."
+                    : "The model is not shaped around the rivers (terraindiffusionRiverValleyDepth {1:0}%).";
+            _api.Logger.Notification("[{0}] " + shaping, DiffusionPaths.ModId, _settings.RiverBasinDepth * 100f);
+        }
 
         ILandmaskSource landmask = BuildLandmask();
         _provider = new TerrainDiffusionProvider(
@@ -179,8 +190,17 @@ public class TerrainDiffusionModSystem : ModSystem
         if (!calibrates) AttachTileStore(landmask);
 
         // The spawn search can run before the height mapping is settled - and it should, because
-        // the survey wants to be centred on where people will actually play.
-        TerrainDiffusionProvider.SpawnCandidate? spawn = FindSpawn();
+        // the survey wants to be centred on where people will actually play. Only a new world uses
+        // its result for the spawn, though, and an existing one only for a height calibration it
+        // has not stored yet. Otherwise it is minutes of coarse surveying on every load, for
+        // nothing.
+        bool searchSpawn = _api.WorldManager.SaveGame.IsNew || (calibrates && StoredCalibration() == null);
+        TerrainDiffusionProvider.SpawnCandidate? spawn = searchSpawn ? FindSpawn() : null;
+        if (!searchSpawn)
+        {
+            _api.Logger.VerboseDebug("[{0}] Existing world: its spawn is already placed, so no spawn search.",
+                DiffusionPaths.ModId);
+        }
 
         // Must happen before anything asks for a tile: it decides the metre-to-block mapping every
         // surface height is computed from.
@@ -519,11 +539,10 @@ public class TerrainDiffusionModSystem : ModSystem
     /// only depends on the seed, but paying for it on every server start would be wasteful, and a
     /// stored value also keeps old chunks and new chunks agreeing if the survey settings change.
     /// </summary>
-    private void CalibrateTerrainHeight(TerrainDiffusionProvider.SpawnCandidate? center)
+    /// <summary>The terrain height calibration this world keeps, if it has measured one.</summary>
+    private float? StoredCalibration()
     {
-        if (!_settings.WantsCalibration) return;
-
-        byte[] stored = null;
+        byte[] stored;
         try
         {
             stored = _api.WorldManager.SaveGame.GetData(CalibrationSaveKey);
@@ -533,10 +552,15 @@ public class TerrainDiffusionModSystem : ModSystem
             throw DiffusionFailure.Fatal(_api.Logger,
                 "This world's stored terrain height calibration could not be read.", e);
         }
+        return stored is { Length: sizeof(float) } ? BitConverter.ToSingle(stored, 0) : null;
+    }
 
-        if (stored is { Length: sizeof(float) })
+    private void CalibrateTerrainHeight(TerrainDiffusionProvider.SpawnCandidate? center)
+    {
+        if (!_settings.WantsCalibration) return;
+
+        if (StoredCalibration() is { } saved)
         {
-            float saved = BitConverter.ToSingle(stored, 0);
             _settings.ApplyCalibration(saved);
             _api.Logger.VerboseDebug("[{0}] Reusing the stored terrain height calibration ({1:0} m peak).",
                 DiffusionPaths.ModId, saved);

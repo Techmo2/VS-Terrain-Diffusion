@@ -165,8 +165,8 @@ public static class RiversCompat
             _available = true;
             Installed = true;
             api.Logger.Notification(
-                "[{0}] Rivers is generating this world's rivers; the model's landscape is valleyed " +
-                "and cut to carry them.", DiffusionPaths.ModId);
+                "[{0}] Rivers is generating this world's rivers; their channels are cut into the model's terrain.",
+                DiffusionPaths.ModId);
         }
         catch (Exception e)
         {
