@@ -113,6 +113,13 @@ public static class ModelAssetManager
             "https://github.com/Techmo2/VS-Terrain-Diffusion/releases/download/decoder-int8-v1/decoder_model.int8.onnx"
     };
 
+    /// <summary>
+    /// Which trained models these are, whatever precision they run at: the FP16 and INT8 files are
+    /// exports of the same weights, so they are named by the FP32 originals.
+    /// </summary>
+    public static string ModelIdentity =>
+        $"{RepositorySlug}@{Revision}|{Fp32CoarseAsset.Sha256}|{Fp32BaseAsset.Sha256}|{Fp32DecoderAsset.Sha256}";
+
     private static readonly object Gate = new();
 
     /// <summary>

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Datastructures;
@@ -26,6 +27,15 @@ public class TerrainDiffusionModSystem : ModSystem
     private ICoreServerAPI _api;
     private DiffusionWorldSettings _settings;
     private TerrainDiffusionProvider _provider;
+
+    /// <summary>The running <c>/tdiff pregen</c> job, if any.</summary>
+    private TilePregenerator _pregen;
+
+    /// <summary>
+    /// Where a pregeneration job is recorded in the save while it runs, as "x,z,radius", so a
+    /// server restart picks it up again. Removed once it finishes or is stopped.
+    /// </summary>
+    private const string PregenSaveKey = "terraindiffusionPregen";
     private GenDiffusionTerra _generator;
     private DiffusionSurface _surface;
     private DebugMapServer _debugMap;
@@ -142,6 +152,7 @@ public class TerrainDiffusionModSystem : ModSystem
                 "This world's Terrain Diffusion settings could not be read.", e);
         }
 
+        StopPregeneration(forget: false);
         _provider?.Dispose();
         // Before the provider, because the first coarse window is built during the spawn search and
         // a window generated without the rivers would be cached and then seam against every one
@@ -153,13 +164,19 @@ public class TerrainDiffusionModSystem : ModSystem
             ? new RiverBasinMap(_settings, _api.Logger)
             : null;
 
+        ILandmaskSource landmask = BuildLandmask();
         _provider = new TerrainDiffusionProvider(
-            WorldSeed(), models, _settings, _api.Logger, BuildLandmask(),
-            _riverBasins, _settings.RiverBasinDepth);
+            WorldSeed(), models, _settings, _api.Logger, landmask,
+            _riverBasins, _settings.RiverBasinDepth, StoredTileSize());
 
         // Before anything builds a Rivers region, which the spawn search below is the first to do.
         if (RiversCompat.Installed) RiversCompat.UseModelSea(_provider.IsCoarseSea);
         TerrainSamplerCompat.Install(_api, _provider);
+
+        // A stored tile keeps block heights, so the tile database waits for a height calibration;
+        // without one the mapping is already settled and the spawn search can read from it.
+        bool calibrates = _settings.WantsCalibration;
+        if (!calibrates) AttachTileStore(landmask);
 
         // The spawn search can run before the height mapping is settled - and it should, because
         // the survey wants to be centred on where people will actually play.
@@ -168,6 +185,7 @@ public class TerrainDiffusionModSystem : ModSystem
         // Must happen before anything asks for a tile: it decides the metre-to-block mapping every
         // surface height is computed from.
         CalibrateTerrainHeight(spawn);
+        if (calibrates) AttachTileStore(landmask);
 
         StartDebugMap();
 
@@ -184,7 +202,7 @@ public class TerrainDiffusionModSystem : ModSystem
 
         // Unrelated to the climate patches below: this one only makes the static translocator
         // search affordable, and never changes what the world contains.
-        TranslocatorSearchCompat.Install(_api);
+        TranslocatorSearchCompat.Install(_api, _provider);
 
         // Both only while the model owns the climate map. Left to vanilla the stored byte is a
         // sea-level temperature already read at the game's own lapse rate, and correcting either
@@ -222,6 +240,7 @@ public class TerrainDiffusionModSystem : ModSystem
 
         _api.Logger.Notification("[{0}] Active: {1}", DiffusionPaths.ModId, _settings.Describe());
         WarnAboutWorldHeight();
+        ResumePregeneration();
     }
 
     /// <summary>
@@ -562,6 +581,123 @@ public class TerrainDiffusionModSystem : ModSystem
     }
 
     private ulong WorldSeed() => (ulong)(uint)_api.WorldManager.Seed;
+
+    /// <summary>
+    /// The game's own world settings a tile depends on: the climate ones this mod reads, and the two
+    /// that shape the ocean map. Every other vanilla setting is gameplay, and changing it with
+    /// /worldconfig keeps the tiles.
+    /// </summary>
+    private static readonly string[] TileShapingVanillaCodes =
+    {
+        "globalTemperature", "globalPrecipitation", "polarEquatorDistance", "startingClimate", "worldClimate",
+        "landcover", "oceanscale"
+    };
+
+    /// <summary>Mod config fields that never reach a tile: the translocator search and the spawn search.</summary>
+    private static readonly string[] TileNeutralWorldGenFields =
+    {
+        nameof(WorldGenConfig.TranslocatorSearchTimeoutSeconds), nameof(WorldGenConfig.TranslocatorPeekPauseSeconds),
+        nameof(WorldGenConfig.TranslocatorMaxRangeBlocks), nameof(WorldGenConfig.TranslocatorStoredTerrainOnly),
+        nameof(WorldGenConfig.StartingClimateSearch),
+        nameof(WorldGenConfig.StartingClimateSearchRadiusBlocks), nameof(WorldGenConfig.StartingClimateNorthSouthCost)
+    };
+
+    /// <summary>
+    /// The tile size this world's tile database holds, if it has one with tiles in it: the world keeps
+    /// it whatever this machine would pick, so tiles pregenerated on a GPU (256 blocks) are still
+    /// served on a CPU (128).
+    /// </summary>
+    private int? StoredTileSize() => InferenceSettings.Current.TileDatabase
+        ? TerrainTileStore.ReadTileSize(DiffusionPaths.TileDatabaseFile(_api.WorldManager.SaveGame.SavegameIdentifier))
+        : null;
+
+    /// <summary>
+    /// Opens the world's tile database when its <c>terraindiffusionTileDatabase</c> setting asks for
+    /// one. A database that cannot be opened only costs speed, so the world carries on without it.
+    /// </summary>
+    private void AttachTileStore(ILandmaskSource landmask)
+    {
+        if (!InferenceSettings.Current.TileDatabase) return;
+
+        string path = DiffusionPaths.TileDatabaseFile(_api.WorldManager.SaveGame.SavegameIdentifier);
+        try
+        {
+            _provider.AttachStore(TerrainTileStore.Open(path, _provider.TileSize, TileFingerprint(landmask),
+                _api.Logger));
+        }
+        catch (Exception e)
+        {
+            _api.Logger.Warning("[{0}] The tile database {1} could not be opened, so tiles will not be kept: {2}",
+                DiffusionPaths.ModId, path, e.Message);
+        }
+    }
+
+    /// <summary>
+    /// Everything that decides what this world's tiles contain, one entry per input, each a hash:
+    /// the terrain version and the models, the seed, the world's terrain settings, this mod's
+    /// terrain config, the settings as resolved (calibration included), and the two things a tile
+    /// takes from outside this mod - the ocean map, read the way the model reads it, and Rivers'
+    /// version and config. Settings that only decide how fast tiles are made are left out, and so
+    /// are other mods, which reach a tile only through the ocean map: installing one that does not
+    /// touch it keeps the tiles.
+    ///
+    /// Also left out, so that a world's tiles can be pregenerated on one machine and served from
+    /// another, or kept across an update: the mod's version (<see cref="TerrainTileStore.TerrainVersion"/>
+    /// stands for the code that shapes a tile), and the device and precisions the models ran at.
+    /// Those change a tile by a few metres at most, which is a faint seam where stored terrain meets
+    /// new terrain - against the hours it took to generate what is stored.
+    ///
+    /// The ocean map is sampled near the model's origin, so a mod that reshapes it only far from
+    /// there is not seen; that is what <c>/tdiff tiles clear</c> is for.
+    /// </summary>
+    private Dictionary<string, string> TileFingerprint(ILandmaskSource landmask)
+    {
+        var neutral = new HashSet<string>(InferenceSettings.AllCodes, StringComparer.Ordinal);
+        var world = new List<string>();
+        foreach (KeyValuePair<string, IAttribute> entry in _api.WorldManager.SaveGame.WorldConfiguration)
+        {
+            bool shaping = entry.Key.StartsWith(InferenceSettings.CodePrefix, StringComparison.Ordinal)
+                ? !neutral.Contains(entry.Key)
+                : Array.IndexOf(TileShapingVanillaCodes, entry.Key) >= 0;
+            if (shaping) world.Add(entry.Key + "=" + entry.Value?.ToJsonToken());
+        }
+        world.Sort(StringComparer.Ordinal);
+
+        var worldGen = Newtonsoft.Json.Linq.JObject.FromObject(DiffusionConfig.Instance.WorldGen);
+        foreach (string field in TileNeutralWorldGenFields) worldGen.Remove(field);
+
+        string resolved;
+        try
+        {
+            resolved = Newtonsoft.Json.JsonConvert.SerializeObject(_settings);
+        }
+        catch (Exception)
+        {
+            resolved = _settings.Describe();
+        }
+        _api.Logger.VerboseDebug("[{0}] Tile database fingerprint, resolved settings: {1}", DiffusionPaths.ModId, resolved);
+
+        // 16 by 16 coarse cells, about 120 km across, of the ocean map as the coarse model is handed it.
+        float[] sea = landmask?.SeaFraction(-8, -8, 8, 8);
+        string oceanMap = sea == null ? "none" : Convert.ToHexString(System.Runtime.InteropServices.MemoryMarshal.AsBytes(sea.AsSpan()));
+
+        var inputs = new Dictionary<string, string>
+        {
+            ["terrain version"] = TerrainTileStore.TerrainVersion.ToString(CultureInfo.InvariantCulture),
+            ["models"] = ModelAssetManager.ModelIdentity,
+            ["seed"] = _api.WorldManager.Seed.ToString(CultureInfo.InvariantCulture),
+            ["world settings"] = string.Join("\n", world),
+            ["terrain config"] = worldGen.ToString(Newtonsoft.Json.Formatting.None),
+            ["resolved settings"] = resolved,
+            ["ocean map"] = oceanMap,
+            ["rivers"] = RiversCompat.Installed
+                ? (_api.ModLoader.GetMod("rivers")?.Info.Version ?? "") + "\n" + (RiversCompat.ConfigJson() ?? "")
+                : "none"
+        };
+
+        return inputs.ToDictionary(entry => entry.Key, entry => Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(entry.Value)))[..16]);
+    }
 
     /// <summary>
     /// Gets the model's heights into the world, whichever mod is generating terrain.
@@ -942,6 +1078,18 @@ public class TerrainDiffusionModSystem : ModSystem
                 .WithArgs(api.ChatCommands.Parsers.OptionalInt("x"), api.ChatCommands.Parsers.OptionalInt("z"))
                 .HandleWith(OnRiversCommand)
             .EndSubCommand()
+            .BeginSubCommand("tiles")
+                .WithDescription("Show this world's tile database, or empty it with 'clear'")
+                .WithArgs(api.ChatCommands.Parsers.OptionalWord("clear"))
+                .HandleWith(OnTilesCommand)
+            .EndSubCommand()
+            .BeginSubCommand("pregen")
+                .WithDescription("Fill the tile database ahead of play. '<radius> [x z]' starts (around spawn by " +
+                                 "default), 'stop' stops, nothing shows progress")
+                .WithArgs(api.ChatCommands.Parsers.OptionalWord("radius|stop"),
+                          api.ChatCommands.Parsers.OptionalInt("x"), api.ChatCommands.Parsers.OptionalInt("z"))
+                .HandleWith(OnPregenCommand)
+            .EndSubCommand()
             .BeginSubCommand("column")
                 .WithDescription("Read back the generated block column at a position, for diagnosing world generation")
                 .WithArgs(api.ChatCommands.Parsers.Int("x"), api.ChatCommands.Parsers.Int("z"))
@@ -1017,6 +1165,8 @@ public class TerrainDiffusionModSystem : ModSystem
             $"Settings screen: {(ConfigLibCompat.IsPresent(_api) ? "ConfigLib" : "not installed")}",
             $"Debug map: {(_debugMap?.IsRunning == true ? _debugMap.Url : "off")}",
             $"Tiles generated: {_provider.TilesGenerated}",
+            $"Tile database: {DescribeTileStore(_provider.Store)}",
+            $"Pregeneration: {(_pregen == null ? "none" : _pregen.Describe())}",
             $"Tile size: {_provider.TileSize}x{_provider.TileSize} blocks",
             $"Average tile time: {_provider.AverageTileMillis} ms",
             $"Model inference: {_provider.ModelTimingSummary}",
@@ -1035,6 +1185,209 @@ public class TerrainDiffusionModSystem : ModSystem
         lines.Add($"Latitude bands: {_settings.Latitude.Status}");
 
         return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
+    }
+
+    private static string DescribeTileStore(TerrainTileStore store) => store == null
+        ? "off (terraindiffusionTileDatabase)"
+        : $"{store.CountTiles()} tiles and {store.CountCoarseWindows()} coarse windows, " +
+          $"{store.SizeOnDisk() / 1048576.0:0.#} MB; this session {store.TilesLoaded} tiles read " +
+          $"({store.AverageLoadMillis:0.#} ms each), {store.TilesSaved} written ({store.AverageTileBytes / 1024} KB, " +
+          $"{store.AverageSaveMillis:0.#} ms each), {store.TilesPending} queued; {store.CoarseWindowsLoaded} coarse " +
+          $"windows read, {store.CoarseWindowsSaved} written";
+
+    private Vintagestory.API.Common.TextCommandResult OnTilesCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
+    {
+        TerrainTileStore store = _provider?.Store;
+        if (store == null)
+        {
+            return Vintagestory.API.Common.TextCommandResult.Success(
+                "This world keeps no tile database. Turn on terraindiffusionTileDatabase with /worldconfig and reload the world.");
+        }
+
+        string action = args.Parsers[0].IsMissing ? "" : ((string)args[0]).Trim().ToLowerInvariant();
+        if (action == "")
+        {
+            return Vintagestory.API.Common.TextCommandResult.Success($"{store.Path}\n{DescribeTileStore(store)}");
+        }
+        if (action != "clear")
+        {
+            return Vintagestory.API.Common.TextCommandResult.Error("The only action is 'clear'.");
+        }
+
+        long removed = _provider.ClearStoredTiles();
+        return Vintagestory.API.Common.TextCommandResult.Success(
+            $"Removed {removed} stored tiles; terrain not yet in a chunk will be generated again.");
+    }
+
+    /// <summary>Furthest a pregeneration may reach, in blocks: 100 km, about 480,000 tiles of 256.</summary>
+    private const int MaxPregenRadius = 100_000;
+
+    private Vintagestory.API.Common.TextCommandResult OnPregenCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
+    {
+        string word = args.Parsers[0].IsMissing ? "" : ((string)args[0]).Trim().ToLowerInvariant();
+        if (word == "")
+        {
+            return Vintagestory.API.Common.TextCommandResult.Success(DescribePregeneration());
+        }
+
+        if (word == "stop")
+        {
+            if (_pregen == null || !_pregen.IsRunning)
+            {
+                ForgetPregeneration();
+                return Vintagestory.API.Common.TextCommandResult.Success("No pregeneration is running.");
+            }
+            string progress = _pregen.Describe();
+            _pregen.Stop();
+            ForgetPregeneration();
+            return Vintagestory.API.Common.TextCommandResult.Success(
+                $"Pregeneration stops after the tile it is on: {progress}. Running the same command again resumes it.");
+        }
+
+        if (!int.TryParse(word, NumberStyles.Integer, CultureInfo.InvariantCulture, out int radius) || radius < 1)
+        {
+            return Vintagestory.API.Common.TextCommandResult.Error("Give a radius in blocks, or 'stop'.");
+        }
+        if (radius > MaxPregenRadius)
+        {
+            return Vintagestory.API.Common.TextCommandResult.Error($"The radius can be at most {MaxPregenRadius} blocks.");
+        }
+        if (_provider == null)
+        {
+            return Vintagestory.API.Common.TextCommandResult.Error("Terrain Diffusion is not generating this world.");
+        }
+        if (_provider.Store == null)
+        {
+            return Vintagestory.API.Common.TextCommandResult.Error(
+                "Pregenerated terrain is kept in the tile database, which this world does not have. Turn on " +
+                "terraindiffusionTileDatabase with /worldconfig and reload the world.");
+        }
+        if (_pregen?.IsRunning == true)
+        {
+            return Vintagestory.API.Common.TextCommandResult.Error(
+                $"A pregeneration is already running ({_pregen.Describe()}). Stop it with /tdiff pregen stop first.");
+        }
+
+        int x, z;
+        if (!args.Parsers[1].IsMissing && !args.Parsers[2].IsMissing)
+        {
+            x = (int)args[1];
+            z = (int)args[2];
+        }
+        else
+        {
+            Vintagestory.API.MathTools.BlockPos spawn = _api.World.DefaultSpawnPosition?.AsBlockPos;
+            x = spawn?.X ?? _api.WorldManager.MapSizeX / 2;
+            z = spawn?.Z ?? _api.WorldManager.MapSizeZ / 2;
+        }
+
+        TilePregenerator job = StartPregeneration(x, z, radius, args.Caller.Player?.PlayerUID);
+
+        string estimate = _provider.AverageTileMillis > 0
+            ? $", at most about {TilePregenerator.DescribeDuration(job.TileCount * _provider.AverageTileMillis / 1000.0)} " +
+              "at this session's pace"
+            : "";
+        return Vintagestory.API.Common.TextCommandResult.Success(
+            $"Pregenerating {job.TileCount} tiles of {_provider.TileSize} blocks within {radius} blocks of ({x}, {z})" +
+            $"{estimate}, then coarse windows within {job.CoarseRadiusBlocks}. Anything already stored are passed over, players' terrain goes first, progress is reported " +
+            "every 10 s, and the job carries on after a server restart. /tdiff pregen stop stops it.");
+    }
+
+    private string DescribePregeneration()
+    {
+        if (_pregen == null)
+        {
+            return "No pregeneration has run since the server started. /tdiff pregen <radius> [x z] starts one.";
+        }
+        string state = _pregen.IsRunning ? "running" : _pregen.Completed ? "finished" : "stopped";
+        return $"Pregeneration {state}, {_pregen.RadiusBlocks} blocks around ({_pregen.CentreX}, {_pregen.CentreZ}): " +
+               _pregen.Describe();
+    }
+
+    /// <summary>
+    /// Starts a pregeneration job and records it in the save. Progress goes to the log, and to
+    /// <paramref name="playerUid"/>'s chat when a player started it.
+    /// </summary>
+    private TilePregenerator StartPregeneration(int x, int z, int radius, string playerUid)
+    {
+        var job = new TilePregenerator(_provider, _api.Logger, x, z, radius, _api.WorldManager.RegionSize);
+        job.Progress += j =>
+        {
+            string line = "Pregeneration: " + j.Describe();
+            _api.Logger.Notification("[{0}] {1}", DiffusionPaths.ModId, line);
+            TellPlayer(playerUid, line);
+        };
+        job.Finished += j =>
+        {
+            TellPlayer(playerUid, $"Pregeneration {(j.Completed ? "finished" : "stopped")}: {j.Describe()}");
+            if (!j.Completed) return;
+            _api.Event.EnqueueMainThreadTask(() =>
+            {
+                if (ReferenceEquals(_pregen, j)) ForgetPregeneration();
+            }, "terraindiffusion-pregen-done");
+        };
+
+        _pregen = job;
+        _api.WorldManager.SaveGame.StoreData(PregenSaveKey,
+            System.Text.Encoding.UTF8.GetBytes(string.Create(CultureInfo.InvariantCulture, $"{x},{z},{radius}")));
+        job.Start();
+        return job;
+    }
+
+    /// <summary>Picks up a pregeneration the save says was still running when the server last stopped.</summary>
+    private void ResumePregeneration()
+    {
+        byte[] stored = _api.WorldManager.SaveGame.GetData(PregenSaveKey);
+        if (stored == null || stored.Length == 0) return;
+
+        string[] parts = System.Text.Encoding.UTF8.GetString(stored).Split(',');
+        if (parts.Length != 3 ||
+            !int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int x) ||
+            !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int z) ||
+            !int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int radius))
+        {
+            ForgetPregeneration();
+            return;
+        }
+
+        if (_provider?.Store == null)
+        {
+            _api.Logger.Warning(
+                "[{0}] A pregeneration was left unfinished, but this world no longer keeps a tile database, so it " +
+                "was not resumed.", DiffusionPaths.ModId);
+            ForgetPregeneration();
+            return;
+        }
+
+        _api.Logger.Notification("[{0}] Resuming the pregeneration of {1} blocks around ({2}, {3}).",
+            DiffusionPaths.ModId, radius, x, z);
+        StartPregeneration(x, z, radius, null);
+    }
+
+    /// <summary>Stops the running job, waiting for its tile; <paramref name="forget"/> also drops it from the save.</summary>
+    private void StopPregeneration(bool forget)
+    {
+        _pregen?.Dispose();
+        _pregen = null;
+        if (forget) ForgetPregeneration();
+    }
+
+    private void ForgetPregeneration() =>
+        _api.WorldManager.SaveGame.StoreData(PregenSaveKey, Array.Empty<byte>());
+
+    /// <summary>A chat line to a player, if they are still online. Safe from any thread.</summary>
+    private void TellPlayer(string playerUid, string message)
+    {
+        if (playerUid == null) return;
+        _api.Event.EnqueueMainThreadTask(() =>
+        {
+            if (_api.World.PlayerByUid(playerUid) is IServerPlayer player &&
+                player.ConnectionState == EnumClientState.Playing)
+            {
+                player.SendMessage(Vintagestory.API.Config.GlobalConstants.GeneralChatGroup, message,
+                    EnumChatType.Notification);
+            }
+        }, "terraindiffusion-pregen-message");
     }
 
     private Vintagestory.API.Common.TextCommandResult OnGpuLimitCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
@@ -1342,6 +1695,7 @@ public class TerrainDiffusionModSystem : ModSystem
         TranslocatorSearchCompat.Uninstall();
         ClimateScale.Uninstall();
         ConfigLibCompat.Uninstall();
+        StopPregeneration(forget: false);
         _provider?.Dispose();
         _provider = null;
         PipelineModels.Shutdown();
@@ -1353,6 +1707,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _debugMap = null;
         SurfaceClimateCompat.Uninstall();
         ClimateScale.Uninstall();
+        StopPregeneration(forget: false);
         _provider?.Dispose();
         _provider = null;
 

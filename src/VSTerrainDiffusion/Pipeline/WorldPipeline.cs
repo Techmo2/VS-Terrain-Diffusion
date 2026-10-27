@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using VSTerrainDiffusion.Core;
 using VSTerrainDiffusion.Native;
 using VSTerrainDiffusion.Tensors;
@@ -230,6 +231,18 @@ public sealed class WorldPipeline
     // Coarse stage
     // =====================================================================
 
+    /// <summary>
+    /// Where finished coarse windows are kept between sessions, or null. Checked before the coarse
+    /// model runs for a window, and handed every window it does run for. A window is a pure
+    /// function of the world's seed and settings, which the store's own fingerprint covers.
+    /// </summary>
+    public ICoarseWindowStore CoarseWindowStore { get; set; }
+
+    private long _coarseWindowsComputed;
+
+    /// <summary>Coarse windows this pipeline ran the coarse model for, rather than read back.</summary>
+    public long CoarseWindowsComputed => Interlocked.Read(ref _coarseWindowsComputed);
+
     private InfiniteTensor BuildCoarseStage()
     {
         // Pooled tiles are generated on the usual grid and written to a map n times smaller, so
@@ -240,8 +253,21 @@ public sealed class WorldPipeline
         var outWindow = new TensorWindow(new[] { 7, s, s }, new[] { 7, st, st });
 
         return _tileStore.GetOrCreate("base_coarse_map", new int?[] { 7, null, null },
-            (windowIndex, _) => CoarseTile(windowIndex, weights), outWindow,
+            (windowIndex, _) => StoredCoarseTile(windowIndex, weights, s), outWindow,
             Array.Empty<InfiniteTensor>(), Array.Empty<TensorWindow>());
+    }
+
+    private FloatTensor StoredCoarseTile(int[] windowIndex, float[] weights, int size)
+    {
+        ICoarseWindowStore store = CoarseWindowStore;
+        int length = 7 * size * size;
+        float[] stored = store?.TryLoad(windowIndex[1], windowIndex[2], length);
+        if (stored != null) return new FloatTensor(new[] { 7, size, size }, stored);
+
+        FloatTensor computed = CoarseTile(windowIndex, weights);
+        Interlocked.Increment(ref _coarseWindowsComputed);
+        store?.Save(windowIndex[1], windowIndex[2], computed.Data);
+        return computed;
     }
 
     private FloatTensor CoarseTile(int[] windowIndex, float[] weights)

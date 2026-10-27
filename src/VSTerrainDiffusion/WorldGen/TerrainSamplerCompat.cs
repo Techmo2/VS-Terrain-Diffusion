@@ -91,7 +91,12 @@ public static class TerrainSamplerCompat
 
     private static int Height(object coordinate) =>
         _provider.SampleSurfaceY((int)_x.GetValue(coordinate), (int)_z.GetValue(coordinate),
-            DiffusionConfig.Instance.TerrainSamplerHeight == "coarse");
+            DiffusionConfig.Instance.TerrainSamplerHeight switch
+            {
+                "coarse" => SurfaceSampleMode.Coarse,
+                "stored" => SurfaceSampleMode.Stored,
+                _ => SurfaceSampleMode.Full
+            });
 
     /// <summary>Harmony prefix: the whole answer, so the sampler's vanilla noise never runs.</summary>
     private static bool BeforeGetBlockColumnHeight(object[] __args, ref int __result)

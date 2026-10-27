@@ -506,6 +506,13 @@ public static class RiversCompat
     private static object LoadedConfig() =>
         AccessTools.Property(AccessTools.TypeByName("Rivers.RiverConfig"), "Loaded")?.GetValue(null);
 
+    /// <summary>Rivers' config as it is running, as JSON, or null without Rivers.</summary>
+    public static string ConfigJson()
+    {
+        object config = LoadedConfig();
+        return config == null ? null : Newtonsoft.Json.JsonConvert.SerializeObject(config);
+    }
+
     private static int ReadInt(string field) => Read<int>(LoadedConfig(), field);
 
     /// <summary>

@@ -11,6 +11,19 @@ using VSTerrainDiffusion.Tensors;
 
 namespace VSTerrainDiffusion.WorldGen;
 
+/// <summary>Where <see cref="TerrainDiffusionProvider.SampleSurfaceY"/> takes a column's height from.</summary>
+public enum SurfaceSampleMode
+{
+    /// <summary>The terrain tile, generated if need be: exactly what the world gets.</summary>
+    Full,
+
+    /// <summary>The coarse model alone: blurred, but no tile is generated.</summary>
+    Coarse,
+
+    /// <summary>The terrain tile if it is already in memory or the tile database, else the coarse model.</summary>
+    Stored
+}
+
 /// <summary>
 /// One square of generated terrain, aligned to the tile grid. Rows run along Z, columns along X.
 /// </summary>
@@ -106,6 +119,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
     private readonly ConcurrentDictionary<long, Lazy<TerrainTile>> _tiles = new();
 
+    /// <summary>This world's tiles on disk, when it keeps them; see <see cref="AttachStore"/>.</summary>
+    private TerrainTileStore _store;
+
     /// <summary>Monotonic access stamp per cached tile, used to pick eviction victims.</summary>
     private readonly ConcurrentDictionary<long, long> _lastAccess = new();
 
@@ -129,6 +145,19 @@ public sealed class TerrainDiffusionProvider : IDisposable
     /// - measured at 24 with a 142 tile cache, the player lost every tile they had.
     /// </summary>
     private const int PeekReserve = 4;
+
+    /// <summary>
+    /// Tiles looked for in the tile database and not found, so a caller that only wants stored
+    /// terrain - a sampler query per column, a translocator candidate - asks the file once per tile.
+    /// A tile leaves the set when it is generated.
+    /// </summary>
+    private readonly ConcurrentDictionary<long, byte> _absent = new();
+
+    /// <summary>Tiles generated so far, so a lookup that raced one does not record it as absent.</summary>
+    private long _generatedForStore;
+
+    /// <summary>Set on the thread running <see cref="Pregenerate"/>.</summary>
+    [ThreadStatic] private static bool _pregenerating;
 
     /// <summary>
     /// One column's climate as the model produced it, before the world's own corrections. Only the
@@ -204,9 +233,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
     }
 
     /// <summary>
-    /// Raised for each tile the moment it is generated, before it can be evicted. Nothing in world
-    /// generation subscribes; this is for the debug map, and a handler that throws is that
-    /// handler's problem to catch.
+    /// Raised for each tile the moment it is generated or read back from the tile database, before
+    /// it can be evicted. Nothing in world generation subscribes; this is for the debug map, and a
+    /// handler that throws is that handler's problem to catch.
     /// </summary>
     public event Action<TerrainTile> TileGenerated;
 
@@ -225,8 +254,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
     private long UrgencyOf(int tileX, int tileZ)
     {
-        // Terrain generated to serve a chunk peek is speculative and thrown away. It always yields.
-        if (ChunkPeekScope.Active) return long.MaxValue / 4;
+        // Terrain generated to serve a chunk peek is speculative and thrown away, and pregeneration
+        // is for later. Both always yield.
+        if (ChunkPeekScope.Active || _pregenerating) return long.MaxValue / 4;
 
         System.Func<int, int, long> urgency = TileUrgency;
         if (urgency == null) return 0;
@@ -246,7 +276,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
     public TerrainDiffusionProvider(ulong seed, PipelineModels models, DiffusionWorldSettings settings,
                                     ILogger logger, ILandmaskSource landmask = null,
-                                    IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f)
+                                    IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f,
+                                    int? tileSize = null)
     {
         _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude,
                                       riverBasins, riverBasinDepth, settings.CoarsePooling,
@@ -258,9 +289,16 @@ public sealed class TerrainDiffusionProvider : IDisposable
         _settings = settings;
         _logger = logger;
         int configuredTileSize = DiffusionConfig.Instance.TerrainTileSizeBlocks;
-        _tileSize = configuredTileSize > 0
+        int machineTileSize = configuredTileSize > 0
             ? configuredTileSize
             : OnnxModel.ActiveProvider is InferenceProvider.Cpu or InferenceProvider.OpenVino ? 128 : 256;
+        _tileSize = tileSize ?? machineTileSize;
+        if (_tileSize != machineTileSize)
+        {
+            logger.Notification(
+                "[{0}] Terrain tiles are {1} blocks, the size this world's tile database holds; this machine " +
+                "would otherwise use {2}.", DiffusionPaths.ModId, _tileSize, machineTileSize);
+        }
 
         long budget = (long)DiffusionConfig.Instance.TerrainTileCacheMegabytes * 1024 * 1024;
         _maxCachedTiles = (int)Math.Max(16, budget / TerrainTile.EstimateBytes(_tileSize));
@@ -348,6 +386,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
         _tiles.Clear();
         _lastAccess.Clear();
 
+        // Coarse windows are in metres, so they stay.
+        _store?.Clear(coarse: false);
+
         if (dropped > 0)
         {
             _logger.Notification(
@@ -424,12 +465,12 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
     public TerrainTile GetTile(int tileX, int tileZ)
     {
-        long key = ((long)tileX << 32) ^ (uint)tileZ;
+        long key = TileKey(tileX, tileZ);
         bool created = false;
         Lazy<TerrainTile> lazy = _tiles.GetOrAdd(key, _ =>
         {
             created = true;
-            return new Lazy<TerrainTile>(() => GenerateTile(tileX, tileZ), LazyThreadSafetyMode.ExecutionAndPublication);
+            return new Lazy<TerrainTile>(() => LoadOrGenerateTile(tileX, tileZ), LazyThreadSafetyMode.ExecutionAndPublication);
         });
 
         // The translocator search peeks four times a second at points up to 8000 blocks away. Left
@@ -438,12 +479,14 @@ public sealed class TerrainDiffusionProvider : IDisposable
         // and spent first - see EvictLeastRecentlyUsed. The stamp itself stays on the ordinary
         // clock: an earlier version put peeked tiles in a band below it, which made them always
         // the victim and had a peek evicting its own tiles between one map layer's walk and the
-        // next, regenerating them three times over.
+        // next, regenerating them three times over. Pregenerated tiles are on disk already, so they
+        // go the same way.
+        bool speculative = ChunkPeekScope.Active || _pregenerating;
         if (created)
         {
-            if (ChunkPeekScope.Active) _peekTiles[key] = 0;
+            if (speculative) _peekTiles[key] = 0;
         }
-        else if (!ChunkPeekScope.Active)
+        else if (!speculative)
         {
             _peekTiles.TryRemove(key, out _);
         }
@@ -501,6 +544,207 @@ public sealed class TerrainDiffusionProvider : IDisposable
                 _peekTiles.TryRemove(oldestKey, out _);
             }
         }
+    }
+
+    /// <summary>
+    /// Keeps this world's tiles in <paramref name="store"/> from now on: a tile missing from memory
+    /// is read from it before the model is asked, and every tile generated is written to it. Only
+    /// once the height mapping is settled, since a tile stores block heights. Tiles already in
+    /// memory are written too.
+    /// </summary>
+    public void AttachStore(TerrainTileStore store)
+    {
+        _store = store;
+        _pipeline.CoarseWindowStore = store.CoarseWindows(MainCoarseVariant);
+        lock (_seaGate)
+        {
+            if (_riverFreePipeline != null) _riverFreePipeline.CoarseWindowStore = store.CoarseWindows(RiverFreeCoarseVariant);
+        }
+
+        foreach (KeyValuePair<long, Lazy<TerrainTile>> entry in _tiles)
+        {
+            if (!entry.Value.IsValueCreated) continue;
+            TerrainTile tile = entry.Value.Value;
+            store.Save(FloorDiv(tile.BlockX, _tileSize), FloorDiv(tile.BlockZ, _tileSize), tile);
+        }
+    }
+
+    /// <summary>Keys the two coarse pipelines' windows apart in the tile database.</summary>
+    private const int MainCoarseVariant = 0, RiverFreeCoarseVariant = 1;
+
+    /// <summary>Coarse windows the coarse model was run for this session, in either coarse pipeline.</summary>
+    public long CoarseWindowsComputed
+    {
+        get
+        {
+            WorldPipeline riverFree = _riverFreePipeline;
+            return _pipeline.CoarseWindowsComputed + (riverFree?.CoarseWindowsComputed ?? 0);
+        }
+    }
+
+    /// <summary>Edge of one coarse cell in blocks: 512 at the default scale.</summary>
+    public int CoarseCellBlocks => Math.Max(1, _settings.Scale) * CoarseCellNativePixels;
+
+    /// <summary>
+    /// Makes sure the coarse windows over a position are stored: the main pipeline's, and with
+    /// Rivers the river-free one behind its coarse sea test. Behind every player's terrain in the
+    /// queue. Returns true if the coarse model ran.
+    /// </summary>
+    public bool PregenerateCoarse(int blockX, int blockZ)
+    {
+        long before = CoarseWindowsComputed;
+        _pregenerating = true;
+        try
+        {
+            _scheduler.Run(UrgencyOf(0, 0), () => CoarseElevationRoot(_pipeline, blockX, blockZ));
+            if (RiversCompat.Installed) IsCoarseSea(blockX, blockZ);
+        }
+        finally
+        {
+            _pregenerating = false;
+        }
+        return CoarseWindowsComputed != before;
+    }
+
+    /// <summary>
+    /// Empties the tile database and drops the tiles in memory, for when something they were built
+    /// from has changed without the database noticing. Returns how many stored tiles went.
+    /// </summary>
+    public long ClearStoredTiles()
+    {
+        _tiles.Clear();
+        _lastAccess.Clear();
+        _peekTiles.Clear();
+        return _store?.Clear(coarse: true) ?? 0;
+    }
+
+    /// <summary>The tile database this world keeps, or null.</summary>
+    public TerrainTileStore Store => _store;
+
+    /// <summary>Tiles read back from the tile database this session.</summary>
+    public long TilesLoaded => _store?.TilesLoaded ?? 0;
+
+    /// <summary>
+    /// Whether a tile can be had without running the model: it is in memory, or in the tile
+    /// database (written or queued). Never generates anything.
+    /// </summary>
+    public bool HasTile(int tileX, int tileZ)
+    {
+        long key = TileKey(tileX, tileZ);
+        if (_tiles.TryGetValue(key, out Lazy<TerrainTile> lazy) && lazy.IsValueCreated) return true;
+
+        TerrainTileStore store = _store;
+        if (store == null || _absent.ContainsKey(key)) return false;
+        long generated = Interlocked.Read(ref _generatedForStore);
+        if (store.Contains(tileX, tileZ)) return true;
+        MarkAbsent(key, generated);
+        return false;
+    }
+
+    /// <summary>
+    /// Whether every tile overlapping a block rectangle (maximum exclusive) can be had without
+    /// running the model.
+    /// </summary>
+    public bool HasTilesCovering(int minX, int minZ, int maxX, int maxZ)
+    {
+        for (int tileZ = FloorDiv(minZ, _tileSize); tileZ <= FloorDiv(maxZ - 1, _tileSize); tileZ++)
+        for (int tileX = FloorDiv(minX, _tileSize); tileX <= FloorDiv(maxX - 1, _tileSize); tileX++)
+        {
+            if (!HasTile(tileX, tileZ)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// The tile covering a position if it can be had without running the model - see
+    /// <see cref="HasTile"/> - or null. A tile read from the database is cached like a peeked one,
+    /// so a far-reaching caller does not push a player's terrain out of memory.
+    /// </summary>
+    public TerrainTile TryGetStoredTileAt(int blockX, int blockZ)
+    {
+        int tileX = FloorDiv(blockX, _tileSize);
+        int tileZ = FloorDiv(blockZ, _tileSize);
+        long key = TileKey(tileX, tileZ);
+
+        if (_tiles.TryGetValue(key, out Lazy<TerrainTile> lazy) && lazy.IsValueCreated)
+        {
+            _lastAccess[key] = Interlocked.Increment(ref _accessClock);
+            return lazy.Value;
+        }
+
+        TerrainTileStore store = _store;
+        if (store == null || _absent.ContainsKey(key)) return null;
+
+        long generated = Interlocked.Read(ref _generatedForStore);
+        TerrainTile stored = store.TryLoad(tileX, tileZ);
+        if (stored == null)
+        {
+            MarkAbsent(key, generated);
+            return null;
+        }
+
+        var loaded = new Lazy<TerrainTile>(() => stored, LazyThreadSafetyMode.ExecutionAndPublication);
+        _ = loaded.Value;
+        if (ReferenceEquals(_tiles.GetOrAdd(key, loaded), loaded))
+        {
+            _peekTiles[key] = 0;
+            TileGenerated?.Invoke(stored);
+        }
+
+        // Otherwise someone else's copy may still be on its way; the stored one is the same tile.
+        _lastAccess[key] = Interlocked.Increment(ref _accessClock);
+        EvictLeastRecentlyUsed(key);
+        return stored;
+    }
+
+    /// <summary>
+    /// Makes sure a tile is in the tile database, generating it if it is not. Behind every player's
+    /// terrain in the queue, and cached so that it is evicted first. Returns true if the model ran.
+    /// </summary>
+    public bool Pregenerate(int tileX, int tileZ)
+    {
+        if (HasTile(tileX, tileZ)) return false;
+
+        _pregenerating = true;
+        try
+        {
+            GetTile(tileX, tileZ);
+        }
+        finally
+        {
+            _pregenerating = false;
+        }
+        return true;
+    }
+
+    private static long TileKey(int tileX, int tileZ) => ((long)tileX << 32) ^ (uint)tileZ;
+
+    /// <summary>
+    /// Records a tile as not stored, unless a tile was generated since <paramref name="generatedBefore"/>
+    /// was read: that one may be this one, saved after the lookup missed it. Generation saves, counts,
+    /// then clears the mark, so either the count has moved or the mark is cleared after this.
+    /// </summary>
+    private void MarkAbsent(long key, long generatedBefore)
+    {
+        _absent[key] = 0;
+        if (Interlocked.Read(ref _generatedForStore) != generatedBefore) _absent.TryRemove(key, out _);
+    }
+
+    private TerrainTile LoadOrGenerateTile(int tileX, int tileZ)
+    {
+        TerrainTileStore store = _store;
+        TerrainTile stored = store?.TryLoad(tileX, tileZ);
+        if (stored != null)
+        {
+            TileGenerated?.Invoke(stored);
+            return stored;
+        }
+
+        TerrainTile tile = GenerateTile(tileX, tileZ);
+        store?.Save(tileX, tileZ, tile);
+        Interlocked.Increment(ref _generatedForStore);
+        _absent.TryRemove(TileKey(tileX, tileZ), out _);
+        return tile;
     }
 
     private TerrainTile GenerateTile(int tileX, int tileZ)
@@ -602,9 +846,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
 
         // A chunk peek generates terrain nowhere near the player and throws it away. Counting that
         // as thrashing would tell them to raise a cache size that is not the problem.
-        if (ChunkPeekScope.Active) return;
+        if (ChunkPeekScope.Active || _pregenerating) return;
 
-        long key = ((long)tileX << 32) ^ (uint)tileZ;
+        long key = TileKey(tileX, tileZ);
         int repeats = 0;
         lock (_recentlyGenerated)
         {
@@ -1344,7 +1588,10 @@ public sealed class TerrainDiffusionProvider : IDisposable
                                                        pooling: _settings.CoarsePooling,
                                                        baseRenoiseSigma: _settings.BaseRenoiseSigma,
                                                        coarseHeightNoise: _settings.CoarseHeightNoise,
-                                                       altitudeCooling: _settings.AltitudeCooling);
+                                                       altitudeCooling: _settings.AltitudeCooling)
+                {
+                    CoarseWindowStore = _store?.CoarseWindows(RiverFreeCoarseVariant)
+                };
             }
             return CoarseElevationRoot(_riverFreePipeline, blockX, blockZ) < 0.0;
         }
@@ -1381,14 +1628,23 @@ public sealed class TerrainDiffusionProvider : IDisposable
     /// smoothing against chunks that already exist is left out, since a prediction is of fresh
     /// terrain.
     ///
-    /// <paramref name="coarse"/> answers from the coarse model instead of the terrain tile: blurred
-    /// to one coarse cell, 512 blocks at the default scale, but it never runs the base model or the
-    /// decoder, which is what a tile costs for ground not yet generated.
+    /// <see cref="SurfaceSampleMode.Coarse"/> answers from the coarse model instead of the terrain
+    /// tile: blurred to one coarse cell, 512 blocks at the default scale, but it never runs the base
+    /// model or the decoder, which is what a tile costs for ground not yet generated.
+    /// <see cref="SurfaceSampleMode.Stored"/> answers from the tile where one is in memory or the
+    /// tile database, and from the coarse model where not, so it never generates a tile either.
     /// </summary>
-    public int SampleSurfaceY(int blockX, int blockZ, bool coarse)
+    public int SampleSurfaceY(int blockX, int blockZ, SurfaceSampleMode mode)
     {
+        TerrainTile tile = mode switch
+        {
+            SurfaceSampleMode.Full => GetTileAt(blockX, blockZ),
+            SurfaceSampleMode.Stored => TryGetStoredTileAt(blockX, blockZ),
+            _ => null
+        };
+
         int y;
-        if (coarse)
+        if (tile == null)
         {
             double root;
             _scheduler.Enter();
@@ -1404,7 +1660,6 @@ public sealed class TerrainDiffusionProvider : IDisposable
         }
         else
         {
-            TerrainTile tile = GetTileAt(blockX, blockZ);
             y = tile.SurfaceY[tile.Index(blockX - tile.BlockX, blockZ - tile.BlockZ)];
         }
 
@@ -1439,6 +1694,10 @@ public sealed class TerrainDiffusionProvider : IDisposable
     {
         _tiles.Clear();
         _scheduler.Dispose();
+
+        // After the scheduler, so nothing more is generated; this writes out what is still queued.
+        _store?.Dispose();
+        _store = null;
         lock (_seaGate)
         {
             _riverFreeCoarse?.Dispose();

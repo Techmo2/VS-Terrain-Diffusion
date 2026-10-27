@@ -59,6 +59,11 @@
       <HintPath>$(VintagestoryDir)/Lib/OpenTK.Mathematics.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- The game's own SQLite, for the optional per-world tile database; see TerrainTileStore. -->
+    <Reference Include="Microsoft.Data.Sqlite">
+      <HintPath>$(VintagestoryDir)/Lib/Microsoft.Data.Sqlite.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- Only used to hand the model's heights to another mod's terrain generator; see WatershedsCompat. -->
     <Reference Include="0Harmony">
       <HintPath>$(VintagestoryDir)/Lib/0Harmony.dll</HintPath>

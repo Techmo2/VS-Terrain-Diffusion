@@ -21,6 +21,16 @@ public static class DiffusionPaths
     /// <summary>Cache of runtime-optimised ONNX graphs.</summary>
     public static string OptimizedModelDirectory => Path.Combine(ModelDirectory, "onnx-cache");
 
+    /// <summary>Where worlds that keep their terrain tiles keep them, one database per world.</summary>
+    public static string TileDatabaseDirectory => Path.GetFullPath(Path.Combine(GamePaths.DataPath, "TerrainDiffusionTiles"));
+
+    /// <summary>The tile database of the world with this save game identifier.</summary>
+    public static string TileDatabaseFile(string savegameIdentifier)
+    {
+        string name = string.Join("_", savegameIdentifier.Split(Path.GetInvalidFileNameChars()));
+        return Path.Combine(TileDatabaseDirectory, name + ".db");
+    }
+
     public static string ConfigFile => Path.Combine(GamePaths.ModConfig, ModId + ".json");
 
     public static string ResolveAsset(string fileName) => Path.Combine(ModelDirectory, fileName);

@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
@@ -56,6 +58,20 @@ public sealed class InferenceSettings
     /// <summary>"fp32" or "fp16" for the base (latent) model, which is most of the work in a tile.</summary>
     public string BasePrecision { get; private init; } = "fp32";
 
+    /// <summary>Keep every generated terrain tile on disk; see <see cref="WorldGen.TerrainTileStore"/>.</summary>
+    public bool TileDatabase { get; private init; }
+
+    /// <summary>
+    /// The world config codes of the settings that only decide how terrain is computed, never what
+    /// it is - or, for the device and precisions, whose effect is recorded another way.
+    /// </summary>
+    public static IEnumerable<string> AllCodes => new[]
+    {
+        nameof(InferenceDevice), nameof(ModelLoadMode), nameof(OffloadModels), nameof(GpuUtilizationPercent),
+        nameof(ValidateModelHashes), nameof(DownloadRuntime), nameof(DecoderPrecision), nameof(BasePrecision),
+        nameof(TileDatabase)
+    }.Select(Code);
+
     private static InferenceSettings _current;
 
     /// <summary>The loaded world's settings, or the defaults when no world has been loaded (offline tools).</summary>
@@ -84,7 +100,8 @@ public sealed class InferenceSettings
             ValidateModelHashes = Read(world, nameof(ValidateModelHashes), "true").ToBool(defaults.ValidateModelHashes),
             DownloadRuntime = Read(world, nameof(DownloadRuntime), "true").ToBool(defaults.DownloadRuntime),
             DecoderPrecision = Normalize(Read(world, nameof(DecoderPrecision), defaults.DecoderPrecision)),
-            BasePrecision = Normalize(Read(world, nameof(BasePrecision), defaults.BasePrecision))
+            BasePrecision = Normalize(Read(world, nameof(BasePrecision), defaults.BasePrecision)),
+            TileDatabase = Read(world, nameof(TileDatabase), "false").ToBool(defaults.TileDatabase)
         };
 
         if (Array.IndexOf(AllModelLoadModes, settings.ModelLoadMode) < 0)
