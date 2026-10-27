@@ -31,6 +31,9 @@ namespace VSTerrainDiffusion.WorldGen;
 /// ground the player is standing on.</item>
 /// <item>Optionally, the search ring is narrowed - see <c>TranslocatorMaxRangeBlocks</c>. Off by
 /// default, because it changes which translocator ends up linked to which.</item>
+/// <item>Optionally, candidates whose terrain is not stored are passed over before the peek - see
+/// <c>TranslocatorStoredTerrainOnly</c> - so on a pregenerated world the search never runs the
+/// model.</item>
 /// </list>
 ///
 /// None of this touches terrain, so unlike <see cref="SurfaceClimateCompat"/> a patch that fails to
@@ -42,6 +45,10 @@ public static class TranslocatorSearchCompat
 
     private static Harmony _harmony;
     private static ICoreServerAPI _api;
+    private static TerrainDiffusionProvider _provider;
+
+    /// <summary>The translocator whose search tick is running on this thread, if any.</summary>
+    [ThreadStatic] private static BlockEntityStaticTranslocator _ticking;
 
     /// <summary>True while the patches are in place.</summary>
     public static bool Installed { get; private set; }
@@ -49,10 +56,12 @@ public static class TranslocatorSearchCompat
     private static long _peeks;
     private static long _rearms;
     private static long _regionMapsSkipped;
+    private static long _unstoredSkipped;
 
     /// <summary>What the translocator search has cost and what was saved, for <c>/tdiff status</c>.</summary>
     public static string Describe() => Installed
-        ? $"{_peeks} chunk peeks, {_regionMapsSkipped} region seasonality maps skipped, {_rearms} stalled searches restarted"
+        ? $"{_peeks} chunk peeks, {_unstoredSkipped} candidates without stored terrain passed over, " +
+          $"{_regionMapsSkipped} region seasonality maps skipped, {_rearms} stalled searches restarted"
         : "not installed";
 
     /// <summary>Counted by the map region handler when it declines to build a map for a peek.</summary>
@@ -75,11 +84,12 @@ public static class TranslocatorSearchCompat
 
     private static readonly ConditionalWeakTable<BlockEntityStaticTranslocator, SearchState> States = new();
 
-    public static void Install(ICoreServerAPI api)
+    public static void Install(ICoreServerAPI api, TerrainDiffusionProvider provider)
     {
         Uninstall();
 
         _api = api;
+        _provider = provider;
 
         MethodInfo tick = AccessTools.Method(typeof(BlockEntityStaticTranslocator), "OnServerGameTick");
         MethodInfo tested = AccessTools.Method(typeof(BlockEntityStaticTranslocator), "TestForExitPoint");
@@ -88,6 +98,17 @@ public static class TranslocatorSearchCompat
         Type supply = AccessTools.TypeByName("Vintagestory.Server.ServerSystemSupplyChunks");
         MethodInfo peekArea = supply == null ? null : AccessTools.Method(supply, "PeekChunkAreaLocking");
         MethodInfo pause = supply == null ? null : AccessTools.Method(supply, "PauseAllWorldgenThreads");
+
+        // Where the translocator's own call lands. The world API may forward to the server's, so a
+        // candidate can pass through both; the check is the same either way.
+        var peekColumn = new System.Collections.Generic.List<MethodInfo>();
+        foreach (string name in new[] { "Vintagestory.Server.WorldAPI", "Vintagestory.Server.ServerMain" })
+        {
+            Type type = AccessTools.TypeByName(name);
+            MethodInfo method = type == null ? null : AccessTools.Method(type, "PeekChunkColumn",
+                new[] { typeof(int), typeof(int), typeof(Vintagestory.API.Server.ChunkPeekOptions) });
+            if (method != null) peekColumn.Add(method);
+        }
 
         if (tick == null || tested == null || peekArea == null || pause == null)
         {
@@ -110,6 +131,8 @@ public static class TranslocatorSearchCompat
             _harmony.Patch(peekArea,
                 prefix: Method(nameof(BeforePeekArea)),
                 finalizer: Method(nameof(AfterPeekArea)));
+            foreach (MethodInfo method in peekColumn)
+                _harmony.Patch(method, prefix: Method(nameof(BeforePeekChunkColumn)));
         }
         catch (Exception e)
         {
@@ -134,10 +157,18 @@ public static class TranslocatorSearchCompat
             return;
         }
 
+        if (peekColumn.Count == 0)
+        {
+            api.Logger.Warning(
+                "[{0}] The chunk peek a translocator search starts was not found, so " +
+                "TranslocatorStoredTerrainOnly cannot hold the search to stored terrain.", DiffusionPaths.ModId);
+        }
+
         Installed = true;
         api.Logger.Notification(
-            "[{0}] Translocator search: stall watchdog armed, peeked terrain evicted first.",
-            DiffusionPaths.ModId);
+            "[{0}] Translocator search: stall watchdog armed, peeked terrain evicted first{1}.",
+            DiffusionPaths.ModId,
+            DiffusionConfig.Instance.WorldGen.TranslocatorStoredTerrainOnly ? ", stored terrain only" : "");
     }
 
     private static HarmonyMethod Method(string name) =>
@@ -158,6 +189,7 @@ public static class TranslocatorSearchCompat
 
         _harmony = null;
         _api = null;
+        _provider = null;
         Installed = false;
     }
 
@@ -165,6 +197,8 @@ public static class TranslocatorSearchCompat
 
     private static void BeforeTranslocatorTick(BlockEntityStaticTranslocator __instance)
     {
+        _ticking = __instance;
+
         // Narrowing the ring keeps candidates inside terrain that is likely already generated and
         // still cached, which is what actually costs time here - not the number of attempts.
         int cap = DiffusionConfig.Instance.WorldGen.TranslocatorMaxRangeBlocks;
@@ -179,7 +213,10 @@ public static class TranslocatorSearchCompat
     /// A finalizer rather than a postfix, so a throw inside the tick still runs the watchdog.
     /// </summary>
     private static void AfterTranslocatorTick(BlockEntityStaticTranslocator __instance)
-        => RunStallWatchdog(__instance);
+    {
+        _ticking = null;
+        RunStallWatchdog(__instance);
+    }
 
     /// <summary>
     /// Notes that a peek found a ruin, so the watchdog leaves this translocator alone while the
@@ -299,6 +336,33 @@ public static class TranslocatorSearchCompat
 
     /// <summary>The deadline the server uses before a chunk peek, and nothing else.</summary>
     private const int PeekPauseTimeoutMs = 3600;
+
+    /// <summary>
+    /// Passes over a search candidate whose terrain is not all stored, when
+    /// <c>TranslocatorStoredTerrainOnly</c> asks for that. Only for the peek a translocator's own
+    /// tick starts. The tick has already cleared <c>findNextChunk</c>, so it is put back: the next
+    /// tick, 250 ms on, draws another candidate, and nothing was generated for this one.
+    ///
+    /// Stored means everything finishing the candidate's column reads (<see cref="TerrainFootprint"/>),
+    /// not just what the peek reads: a peek that finds a ruin has its column generated for real.
+    /// </summary>
+    private static bool BeforePeekChunkColumn(int chunkX, int chunkZ)
+    {
+        BlockEntityStaticTranslocator translocator = _ticking;
+        TerrainDiffusionProvider provider = _provider;
+        if (translocator == null || provider == null || _api == null ||
+            !DiffusionConfig.Instance.WorldGen.TranslocatorStoredTerrainOnly) return true;
+
+        // Wider than the peek's own footprint, which it contains.
+        const int reach = TerrainFootprint.NeighbourReachBlocks;
+        TerrainFootprint.Regions(chunkX * 32 - reach, chunkZ * 32 - reach, (chunkX + 1) * 32 + reach,
+            (chunkZ + 1) * 32 + reach, _api.WorldManager.RegionSize, out int minX, out int minZ, out int maxX, out int maxZ);
+        if (provider.HasTilesCovering(minX, minZ, maxX, maxZ)) return true;
+
+        translocator.findNextChunk = true;
+        Interlocked.Increment(ref _unstoredSkipped);
+        return false;
+    }
 
     private static void BeforePeekArea(Vec2i coords)
     {

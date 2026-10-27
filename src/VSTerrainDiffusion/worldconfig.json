@@ -390,6 +390,13 @@
       "dataType": "bool",
       "default": "true",
       "onlyDuringWorldCreate": false
+    },
+    {
+      "category": "terraindiffusion",
+      "code": "terraindiffusionTileDatabase",
+      "dataType": "bool",
+      "default": "false",
+      "onlyDuringWorldCreate": false
     }
   ]
 }

@@ -281,9 +281,15 @@ public static class RiversCompat
     /// when it cannot say. It is the same <c>SampleRiver</c> call <see cref="SamplesForChunk"/> makes
     /// for every column of a chunk, minus the flow data that call writes into the chunk.
     /// </summary>
-    public static Sample? SampleAt(int worldX, int worldZ)
+    public static Sample? SampleAt(int worldX, int worldZ) => SampleAt(ChunkContext(worldX >> 5, worldZ >> 5), worldX, worldZ);
+
+    /// <summary>
+    /// <see cref="SampleAt(int, int)"/> with the column's chunk context already resolved, for a
+    /// walk over many columns that can resolve each chunk once (<see cref="ChunkContext"/>).
+    /// </summary>
+    public static Sample? SampleAt(object context, int worldX, int worldZ)
     {
-        if (ChunkContext(worldX >> 5, worldZ >> 5) is not object[] { Length: 2 } parts) return null;
+        if (context is not object[] { Length: 2 } parts) return null;
 
         try
         {
@@ -499,6 +505,13 @@ public static class RiversCompat
 
     private static object LoadedConfig() =>
         AccessTools.Property(AccessTools.TypeByName("Rivers.RiverConfig"), "Loaded")?.GetValue(null);
+
+    /// <summary>Rivers' config as it is running, as JSON, or null without Rivers.</summary>
+    public static string ConfigJson()
+    {
+        object config = LoadedConfig();
+        return config == null ? null : Newtonsoft.Json.JsonConvert.SerializeObject(config);
+    }
 
     private static int ReadInt(string field) => Read<int>(LoadedConfig(), field);
 

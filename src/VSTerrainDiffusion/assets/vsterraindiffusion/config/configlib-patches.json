@@ -14,7 +14,8 @@
       "comment": "setting-TerrainSamplerHeight-hover",
       "values": [
         "full",
-        "coarse"
+        "coarse",
+        "stored"
       ]
     },
     {
@@ -498,6 +499,13 @@
         "min": 0,
         "max": 8000
       }
+    },
+    {
+      "code": "WorldGen/TranslocatorStoredTerrainOnly",
+      "type": "boolean",
+      "default": false,
+      "ingui": "setting-WorldGenTranslocatorStoredTerrainOnly",
+      "comment": "setting-WorldGenTranslocatorStoredTerrainOnly-hover"
     },
     {
       "code": "WorldGen/SeasonHemispheres",

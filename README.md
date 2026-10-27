@@ -44,7 +44,7 @@ and `/worldconfig <code> <value>` changes one later.
 | Setting                  | Code                                   | Default | What it does |
 | ------------------------ | -------------------------------------- | ------- | ------------ |
 | Terrain Diffusion        | `terraindiffusionEnabled`              | on      | Turn off to fall back to vanilla terrain, keeping the mod installed. |
-| Resolution               | `terraindiffusionScale`                | 15 m    | Real-world metres per block, horizontally *and* vertically. |
+| Resolution               | `terraindiffusionScale`                | 15 m    | Real-world metres per block, horizontally *and* vertically. In `serverconfig.json`: `1` = 30 m, `2` = 15 m, `3` = 10 m, `4` = 7.5 m, `5` = 6 m, `6` = 5 m. |
 | Vertical exaggeration    | `terraindiffusionVerticalExaggeration` | 1x      | Multiplies terrain height. 1x is true scale. |
 | Sea level                | `terraindiffusionSeaLevel`             | vanilla | `128` fixes the sea at Y 128, so every block a taller world adds goes above it. |
 | Climate                  | `terraindiffusionClimate`              | model   | Whether the model drives climate as well as terrain. |
@@ -52,7 +52,7 @@ and `/worldconfig <code> <value>` changes one later.
 | Intensity mode           | `terraindiffusionCoarsePoolMode`       | average | `extreme` keeps each block's highest ground and deepest valley floor: taller peaks, deeper cuts, less realistic. |
 | Detail redraw            | `terraindiffusionDetailRedraw`         | 35      | Hundredths. How much of the detail model's first draw is redrawn. 70–100 varies coast shapes and small valleys by 10–17 m on average. |
 | Height noise             | `terraindiffusionHeightNoise`          | 0       | Random height per large-scale cell (~8 km) before detail is drawn, in hundredths of a sqrt-metre: 200 ≈ ±100 m at 600 m. None at the coast. |
-| Altitude cooling         | `terraindiffusionAltitudeCooling`      | 100%    | Multiplies the model's lapse rate: above 100% mountains are colder, with lower treelines and snowlines. Sea level is unchanged. |
+| Altitude cooling         | `terraindiffusionAltitudeCooling`      | 100%    | Every 100% above 100% takes another 6.5 °C off per km of height, on the ground and in the air, on top of the model's own rate: lower treelines and snowlines. Sea level is unchanged. |
 | Forest density           | `terraindiffusionForestDensity`        | 100%    | Scales the forest cover the climate implies. Trees on the ground go as its square — see below. |
 | Shrub density            | `terraindiffusionShrubDensity`         | 100%    | Scales shrub cover the same way. |
 | River valley depth       | `terraindiffusionRiverValleyDepth`     | 30%     | With the Rivers mod, how far the land is lowered along rivers so the model draws valleys for them. 100% drowns a fifth of each corridor into inlets. |
@@ -229,9 +229,17 @@ against 75% from the map). Rivers caches each world's zones under `RiverCache/`,
 the coast its rivers were first routed from.
 
 **Algernon's Terrain Sampler** answers other mods' height questions from the model instead of its
-own copy of vanilla's terrain: exactly what gets generated in `full` mode, or a blurred coarse-model
-answer in `coarse` mode (`terrainSamplerHeight`). Its climate and vegetation already come from this
-mod's map layers.
+own copy of vanilla's terrain (`TerrainSamplerHeight`):
+
+| Mode     | Answer | Runs the model |
+|----------|--------|----------------|
+| `full`   | Exactly what gets generated | For any tile not generated yet (~3 s each on an RTX 3060) |
+| `coarse` | Blurred to about 512 blocks | Coarse model only, under 1 ms |
+| `stored` | Exact where the tile is in the [tile database](#tile-database), coarse elsewhere | Never generates a tile; the coarse model only for coarse windows not stored |
+
+Its climate and vegetation already come from this mod's map layers. The sampler is server-side only:
+a client mod that draws distant terrain only from chunks it has received (Distant Vistas) never asks
+it.
 
 A mod that *replaces terrain generation itself* cannot layer with this one: two generators filling
 the same column give the union of both landscapes. So whoever generates terrain gets handed the
@@ -356,6 +364,10 @@ sent to clients. A vanilla client falls back to vanilla's seasons for display.
 | `here`               | Elevation, slope, full bioclimate and derived cover where you stand, plus the latitude diagnostics below. |
 | `season <x> <z>`     | The same diagnostics at a position, and the year's temperature and rainfall cycle there. Usable from a server console, where `here` is not. |
 | `column <x> <z>`     | What actually got generated in a column, next to what the model said.   |
+| `tiles [clear]`      | The [tile database](#tile-database): its file, tiles stored, size, and this session's reads and writes. `clear` empties it. |
+| `pregen <radius> [x z]` | Fills the tile database for every chunk within `radius` blocks of `x z` (absolute block coordinates; spawn by default). See [Pregenerating](#pregenerating-for-a-server). |
+| `pregen stop`        | Stops the running pregeneration after its current tile. |
+| `pregen`             | Progress of the running pregeneration. |
 
 `here` and `season` share four climate diagnostics:
 
@@ -378,7 +390,7 @@ default file with a comment on every field; the tables below are the short versi
 Optional: [ConfigLib](https://mods.vintagestory.at/configlib) gives the same settings an in-game
 screen, editing this file in place rather than keeping a copy.
 
-`verboseInference` takes effect on save; everything else is read when the world generator starts,
+`verboseInference`, `TerrainSamplerHeight` and `TranslocatorStoredTerrainOnly` take effect on save; everything else is read when the world generator starts,
 so it needs a restart. **Useful range** below is where a setting does
 something sensible, not where it is legal — CONFIG.md lists the hard limits.
 
@@ -400,6 +412,7 @@ the world closes, so the next world can use a different device without restartin
 | `terraindiffusionOffloadModels`          | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
 | `terraindiffusionModelLoadMode`          | `file`  | `file` `memory` | Open model graphs from their files, or read them into RAM first (about 1 GB more). |
 | `terraindiffusionValidateModelHashes`    | true    | on / off     | Verify SHA-256 of existing model files on load. Off saves a few seconds of disk read. |
+| `terraindiffusionTileDatabase`           | false   | on / off     | Keep every generated terrain tile on disk; see [Tile database](#tile-database). |
 | `terraindiffusionDownloadRuntime`        | true    | on / off     | Fetch the ONNX Runtime and, when selected, OpenVINO native libraries automatically. On 64-bit Windows this includes the Visual C++ runtime (6.8 MB, from Microsoft) when the machine's own is missing or older than 14.39. |
 
 Machine settings, in the mod config:
@@ -409,10 +422,10 @@ Machine settings, in the mod config:
 | `tileCacheMegabytes`         | 256     | 128 – 1024   | Total decoded tensor-window cache across all pipeline stages. |
 | `latentBatchSize`            | 0       | 0 – 4        | Latent windows per base-model call. Zero chooses 1 on CPU and 4 on GPU. |
 | `terrainTileCacheMegabytes`  | 256     | 128 – 1024   | Finished terrain tiles. Raise if you see thrash warnings. |
-| `terrainTileSizeBlocks`      | 0       | 0, 128 – 512 | Blocks generated per model invocation, a multiple of 32. Zero chooses 128 on CPU and 256 on GPU; larger values amortise the model better but make first-visit stalls longer. |
+| `terrainTileSizeBlocks`      | 0       | 0, 128 – 512 | Blocks generated per model invocation, a multiple of 32. Zero chooses 128 on CPU and 256 on GPU; larger values amortise the model better but make first-visit stalls longer. A world with a tile database keeps the size it holds. |
 | `debugMapPort`               | 0 (off) | 8088         | Serves the [debug map](#debug-map) on this port. 0 opens no port. |
 | `debugMapBindAddress`        | `127.0.0.1` | loopback | Where the debug map listens. `0.0.0.0` publishes your world's terrain to the network. |
-| `debugMapHistoryTiles`       | 2048    | 512 – 8192   | Tiles the debug map remembers, about 8 KB each. |
+| `debugMapHistoryTiles`       | 2048    | 512 – 8192   | Tiles the debug map remembers, about 28 KB each. |
 | `verboseInference`           | false   | on / off     | Log every terrain tile at notification level. Noisy; for diagnosing slowness. Off, those lines still go to the debug log and only a tile that stalls — a second or more, and four times the session average — reaches the main one. |
 
 #### Stuttering
@@ -431,18 +444,75 @@ Start at 50 and go down only as far as the stutter needs; too low and generation
 a walking player. `/tdiff gpulimit <percent>` changes it without a restart and saves it to the
 world. On a dedicated server set it to 100 unless you want the card for something else.
 
+#### Tile database
+
+With `terraindiffusionTileDatabase` on, every terrain tile the model finishes is written to
+`TerrainDiffusionTiles/<world id>.db` in the data folder. A tile missing from memory is read from
+there before the model is asked. That covers chunks, other mods' height queries (Algernon's Terrain
+Sampler, Watersheds), the translocator search and the debug map. The coarse model's windows are
+kept too (32 km across at the default scale, ~80 KB each), so the coarse answers behind the
+`stored` sampler mode and Rivers' coast test are only computed once per world.
+Everything read back is identical to what was generated. No size limit.
+
+| | 256-block tile (GPU) |
+|---|---|
+| On disk | ~510 KB (of 1.75 MB raw) |
+| Read | 5–10 ms |
+| Generate | 150 ms – 3 s |
+
+Writes happen in the background. The database is emptied when the world is loaded under something
+that changes what a tile contains:
+- a mod update that changes generated terrain (its terrain version), or new models;
+- the seed or this mod's terrain settings, including the vanilla climate, landcover and ocean scale
+  settings;
+- the `worldGen` mod config;
+- Rivers' version or config;
+- the ocean map, sampled near the world's centre.
+
+The log names which changed. Other mods, gameplay settings, other mod updates and the speed-only
+settings (device, precisions, GPU limit, offloading, load mode) keep the tiles. A world keeps the
+tile size its database holds, whatever `terrainTileSizeBlocks` says. A different device or precision
+generates new ground a few metres differently, which can leave a faint seam where it meets stored
+ground. After changing another mod's config that reshapes the ocean map far from the centre, run
+`/tdiff tiles clear`. Deleting a world leaves its database behind.
+
+#### Pregenerating for a server
+
+A server without a fast GPU can serve terrain generated elsewhere:
+
+1. Create the world on a GPU machine with `terraindiffusionTileDatabase` on.
+2. Run `/tdiff pregen <radius>`. It stores everything finishing a chunk within the radius reads,
+   neighbouring chunks and their 512-block map regions included, so the stored area reaches up to
+   ~800 blocks further. Players' terrain goes first; progress is reported every 10 s; a restart
+   resumes it. A 3000-block radius is 688 tiles of 256 blocks, about 70 s with TensorRT RTX on an
+   RTX 3060 Laptop GPU (~350 MB on disk). Coarse windows follow, out to four times the radius and
+   at least 16 km past it: for a 1000-block radius, 12 windows plus 12 for Rivers took 49 s.
+3. Copy the save and `TerrainDiffusionTiles/<world id>.db` to the server's data folder, and use the
+   same `worldGen` mod config there.
+4. On the server set `TerrainSamplerHeight` to `stored`, and `TranslocatorStoredTerrainOnly` to true
+   in `worldGen`.
+
+Chunks inside the pregenerated area then never run the model, nor do translocator searches
+anywhere, nor Terrain Sampler queries within the coarse radius. Ground outside it is still generated
+by the server when a player walks there.
+
 #### Debug map
 
 Set `debugMapPort` and the mod serves a read-only page of what the model is producing, updating as
 tiles are generated. `/tdiff map` prints the address; the default binding is loopback.
 
-Eight layers: surface height, model elevation, slope, mean temperature, temperature seasonality,
-annual precipitation, precipitation seasonality, and the 0–255 rainfall byte the game reads. Drag to
-pan, wheel to zoom, hover a column for all eight.
+| Category | Layers |
+|---|---|
+| Coarse model input | elevation, temperature, temperature seasonality, precipitation, precipitation seasonality asked for; river basin conditioning |
+| Coarse model output | elevation, mean temperature, temperature seasonality, annual precipitation, precipitation seasonality |
+| Full resolution | model elevation, slope, mean temperature, temperature seasonality, annual precipitation, precipitation seasonality, rainfall byte, forest and shrub cover from the model, forest and shrub maps as the game reads them |
+| Vanilla channels | surface height as built (Rivers' valleys and channels included), ocean map, vanilla forest map, vanilla shrub map |
+
+Drag to pan, wheel to zoom, hover a column for every layer.
 
 It keeps its own record, because the generator's tile cache drops a tile as soon as it has moved on.
 Each is a 32×32 thumbnail, a byte per column per layer, so the default 2048-tile history costs about
-17 MB. Point it at `0.0.0.0` only to publish your world's terrain to the network; the server logs a
+60 MB. Point it at `0.0.0.0` only to publish your world's terrain to the network; the server logs a
 warning if you do.
 
 ### World generation

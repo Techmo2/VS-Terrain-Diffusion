@@ -60,7 +60,9 @@ public class DiffusionConfig
     /// How this mod answers Algernon's Terrain Sampler, which other mods use to predict terrain
     /// without generating it. "full" builds the model's terrain tile around the position: exact, but
     /// a model run for any ground not generated yet. "coarse" answers from the coarse model alone,
-    /// blurred to about 512 blocks but far cheaper. Takes effect immediately.
+    /// blurred to about 512 blocks but far cheaper. "stored" is exact where the tile is already in
+    /// memory or the tile database and coarse elsewhere, so it never generates a tile: for a server
+    /// whose terrain was pregenerated. Takes effect immediately.
     /// </summary>
     public string TerrainSamplerHeight { get; set; } = "full";
 
@@ -125,7 +127,7 @@ public class DiffusionConfig
         }
 
         TerrainSamplerHeight = (TerrainSamplerHeight ?? "full").Trim().ToLowerInvariant();
-        if (TerrainSamplerHeight != "coarse") TerrainSamplerHeight = "full";
+        if (TerrainSamplerHeight is not ("coarse" or "stored")) TerrainSamplerHeight = "full";
     }
 }
 
@@ -344,6 +346,15 @@ public class WorldGenConfig
     /// translocator links to which, which is why it is off by default. Links already made are kept.
     /// </summary>
     public int TranslocatorMaxRangeBlocks { get; set; }
+
+    /// <summary>
+    /// Only consider translocator search candidates whose terrain is already in memory or the tile
+    /// database, so the search never runs the model. Each other candidate is passed over at no cost
+    /// and another drawn on the next tick. For a server with pregenerated terrain: a translocator
+    /// only links to a ruin inside the stored area, and with none stored in its 400 to 8000 block
+    /// ring it searches forever. Off by default.
+    /// </summary>
+    public bool TranslocatorStoredTerrainOnly { get; set; }
 
     /// <summary>
     /// Swing the year the opposite way south of the equator.

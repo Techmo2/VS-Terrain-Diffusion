@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using VSTerrainDiffusion.Core;
 using VSTerrainDiffusion.Native;
 using VSTerrainDiffusion.Tensors;
@@ -59,7 +60,7 @@ public sealed class WorldPipeline
     /// <summary>Noise added to the coarse elevation; see <see cref="DiffusionWorldSettings.CoarseHeightNoise"/>.</summary>
     private readonly float _coarseHeightNoise;
 
-    /// <summary>Multiplies the fitted lapse rate; see <see cref="DiffusionWorldSettings.AltitudeCooling"/>.</summary>
+    /// <summary>Extra cooling with height, in reference lapse rates; see <see cref="DiffusionWorldSettings.AltitudeCooling"/>.</summary>
     private readonly float _altitudeCooling;
 
     /// <summary>Square-root metres of elevation over which <see cref="_coarseHeightNoise"/> fades in from sea level.</summary>
@@ -230,6 +231,18 @@ public sealed class WorldPipeline
     // Coarse stage
     // =====================================================================
 
+    /// <summary>
+    /// Where finished coarse windows are kept between sessions, or null. Checked before the coarse
+    /// model runs for a window, and handed every window it does run for. A window is a pure
+    /// function of the world's seed and settings, which the store's own fingerprint covers.
+    /// </summary>
+    public ICoarseWindowStore CoarseWindowStore { get; set; }
+
+    private long _coarseWindowsComputed;
+
+    /// <summary>Coarse windows this pipeline ran the coarse model for, rather than read back.</summary>
+    public long CoarseWindowsComputed => Interlocked.Read(ref _coarseWindowsComputed);
+
     private InfiniteTensor BuildCoarseStage()
     {
         // Pooled tiles are generated on the usual grid and written to a map n times smaller, so
@@ -240,8 +253,21 @@ public sealed class WorldPipeline
         var outWindow = new TensorWindow(new[] { 7, s, s }, new[] { 7, st, st });
 
         return _tileStore.GetOrCreate("base_coarse_map", new int?[] { 7, null, null },
-            (windowIndex, _) => CoarseTile(windowIndex, weights), outWindow,
+            (windowIndex, _) => StoredCoarseTile(windowIndex, weights, s), outWindow,
             Array.Empty<InfiniteTensor>(), Array.Empty<TensorWindow>());
+    }
+
+    private FloatTensor StoredCoarseTile(int[] windowIndex, float[] weights, int size)
+    {
+        ICoarseWindowStore store = CoarseWindowStore;
+        int length = 7 * size * size;
+        float[] stored = store?.TryLoad(windowIndex[1], windowIndex[2], length);
+        if (stored != null) return new FloatTensor(new[] { 7, size, size }, stored);
+
+        FloatTensor computed = CoarseTile(windowIndex, weights);
+        Interlocked.Increment(ref _coarseWindowsComputed);
+        store?.Save(windowIndex[1], windowIndex[2], computed.Data);
+        return computed;
     }
 
     private FloatTensor CoarseTile(int[] windowIndex, float[] weights)
@@ -811,7 +837,12 @@ public sealed class WorldPipeline
                 int idx = r * w + c;
 
                 float tBase = BilinearSample2D(lapse[0], lh, lw, gridY, gridX);
-                float beta = BilinearSample2D(lapse[1], lh, lw, gridY, gridX) * _altitudeCooling;
+                // Altitude cooling adds to the model's own fitted rate rather than scaling it: that
+                // rate is often shallow, a few degrees a kilometre, and tripling it barely showed,
+                // while the air above the ground cooled at the game-side reference rate times the
+                // setting. Extra cooling at the reference rate keeps the two the same.
+                float beta = BilinearSample2D(lapse[1], lh, lw, gridY, gridX)
+                             - (_altitudeCooling - 1f) * ClimateScale.ReferenceLapseCPerKm / 1000f;
 
                 climate[idx] = tBase + beta * Math.Max(0f, elevation[idx]);
                 climate[plane + idx] = BilinearSample2D(centralCoarse[3], cenH, cenW, gridY, gridX);

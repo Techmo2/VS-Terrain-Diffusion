@@ -146,6 +146,15 @@ public sealed class InfiniteTensor
         _store.CacheWindow(_id, windowIndex, result);
     }
 
+    /// <summary>
+    /// Computes windows <see cref="_batchSize"/> at a time, always a full batch: a short one is
+    /// padded with copies of its last window and their results dropped. Which windows share a batch
+    /// depends on the order they were asked for, and a batch of another size runs other kernels with
+    /// other rounding - enough to move terrain by a block - so without this the same seed and settings
+    /// generated slightly different ground depending on where the player went first, and
+    /// <c>/wgen regen</c> could not reproduce what was there. Within a full batch each window's result
+    /// does not depend on its neighbours in it.
+    /// </summary>
     private void ComputeBatched(List<int[]> windowIndices)
     {
         int from = 0;
@@ -153,6 +162,8 @@ public sealed class InfiniteTensor
         {
             int to = Math.Min(from + _batchSize, windowIndices.Count);
             var batch = windowIndices.GetRange(from, to - from);
+            int real = batch.Count;
+            while (batch.Count < _batchSize) batch.Add(batch[real - 1]);
 
             var args = new List<IReadOnlyList<FloatTensor>>(_deps.Length);
             for (int i = 0; i < _deps.Length; i++)
@@ -163,7 +174,7 @@ public sealed class InfiniteTensor
             }
 
             IReadOnlyList<FloatTensor> outputs = _batchFunction(batch, args);
-            for (int k = 0; k < batch.Count; k++)
+            for (int k = 0; k < real; k++)
             {
                 FloatTensor result = outputs[k];
                 ValidateOutputShape(result, batch[k]);

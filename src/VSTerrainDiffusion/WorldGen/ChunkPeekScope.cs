@@ -52,15 +52,25 @@ public static class ChunkPeekScope
     {
         if (Depth.Value == 0)
         {
-            int reach = 1 + MarginChunks;
-            Window.Value = new Bounds(
-                (centreChunkX - reach) * ChunkSize,
-                (centreChunkZ - reach) * ChunkSize,
-                (centreChunkX + reach + 1) * ChunkSize,
-                (centreChunkZ + reach + 1) * ChunkSize);
+            Footprint(centreChunkX, centreChunkZ, out int minX, out int minZ, out int maxX, out int maxZ);
+            Window.Value = new Bounds(minX, minZ, maxX, maxZ);
         }
 
         Depth.Value++;
+    }
+
+    /// <summary>
+    /// The blocks a peek centred on a chunk column reads terrain from, maximum exclusive: its 3x3
+    /// and the margin. Everything the peek asks the model for lies inside.
+    /// </summary>
+    public static void Footprint(int centreChunkX, int centreChunkZ,
+                                 out int minX, out int minZ, out int maxX, out int maxZ)
+    {
+        int reach = 1 + MarginChunks;
+        minX = (centreChunkX - reach) * ChunkSize;
+        minZ = (centreChunkZ - reach) * ChunkSize;
+        maxX = (centreChunkX + reach + 1) * ChunkSize;
+        maxZ = (centreChunkZ + reach + 1) * ChunkSize;
     }
 
     public static void Exit()

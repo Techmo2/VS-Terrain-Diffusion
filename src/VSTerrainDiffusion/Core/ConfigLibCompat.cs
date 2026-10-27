@@ -85,9 +85,19 @@ public static class ConfigLibCompat
             case nameof(DiffusionConfig.TerrainSamplerHeight):
             {
                 string mode = (tree.GetAsString("value") ?? "full").Trim().ToLowerInvariant();
-                DiffusionConfig.Instance.TerrainSamplerHeight = mode == "coarse" ? "coarse" : "full";
+                DiffusionConfig.Instance.TerrainSamplerHeight = mode is "coarse" or "stored" ? mode : "full";
                 logger?.Notification("[{0}] Algernon's Terrain Sampler now gets {1} heights.",
                     DiffusionPaths.ModId, DiffusionConfig.Instance.TerrainSamplerHeight);
+                return;
+            }
+
+            case "WorldGen/" + nameof(WorldGenConfig.TranslocatorStoredTerrainOnly):
+            {
+                // Read per candidate, and it never changes what a chunk contains.
+                bool storedOnly = tree.GetAsBool("value", DiffusionConfig.Instance.WorldGen.TranslocatorStoredTerrainOnly);
+                DiffusionConfig.Instance.WorldGen.TranslocatorStoredTerrainOnly = storedOnly;
+                logger?.Notification("[{0}] Translocator searches {1}.", DiffusionPaths.ModId,
+                    storedOnly ? "now only inspect stored terrain" : "inspect any terrain again");
                 return;
             }
 

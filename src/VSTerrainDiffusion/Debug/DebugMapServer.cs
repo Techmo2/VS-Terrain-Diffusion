@@ -38,10 +38,24 @@ public sealed class DebugMapServer : IDisposable
     private readonly TerrainDiffusionProvider _provider;
     private readonly DiffusionWorldSettings _settings;
     private readonly Layer[] _layers;
+
+    /// <summary>Each layer's slot in <see cref="_layers"/> and the wire format, by id.</summary>
+    private readonly Dictionary<string, int> _slot;
+
+    /// <summary>The coarse probe's twelve readings, in the order <see cref="Downsample"/> fills them.</summary>
+    private static readonly string[] CoarseLayerIds =
+    {
+        "inElevation", "inTemperature", "inTempSeasonality", "inPrecipitation", "inPrecipCv",
+        "inSeaFraction", "riverBasin",
+        "coarseElevation", "coarseTemperature", "coarseTempSeasonality", "coarsePrecipitation", "coarsePrecipCv"
+    };
     private readonly int _historyLimit;
 
     private readonly ConcurrentDictionary<long, RecordedTile> _tiles = new();
     private long _sequence;
+
+    /// <summary>Whether the built-surface layer has already reported falling back to the model's height.</summary>
+    private bool _builtSurfaceWarned;
 
     private HttpListener _listener;
     private Thread _thread;
@@ -92,10 +106,12 @@ public sealed class DebugMapServer : IDisposable
 
         // Three groups, because the question worth asking of this map is whether the model did what
         // it was told: what the coarse stage was handed, what it answered, and what came out the far
-        // end once the base and decoder had filled in everything below half a kilometre.
+        // end once the base and decoder had filled in everything below half a kilometre. A fourth
+        // holds what the game itself reads: its own noise maps, and the ground as built.
         const string Input = "Coarse model input";
         const string Coarse = "Coarse model output";
         const string Final = "Full resolution";
+        const string Vanilla = "Vanilla channels";
 
         _layers = new[]
         {
@@ -104,7 +120,6 @@ public sealed class DebugMapServer : IDisposable
             new Layer("inTempSeasonality", "Temperature seasonality asked for", "BIO4", Input),
             new Layer("inPrecipitation", "Precipitation asked for", "mm", Input),
             new Layer("inPrecipCv", "Precipitation seasonality asked for", "% CV", Input),
-            new Layer("inSeaFraction", "Ocean map (the world's own)", "0-1", Input),
             new Layer("riverBasin", "River basin conditioning", "0-1", Input),
 
             new Layer("coarseElevation", "Elevation", "m", Coarse),
@@ -113,7 +128,6 @@ public sealed class DebugMapServer : IDisposable
             new Layer("coarsePrecipitation", "Annual precipitation", "mm", Coarse),
             new Layer("coarsePrecipCv", "Precipitation seasonality", "% CV", Coarse),
 
-            new Layer("surfaceY", "Surface height", "blocks", Final),
             new Layer("elevation", "Model elevation", "m", Final),
             new Layer("slope", "Slope", "rise/run", Final),
             new Layer("temperature", "Mean temperature", "°C", Final),
@@ -121,9 +135,21 @@ public sealed class DebugMapServer : IDisposable
             new Layer("precipitation", "Annual precipitation", "mm", Final),
             new Layer("precipCv", "Precipitation seasonality", "% CV", Final),
             new Layer("rainfall", "Rainfall byte (as the game reads it)", "0-255", Final),
+            new Layer("forestModel", "Forest cover from the model", "0-255", Final),
             new Layer("forest", "Forest map (as the game reads it)", "0-255", Final),
-            new Layer("shrub", "Shrub map (as the game reads it)", "0-255", Final)
+            new Layer("shrubModel", "Shrub cover from the model", "0-255", Final),
+            new Layer("shrub", "Shrub map (as the game reads it)", "0-255", Final),
+
+            // The ocean map is what the coarse stage is conditioned on, read per coarse cell; the
+            // forest and shrub maps are where the model's cover is cleared, read per map pixel.
+            new Layer("surfaceY", "Surface height (as built, with river valleys)", "blocks", Vanilla),
+            new Layer("inSeaFraction", "Ocean map (sea share per coarse cell)", "0-1", Vanilla),
+            new Layer("vanillaForest", "Forest map", "0-255", Vanilla),
+            new Layer("vanillaShrub", "Shrub map", "0-255", Vanilla)
         };
+
+        _slot = new Dictionary<string, int>(_layers.Length);
+        for (int i = 0; i < _layers.Length; i++) _slot[_layers[i].Id] = i;
     }
 
     public bool Start(string bindAddress, int port)
@@ -213,6 +239,38 @@ public sealed class DebugMapServer : IDisposable
         return map[Math.Min(side - 1, blockZ / per) * side + Math.Min(side - 1, blockX / per)];
     }
 
+    /// <summary>
+    /// The ground as the world builds it at one column of a tile, Rivers' valleys and channels
+    /// included: the cell's centre column rather than its mean, because a valley narrower than a
+    /// cell would average away, and a mean of 64 river samples a cell costs more than a map is worth.
+    /// </summary>
+    private float BuiltSurfaceAt(TerrainTile tile, int x, int z, Dictionary<long, object> riverContexts)
+    {
+        int modelY = tile.SurfaceY[z * tile.Size + x];
+        if (!RiversCompat.Installed) return modelY;
+
+        try
+        {
+            int blockX = tile.BlockX + x, blockZ = tile.BlockZ + z;
+            long chunk = ((long)(blockX >> 5) << 32) ^ (uint)(blockZ >> 5);
+            if (!riverContexts.TryGetValue(chunk, out object context))
+            {
+                context = RiversCompat.ChunkContext(blockX >> 5, blockZ >> 5);
+                riverContexts[chunk] = context;
+            }
+            return _provider.BuiltSurfaceY(modelY, blockX, blockZ, RiversCompat.SampleAt(context, blockX, blockZ));
+        }
+        catch (Exception e)
+        {
+            if (!_builtSurfaceWarned)
+            {
+                _builtSurfaceWarned = true;
+                _log.Warning("[{0}] Debug map shows the model's height without river valleys: {1}", DiffusionPaths.ModId, e.Message);
+            }
+            return modelY;
+        }
+    }
+
     private RecordedTile Downsample(TerrainTile tile)
     {
         int size = tile.Size;
@@ -229,8 +287,9 @@ public sealed class DebugMapServer : IDisposable
         TerrainDiffusionProvider.CoarseProbe? probe = _provider.ProbeCoarseAt(centreX, centreZ);
         float basin = BasinAt(centreX, centreZ);
 
-        // Seven input layers then five coarse outputs, all flat across the tile.
-        var coarseValues = new float[12];
+        // Seven input layers then five coarse outputs, all flat across the tile, in the order of
+        // CoarseLayerIds.
+        var coarseValues = new float[CoarseLayerIds.Length];
         if (probe != null)
         {
             TerrainDiffusionProvider.CoarseProbe p = probe.Value;
@@ -244,23 +303,41 @@ public sealed class DebugMapServer : IDisposable
             coarseValues[6] = basin;
         }
 
-        // The game's own map pixels over this tile, clearings included: 32 blocks a pixel for
-        // forest and 16 for shrubs, each coarser than a thumbnail cell, so a cell takes its pixel.
+        // The map pixels over this tile at each stage - the model's cover, vanilla's map and the two
+        // combined as the game reads them: 32 blocks a pixel for forest and 16 for shrubs, each
+        // coarser than a thumbnail cell, so a cell takes its pixel.
         (DiffusionForestMapLayer forestLayer, DiffusionForestMapLayer shrubLayer) = _vegetation?.Invoke() ?? default;
-        int[] forest = forestLayer?.CoverWithin(tile);
-        int[] shrub = shrubLayer?.CoverWithin(tile);
+        (int[] Model, int[] Vanilla, int[] Applied) forest = forestLayer?.CoverWithin(tile) ?? default;
+        (int[] Model, int[] Vanilla, int[] Applied) shrub = shrubLayer?.CoverWithin(tile) ?? default;
+
+        int Off(string id) => _slot[id] * cells;
+        int surfaceOff = Off("surfaceY"), elevationOff = Off("elevation"), slopeOff = Off("slope");
+        int temperatureOff = Off("temperature"), seasonalityOff = Off("tempSeasonality");
+        int precipitationOff = Off("precipitation"), cvOff = Off("precipCv"), rainfallOff = Off("rainfall");
+        (string Id, int[] Map, DiffusionForestMapLayer Layer)[] covers =
+        {
+            ("forestModel", forest.Model, forestLayer), ("forest", forest.Applied, forestLayer),
+            ("vanillaForest", forest.Vanilla, forestLayer),
+            ("shrubModel", shrub.Model, shrubLayer), ("shrub", shrub.Applied, shrubLayer),
+            ("vanillaShrub", shrub.Vanilla, shrubLayer)
+        };
+        var coverOffsets = covers.Select(c => Off(c.Id)).ToArray();
+
+        // Rivers' network, resolved once per chunk: a tile is 64 of them against 1024 samples.
+        var riverContexts = new Dictionary<long, object>();
+        var coarseOffsets = CoarseLayerIds.Select(Off).ToArray();
 
         for (int v = 0; v < ThumbSize; v++)
         {
             for (int u = 0; u < ThumbSize; u++)
             {
                 int cell = v * ThumbSize + u;
-                values[20 * cells + cell] = MapPixel(forest, forestLayer, u * step, v * step, size);
-                values[21 * cells + cell] = MapPixel(shrub, shrubLayer, u * step, v * step, size);
+                for (int k = 0; k < covers.Length; k++)
+                    values[coverOffsets[k] + cell] = MapPixel(covers[k].Map, covers[k].Layer, u * step, v * step, size);
                 int x0 = u * step, z0 = v * step;
                 int x1 = Math.Min(size, x0 + step), z1 = Math.Min(size, z0 + step);
 
-                double surfaceY = 0, elevation = 0, slope = 0;
+                double elevation = 0, slope = 0;
                 double temperature = 0, tempSeasonality = 0, precipitation = 0, precipCv = 0;
                 int n = 0;
 
@@ -270,7 +347,6 @@ public sealed class DebugMapServer : IDisposable
                     for (int x = x0; x < x1; x++)
                     {
                         int i = row + x;
-                        surfaceY += tile.SurfaceY[i];
                         elevation += tile.ElevationMeters[i];
                         slope += tile.Slope[i];
                         temperature += tile.TemperatureC[i];
@@ -288,20 +364,20 @@ public sealed class DebugMapServer : IDisposable
                 float meanPrecipitation = (float)(precipitation / n);
                 float meanCv = (float)(precipCv / n);
 
-                values[12 * cells + cell] = (float)(surfaceY / n);
-                values[13 * cells + cell] = (float)(elevation / n);
-                values[14 * cells + cell] = (float)(slope / n);
-                values[15 * cells + cell] = meanTemperature;
-                values[16 * cells + cell] = meanSeasonality;
-                values[17 * cells + cell] = meanPrecipitation;
-                values[18 * cells + cell] = meanCv;
+                values[surfaceOff + cell] = BuiltSurfaceAt(tile, (x0 + x1) / 2, (z0 + z1) / 2, riverContexts);
+                values[elevationOff + cell] = (float)(elevation / n);
+                values[slopeOff + cell] = (float)(slope / n);
+                values[temperatureOff + cell] = meanTemperature;
+                values[seasonalityOff + cell] = meanSeasonality;
+                values[precipitationOff + cell] = meanPrecipitation;
+                values[cvOff + cell] = meanCv;
 
                 // Derived from the cell's averaged climate rather than per column: the quantile map
                 // costs a log and an error function, and this is an overview.
-                values[19 * cells + cell] = rainfall.ToRainfall(
+                values[rainfallOff + cell] = rainfall.ToRainfall(
                     new Bioclim(meanTemperature, meanSeasonality, meanPrecipitation, meanCv));
 
-                for (int c = 0; c < coarseValues.Length; c++) values[c * cells + cell] = coarseValues[c];
+                for (int c = 0; c < coarseValues.Length; c++) values[coarseOffsets[c] + cell] = coarseValues[c];
             }
         }
 
