@@ -1108,8 +1108,8 @@ public class TerrainDiffusionModSystem : ModSystem
                 .HandleWith(OnTilesCommand)
             .EndSubCommand()
             .BeginSubCommand("pregen")
-                .WithDescription("Fill the tile database ahead of play. '<radius> [x z]' starts (around spawn by " +
-                                 "default), 'stop' stops, nothing shows progress")
+                .WithDescription("Pregenerate terrain into the tile database: '<radius> [x z]' starts (around " +
+                                 "spawn by default), 'stop' stops, no argument shows progress")
                 .WithArgs(api.ChatCommands.Parsers.OptionalWord("radius|stop"),
                           api.ChatCommands.Parsers.OptionalInt("x"), api.ChatCommands.Parsers.OptionalInt("z"))
                 .HandleWith(OnPregenCommand)
@@ -1259,22 +1259,28 @@ public class TerrainDiffusionModSystem : ModSystem
             if (_pregen == null || !_pregen.IsRunning)
             {
                 ForgetPregeneration();
-                return Vintagestory.API.Common.TextCommandResult.Success("No pregeneration is running.");
+                return Vintagestory.API.Common.TextCommandResult.Success("No pregen is running.");
+            }
+            if (_pregen.IsStopping)
+            {
+                return Vintagestory.API.Common.TextCommandResult.Success(
+                    $"Pregen is already stopping: {_pregen.Describe()}.");
             }
             string progress = _pregen.Describe();
             _pregen.Stop();
             ForgetPregeneration();
             return Vintagestory.API.Common.TextCommandResult.Success(
-                $"Pregeneration stops after the tile it is on: {progress}. Running the same command again resumes it.");
+                $"Pregen stopping after the current tile: {progress}. Start it again with the same radius to resume.");
         }
 
         if (!int.TryParse(word, NumberStyles.Integer, CultureInfo.InvariantCulture, out int radius) || radius < 1)
         {
-            return Vintagestory.API.Common.TextCommandResult.Error("Give a radius in blocks, or 'stop'.");
+            return Vintagestory.API.Common.TextCommandResult.Error("Usage: /tdiff pregen <radius> [x z], or /tdiff pregen stop.");
         }
         if (radius > MaxPregenRadius)
         {
-            return Vintagestory.API.Common.TextCommandResult.Error($"The radius can be at most {MaxPregenRadius} blocks.");
+            return Vintagestory.API.Common.TextCommandResult.Error(
+                $"The radius can be at most {TilePregenerator.Count(MaxPregenRadius)} blocks.");
         }
         if (_provider == null)
         {
@@ -1283,13 +1289,13 @@ public class TerrainDiffusionModSystem : ModSystem
         if (_provider.Store == null)
         {
             return Vintagestory.API.Common.TextCommandResult.Error(
-                "Pregenerated terrain is kept in the tile database, which this world does not have. Turn on " +
-                "terraindiffusionTileDatabase with /worldconfig and reload the world.");
+                "Pregen needs the tile database. Turn on terraindiffusionTileDatabase with /worldconfig, then " +
+                "reload the world.");
         }
         if (_pregen?.IsRunning == true)
         {
             return Vintagestory.API.Common.TextCommandResult.Error(
-                $"A pregeneration is already running ({_pregen.Describe()}). Stop it with /tdiff pregen stop first.");
+                $"A pregen is already running: {_pregen.Describe()}. Stop it first with /tdiff pregen stop.");
         }
 
         int x, z;
@@ -1307,24 +1313,25 @@ public class TerrainDiffusionModSystem : ModSystem
 
         TilePregenerator job = StartPregeneration(x, z, radius, args.Caller.Player?.PlayerUID);
 
-        string estimate = _provider.AverageTileMillis > 0
-            ? $", at most about {TilePregenerator.DescribeDuration(job.TileCount * _provider.AverageTileMillis / 1000.0)} " +
-              "at this session's pace"
-            : "";
+        // From this session's tile times, so only once some tile has been generated.
+        int minutes = (int)Math.Ceiling(job.TileCount * _provider.AverageTileMillis / 60000.0);
+        string eta = minutes > 0 ? $" ETA {minutes} minute{(minutes == 1 ? "" : "s")}." : "";
         return Vintagestory.API.Common.TextCommandResult.Success(
-            $"Pregenerating {job.TileCount} tiles of {_provider.TileSize} blocks within {radius} blocks of ({x}, {z})" +
-            $"{estimate}, then coarse windows within {job.CoarseRadiusBlocks}. Anything already stored are passed over, players' terrain goes first, progress is reported " +
-            "every 10 s, and the job carries on after a server restart. /tdiff pregen stop stops it.");
+            $"Pregen started: Radius is {TilePregenerator.Count(radius)} blocks " +
+            $"({TilePregenerator.Count(job.TileCount)} tiles and {job.CoarseAreaCount} coarse tiles).{eta} " +
+            "Stop with /tdiff pregen stop.");
     }
 
     private string DescribePregeneration()
     {
         if (_pregen == null)
         {
-            return "No pregeneration has run since the server started. /tdiff pregen <radius> [x z] starts one.";
+            return "No pregen has run this session. Start one with /tdiff pregen <radius> [x z].";
         }
-        string state = _pregen.IsRunning ? "running" : _pregen.Completed ? "finished" : "stopped";
-        return $"Pregeneration {state}, {_pregen.RadiusBlocks} blocks around ({_pregen.CentreX}, {_pregen.CentreZ}): " +
+        string state = _pregen.IsStopping ? "stopping" : _pregen.IsRunning ? "running"
+            : _pregen.Completed ? "finished" : "stopped";
+        return $"Pregen {state}, {TilePregenerator.Count(_pregen.RadiusBlocks)} blocks around " +
+               $"({_pregen.CentreX}, {_pregen.CentreZ}): " +
                _pregen.Describe();
     }
 
@@ -1337,13 +1344,13 @@ public class TerrainDiffusionModSystem : ModSystem
         var job = new TilePregenerator(_provider, _api.Logger, x, z, radius, _api.WorldManager.RegionSize);
         job.Progress += j =>
         {
-            string line = "Pregeneration: " + j.Describe();
+            string line = "Pregen: " + j.Describe();
             _api.Logger.Notification("[{0}] {1}", DiffusionPaths.ModId, line);
             TellPlayer(playerUid, line);
         };
         job.Finished += j =>
         {
-            TellPlayer(playerUid, $"Pregeneration {(j.Completed ? "finished" : "stopped")}: {j.Describe()}");
+            TellPlayer(playerUid, $"Pregen {(j.Completed ? "finished" : "stopped")}: {j.Describe()}");
             if (!j.Completed) return;
             _api.Event.EnqueueMainThreadTask(() =>
             {
@@ -1377,14 +1384,13 @@ public class TerrainDiffusionModSystem : ModSystem
         if (_provider?.Store == null)
         {
             _api.Logger.Warning(
-                "[{0}] A pregeneration was left unfinished, but this world no longer keeps a tile database, so it " +
-                "was not resumed.", DiffusionPaths.ModId);
+                "[{0}] Pregen not resumed: this world no longer has a tile database.", DiffusionPaths.ModId);
             ForgetPregeneration();
             return;
         }
 
-        _api.Logger.Notification("[{0}] Resuming the pregeneration of {1} blocks around ({2}, {3}).",
-            DiffusionPaths.ModId, radius, x, z);
+        _api.Logger.Notification("[{0}] Resuming pregen: {1} blocks around ({2}, {3}).",
+            DiffusionPaths.ModId, TilePregenerator.Count(radius), x, z);
         StartPregeneration(x, z, radius, null);
     }
 

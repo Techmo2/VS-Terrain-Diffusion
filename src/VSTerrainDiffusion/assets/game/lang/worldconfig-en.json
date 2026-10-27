@@ -137,5 +137,5 @@
   "worldattribute-terraindiffusionDownloadRuntime": "Download inference runtimes",
   "worldattribute-terraindiffusionDownloadRuntime-desc": "Fetch the matching ONNX Runtime and, when selected, OpenVINO native libraries automatically. Turn off to supply them yourself in TerrainDiffusionModels/onnxruntime/. Takes effect the next time the world is loaded.",
   "worldattribute-terraindiffusionTileDatabase": "Keep terrain tiles on disk",
-  "worldattribute-terraindiffusionTileDatabase-desc": "Store every terrain tile the model generates in a database for this world (TerrainDiffusionTiles/ in the data folder), so ground modelled once - for chunks, or for other mods asking about terrain ahead of time - is read back instead of generated again. No size limit; about half a megabyte per 256x256-block tile. Fill it ahead of play with /tdiff pregen. Emptied automatically when this world's terrain settings, the ocean map, Rivers or the terrain a mod update generates change; the device and precision do not, so a database made on one machine can be served from another. Takes effect the next time the world is loaded."
+  "worldattribute-terraindiffusionTileDatabase-desc": "Saves generated terrain to disk so it's never generated twice. Pregenerate with /tdiff pregen. Cleared automatically when the world's terrain settings change. Applies on the next world load."
 }

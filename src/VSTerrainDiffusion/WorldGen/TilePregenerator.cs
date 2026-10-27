@@ -58,7 +58,13 @@ public sealed class TilePregenerator : IDisposable
     /// <summary>Tiles the job covers.</summary>
     public int TileCount => _tiles.Length;
 
+    /// <summary>Coarse areas the job covers after the tiles.</summary>
+    public int CoarseAreaCount => _coarse.Length;
+
     public bool IsRunning => _thread.IsAlive;
+
+    /// <summary>Asked to stop, and still finishing the tile it is on.</summary>
+    public bool IsStopping => _stop.IsCancellationRequested && _thread.IsAlive;
 
     /// <summary>Everything the job covers is stored.</summary>
     public bool Completed => Volatile.Read(ref _done) == _tiles.Length &&
@@ -158,8 +164,8 @@ public sealed class TilePregenerator : IDisposable
     private void Run()
     {
         _logger.Notification(
-            "[{0}] Pregenerating {1} terrain tiles within {2} blocks of ({3}, {4}), then coarse windows within {5}.",
-            DiffusionPaths.ModId, _tiles.Length, RadiusBlocks, CentreX, CentreZ, CoarseRadiusBlocks);
+            "[{0}] Pregen started: {1} tiles within {2} blocks of ({3}, {4}), then coarse areas out to {5} blocks.",
+            DiffusionPaths.ModId, Count(_tiles.Length), Count(RadiusBlocks), CentreX, CentreZ, Count(CoarseRadiusBlocks));
 
         using var progress = new Timer(_ => RaiseProgress(), null, ProgressInterval, ProgressInterval);
         try
@@ -190,11 +196,11 @@ public sealed class TilePregenerator : IDisposable
         {
             // The world itself carries on: chunks generate their own terrain as they always have.
             _failure = e.Message;
-            _logger.Warning("[{0}] Pregeneration stopped: {1}", DiffusionPaths.ModId, e.Message);
+            _logger.Warning("[{0}] Pregen failed: {1}", DiffusionPaths.ModId, e.Message);
         }
 
         progress.Dispose();
-        _logger.Notification("[{0}] Pregeneration {1}: {2}", DiffusionPaths.ModId,
+        _logger.Notification("[{0}] Pregen {1}: {2}", DiffusionPaths.ModId,
             Completed ? "finished" : "stopped", Describe());
 
         try
@@ -203,7 +209,7 @@ public sealed class TilePregenerator : IDisposable
         }
         catch (Exception e)
         {
-            _logger.Warning("[{0}] After pregeneration: {1}", DiffusionPaths.ModId, e.Message);
+            _logger.Warning("[{0}] Pregen: the finish handler failed: {1}", DiffusionPaths.ModId, e.Message);
         }
     }
 
@@ -216,7 +222,7 @@ public sealed class TilePregenerator : IDisposable
         }
         catch (Exception e)
         {
-            _logger.Warning("[{0}] Reporting pregeneration progress: {1}", DiffusionPaths.ModId, e.Message);
+            _logger.Warning("[{0}] Pregen: the progress report failed: {1}", DiffusionPaths.ModId, e.Message);
         }
     }
 
@@ -225,11 +231,12 @@ public sealed class TilePregenerator : IDisposable
     {
         int done = Volatile.Read(ref _done), coarseDone = Volatile.Read(ref _coarseDone);
         long generated = Interlocked.Read(ref _generated), computed = Interlocked.Read(ref _coarseComputed);
-        string line = $"{done} of {_tiles.Length} tiles, {100.0 * done / _tiles.Length:0.#}% " +
-                      $"({generated} generated, {done - generated} already stored); " +
-                      $"{coarseDone} of {_coarse.Length} coarse areas ({computed} ran the coarse model)";
+        long stored = done - generated;
+        string line = $"{Count(done)}/{Count(_tiles.Length)} tiles " +
+                      $"({100.0 * done / _tiles.Length:0}%{(stored > 0 ? $", {Count(stored)} already stored" : "")}), " +
+                      $"{coarseDone}/{_coarse.Length} coarse areas";
 
-        if (_failure != null) return line + "; failed: " + _failure;
+        if (_failure != null) return line + ", failed: " + _failure;
         if (!IsRunning || _stop.IsCancellationRequested) return line;
 
         // At the pace so far, assuming the rest are unstored, which is what a fresh job is. Before the
@@ -239,8 +246,11 @@ public sealed class TilePregenerator : IDisposable
             ? Interlocked.Read(ref _coarseTicks) / (double)Stopwatch.Frequency / computed
             : tilePace / 2;
         double seconds = tilePace * (_tiles.Length - done) + coarsePace * (_coarse.Length - coarseDone);
-        return seconds <= 0 ? line : line + "; about " + DescribeDuration(seconds) + " left";
+        return seconds <= 0 ? line : line + ", about " + DescribeDuration(seconds) + " left";
     }
+
+    /// <summary>A count with thousands separators, the same on every machine.</summary>
+    public static string Count(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
 
     public static string DescribeDuration(double seconds) => seconds switch
     {
@@ -259,7 +269,7 @@ public sealed class TilePregenerator : IDisposable
         _stop.Cancel();
         if (_thread.IsAlive && !_thread.Join(TimeSpan.FromMinutes(2)))
         {
-            _logger.Warning("[{0}] Pregeneration did not finish its current tile within two minutes.",
+            _logger.Warning("[{0}] Pregen: the current tile did not finish within two minutes of stopping.",
                 DiffusionPaths.ModId);
         }
     }
