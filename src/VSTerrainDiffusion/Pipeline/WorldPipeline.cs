@@ -206,6 +206,9 @@ public sealed class WorldPipeline
     public long TotalModelInferenceMilliseconds =>
         _coarseModel.RunMilliseconds + _baseModel.RunMilliseconds + _decoderModel.RunMilliseconds;
 
+    /// <summary>Drops every cached window, for when the world closes.</summary>
+    public void ClearCaches() => _tileStore.ClearAllCaches();
+
     /// <summary>Switches to a different world seed and drops every cached window.</summary>
     public void SetSeed(ulong newSeed)
     {

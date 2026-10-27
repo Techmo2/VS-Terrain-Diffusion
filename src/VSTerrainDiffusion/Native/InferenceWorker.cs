@@ -47,6 +47,13 @@ public sealed class InferenceWorker : IDisposable
     private readonly object _writeGate = new();
     private readonly ConcurrentDictionary<int, Pending> _pending = new();
     private readonly StringBuilder _standardError = new();
+    private readonly CompileNotice _compileNotice;
+
+    /// <summary>Each loaded model's name, by its id in the worker.</summary>
+    private readonly ConcurrentDictionary<int, string> _modelNames = new();
+
+    /// <summary>The model whose run was sent last, which is the one a compile message is about.</summary>
+    private volatile string? _runningModel;
     private readonly Thread _readerThread;
     private int _nextRequest;
     private int _nextModel;
@@ -60,6 +67,7 @@ public sealed class InferenceWorker : IDisposable
     {
         _logger = logger;
         Provider = plan.Provider;
+        _compileNotice = new CompileNotice(logger);
 
         string name = "vstd-" + Guid.NewGuid().ToString("N")[..20];
         string nonce = Guid.NewGuid().ToString("N");
@@ -137,12 +145,14 @@ public sealed class InferenceWorker : IDisposable
             writer.Write(model);
             InferenceWorkerProtocol.WriteJson(writer, spec);
         }, cancellation);
+        _modelNames[model] = spec.Name;
         return (model, System.Text.Json.JsonSerializer.Deserialize<ModelInfo>(reply.Json!)!);
     }
 
     /// <summary>Runs a model. <paramref name="elapsedNanoseconds"/> is the run itself, inside the worker.</summary>
     internal float[] Run(int model, IReadOnlyList<(float[] Data, long[] Shape)> inputs, out long elapsedNanoseconds)
     {
+        _runningModel = _modelNames.TryGetValue(model, out string? name) ? name : null;
         Pending reply = Request(InferenceWorkerProtocol.Run, writer =>
         {
             writer.Write(model);
@@ -313,6 +323,7 @@ public sealed class InferenceWorker : IDisposable
             if (_standardError.Length > 8192) _standardError.Remove(0, _standardError.Length - 8192);
         }
         _logger.Debug("[{0}] worker: {1}", DiffusionPaths.ModId, line);
+        _compileNotice.OnWorkerOutput(line, _runningModel);
     }
 
     private void ThrowIfStopped()
@@ -351,6 +362,7 @@ public sealed class InferenceWorker : IDisposable
         _requestPipe.Dispose();
         _replyPipe.Dispose();
         _process.Dispose();
+        _compileNotice.Dispose();
     }
 
     /// <summary>

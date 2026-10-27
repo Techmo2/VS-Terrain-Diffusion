@@ -1693,7 +1693,16 @@ public sealed class TerrainDiffusionProvider : IDisposable
     public void Dispose()
     {
         _tiles.Clear();
+        _lastAccess.Clear();
+        _peekTiles.Clear();
+        _absent.Clear();
         _scheduler.Dispose();
+
+        // Up to TileCacheMegabytes of tensors. Released here rather than left to the collector,
+        // because something outside this mod can keep a closed world reachable - VSImGui 1.2.7's
+        // mouse wheel handler on the game window holds every world loaded since the game started -
+        // and then this would go with it.
+        _pipeline.ClearCaches();
 
         // After the scheduler, so nothing more is generated; this writes out what is still queued.
         _store?.Dispose();
