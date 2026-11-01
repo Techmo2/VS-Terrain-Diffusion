@@ -412,7 +412,7 @@ the world closes, so the next world can use a different device without restartin
 | `terraindiffusionOffloadModels`          | false   | on / off     | Hold only one model on the GPU at a time, saving about 1 GB of VRAM. Generating a tile runs two or three of the models, so every tile then pays to rebuild a session for a graph of most of a gigabyte: measured on a 6 GB card it triples the average tile time. Turn on only if the models will not fit. |
 | `terraindiffusionModelLoadMode`          | `file`  | `file` `memory` | Open model graphs from their files, or read them into RAM first (about 1 GB more). |
 | `terraindiffusionValidateModelHashes`    | true    | on / off     | Verify SHA-256 of existing model files on load. Off saves a few seconds of disk read. |
-| `terraindiffusionTileDatabase`           | false   | on / off     | Keep every generated terrain tile on disk; see [Tile database](#tile-database). |
+| `terraindiffusionTileDatabase`           | true    | on / off     | Keep every generated terrain tile on disk; see [Tile database](#tile-database). |
 | `terraindiffusionDownloadRuntime`        | true    | on / off     | Fetch the ONNX Runtime and, when selected, OpenVINO native libraries automatically. On 64-bit Windows this includes the Visual C++ runtime (6.8 MB, from Microsoft) when the machine's own is missing or older than 14.39. |
 
 Machine settings, in the mod config:
@@ -447,11 +447,12 @@ world. On a dedicated server set it to 100 unless you want the card for somethin
 #### Tile database
 
 With `terraindiffusionTileDatabase` on, every terrain tile the model finishes is written to
-`TerrainDiffusionTiles/<world id>.db` in the data folder. A tile missing from memory is read from
-there before the model is asked. That covers chunks, other mods' height queries (Algernon's Terrain
-Sampler, Watersheds), the translocator search and the debug map. The coarse model's windows are
-kept too (32 km across at the default scale, ~80 KB each), so the coarse answers behind the
-`stored` sampler mode and Rivers' coast test are only computed once per world.
+`TerrainDiffusionTiles/<world id>.db` in the data folder. On by default; worlds from before 0.11.4
+are switched on once at their first load, and turning it off after that sticks. A tile missing from
+memory is read from there before the model is asked. That covers chunks, other mods' height
+queries (Algernon's Terrain Sampler, Watersheds), the translocator search and the debug map. The
+coarse model's windows are kept too (32 km across at the default scale, ~80 KB each), so the coarse
+answers behind the `stored` sampler mode and Rivers' coast test are only computed once per world.
 Everything read back is identical to what was generated. No size limit.
 
 | | 256-block tile (GPU) |
@@ -478,23 +479,72 @@ ground. After changing another mod's config that reshapes the ocean map far from
 
 #### Pregenerating for a server
 
-A server without a fast GPU can serve terrain generated elsewhere:
+A server without a fast GPU can serve terrain generated on another machine. Pregenerate a copy of
+the world on a GPU machine, then put its tile database on the server.
 
-1. Create the world on a GPU machine with `terraindiffusionTileDatabase` on.
-2. Run `/tdiff pregen <radius>`. It stores everything finishing a chunk within the radius reads,
-   neighbouring chunks and their 512-block map regions included, so the stored area reaches up to
-   ~800 blocks further. Players' terrain goes first; progress is reported every 10 s; a restart
-   resumes it. A 3000-block radius is 688 tiles of 256 blocks, about 70 s with TensorRT RTX on an
-   RTX 3060 Laptop GPU (~350 MB on disk). Coarse windows follow, out to four times the radius and
-   at least 16 km past it: for a 1000-block radius, 12 windows plus 12 for Rivers took 49 s.
-3. Copy the save and `TerrainDiffusionTiles/<world id>.db` to the server's data folder, and use the
-   same `worldGen` mod config there.
-4. On the server set `TerrainSamplerHeight` to `stored`, and `TranslocatorStoredTerrainOnly` to true
-   in `worldGen`.
+`/tdiff pregen <radius> [x z]` generates and stores the tiles needed to generate any chunk in a given radius.
+Progress is reported every 10 s, and a restart resumes the run.
 
-Chunks inside the pregenerated area then never run the model, nor do translocator searches
-anywhere, nor Terrain Sampler queries within the coarse radius. Ground outside it is still generated
-by the server when a player walks there.
+**Must match on both machines.** If any of these differ, the server empties the database on load:
+
+| | |
+|---|---|
+| This mod | The same version |
+| Other mods | The same worldgen mods and configs: Rivers' version and config, and anything that changes the ocean map. Simplest: copy the server's `Mods` and `ModConfig` folders. |
+| `WorldGen` in `ModConfig/vsterraindiffusion.json` | Identical |
+| World settings and seed | Carried in the save |
+
+GPU or CPU, precisions and tile size don't need to match. The server keeps the tile size the
+database was made with.
+
+Paths below are relative to the data folder: `~/.config/VintagestoryData` on Linux,
+`%AppData%\VintagestoryData` on Windows, or the server's `--dataPath`. The server's save is
+`Saves/default.vcdbs` unless `WorldConfig.SaveFileLocation` in `serverconfig.json` says otherwise.
+
+##### New world
+
+1. On the GPU machine, create the world in single player with **Keep terrain tiles on disk** on (the
+   default). Use the settings the server will run.
+2. Run `/tdiff pregen <radius>` and wait for `Pregen finished`. Note the counts `/tdiff tiles`
+   shows.
+3. Quit the world. The database is complete once the world closes.
+4. Get the world's ID with `/info ident`. Copy `Saves/<world>.vcdbs` and
+   `TerrainDiffusionTiles/<world id>.db` into the same folders on the server. Point
+   `WorldConfig.SaveFileLocation` at the save.
+5. Finish with [On the server](#on-the-server).
+
+##### Existing server world
+
+Players can keep playing during steps 1–4. Only the database goes back to the server, not the save.
+
+1. On the server, run `/info ident` for the world ID, then `/genbackup`. The backup is written to
+   `Backups/`.
+2. Copy the backup into `Saves/` on the GPU machine and open it in single player.
+3. If the database is off for this world, run `/worldconfig terraindiffusionTileDatabase true`. If
+   the server world names a device, also run `/worldconfig terraindiffusionInferenceDevice auto`, or
+   the copy pregenerates on the server's device. Quit and reopen the world after either.
+4. Run `/tdiff pregen <radius>` (around spawn, or give `x z`). Wait for `Pregen finished`, note the
+   counts `/tdiff tiles` shows, then quit.
+5. On the server, run `/worldconfig terraindiffusionTileDatabase true` if it isn't on yet.
+6. Stop the server. Copy `TerrainDiffusionTiles/<world id>.db` into the server's
+   `TerrainDiffusionTiles/`, replacing any file already there. Start the server again.
+
+##### On the server
+
+1. In `ModConfig/vsterraindiffusion.json`, set `TerrainSamplerHeight` to `stored` and
+   `WorldGen.TranslocatorStoredTerrainOnly` to `true`. Neither changes the stored tiles.
+2. Check `Logs/server-main.log` for `Tile database: <n> tiles and <m> coarse windows stored in ...`,
+   or run `/tdiff tiles`. The counts should match the ones noted on the GPU machine.
+
+   If the log says `Emptied the tile database ... generated under different <inputs>`, those inputs
+   didn't match. Fix them and copy the database again.
+
+Chunks inside the pregenerated area then never run the model. Neither do translocator searches
+anywhere, nor Terrain Sampler queries within the coarse radius. The server still generates ground
+outside the area when a player walks there.
+
+If the game doesn't close cleanly, a `<world id>.db-wal` file is left next to the database and still
+holds recent tiles. Open and quit the world once to fold it in before copying.
 
 #### Debug map
 

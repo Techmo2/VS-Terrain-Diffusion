@@ -395,7 +395,7 @@
       "category": "terraindiffusion",
       "code": "terraindiffusionTileDatabase",
       "dataType": "bool",
-      "default": "false",
+      "default": "true",
       "onlyDuringWorldCreate": false
     }
   ]

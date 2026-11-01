@@ -97,7 +97,7 @@ public sealed class TilePregenerator : IDisposable
     /// <summary>
     /// Every tile that finishing a chunk within the radius can read (<see cref="TerrainFootprint"/>):
     /// the map regions within reach of it, neighbouring columns included, and their margins. So the
-    /// stored area reaches up to about 800 blocks past the radius. Nearest first, so that a job
+    /// stored area reaches 800 to 1,300 blocks past the radius. Nearest first, so that a job
     /// stopped part way leaves a solid disc rather than scattered tiles - and consecutive tiles share
     /// the pipeline's cached windows.
     /// </summary>

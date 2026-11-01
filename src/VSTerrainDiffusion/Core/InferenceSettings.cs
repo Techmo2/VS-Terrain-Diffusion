@@ -59,7 +59,7 @@ public sealed class InferenceSettings
     public string BasePrecision { get; private init; } = "fp32";
 
     /// <summary>Keep every generated terrain tile on disk; see <see cref="WorldGen.TerrainTileStore"/>.</summary>
-    public bool TileDatabase { get; private init; }
+    public bool TileDatabase { get; private init; } = true;
 
     /// <summary>
     /// The world config codes of the settings that only decide how terrain is computed, never what
@@ -89,6 +89,7 @@ public sealed class InferenceSettings
     {
         ITreeAttribute world = api.WorldManager.SaveGame?.WorldConfiguration;
         var defaults = new InferenceSettings();
+        TurnOnTileDatabaseOnce(api, world);
 
         var settings = new InferenceSettings
         {
@@ -101,7 +102,7 @@ public sealed class InferenceSettings
             DownloadRuntime = Read(world, nameof(DownloadRuntime), "true").ToBool(defaults.DownloadRuntime),
             DecoderPrecision = Normalize(Read(world, nameof(DecoderPrecision), defaults.DecoderPrecision)),
             BasePrecision = Normalize(Read(world, nameof(BasePrecision), defaults.BasePrecision)),
-            TileDatabase = Read(world, nameof(TileDatabase), "false").ToBool(defaults.TileDatabase)
+            TileDatabase = Read(world, nameof(TileDatabase), "true").ToBool(defaults.TileDatabase)
         };
 
         if (Array.IndexOf(AllModelLoadModes, settings.ModelLoadMode) < 0)
@@ -129,6 +130,31 @@ public sealed class InferenceSettings
     };
 
     private static string Normalize(string value) => (value ?? "").Trim().ToLowerInvariant();
+
+    /// <summary>Save data key marking a world whose tile database was switched on by <see cref="TurnOnTileDatabaseOnce"/>.</summary>
+    private const string TileDatabaseDefaultKey = "terraindiffusionTileDatabaseDefaultOn";
+
+    /// <summary>
+    /// The tile database is on by default since 0.11.4. Worlds created before that hold "false" from
+    /// the old default, so every existing world is switched on once. A new world keeps what it was
+    /// created with, and turning it off later sticks.
+    /// </summary>
+    private static void TurnOnTileDatabaseOnce(ICoreServerAPI api, ITreeAttribute world)
+    {
+        ISaveGame save = api.WorldManager.SaveGame;
+        if (save == null || world == null || save.GetData(TileDatabaseDefaultKey) != null) return;
+        save.StoreData(TileDatabaseDefaultKey, new byte[] { 1 });
+        if (save.IsNew) return;
+
+        string code = Code(nameof(TileDatabase));
+        bool wasOff = !Read(world, nameof(TileDatabase), "true").ToBool(true);
+        world.SetBool(code, true);
+        if (wasOff)
+        {
+            api.Logger.Notification("[{0}] Turned on the tile database for this world, now the default. " +
+                "Turn it off with /worldconfig {1} false.", DiffusionPaths.ModId, code);
+        }
+    }
 
     private static string Read(ITreeAttribute world, string setting, string fallback) =>
         DiffusionWorldSettings.ReadWorldConfig(world, Code(setting), fallback);

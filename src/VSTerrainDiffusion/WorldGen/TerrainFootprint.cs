@@ -6,9 +6,10 @@ namespace VSTerrainDiffusion.WorldGen;
 ///
 /// Two things widen it past the column itself. Vintage Story advances a column to a pass only once
 /// its eight neighbours have reached the pass before, so finishing one column generates terrain
-/// for every column within <see cref="NeighbourReachBlocks"/>. And each column's map region is
-/// generated whole, with model-backed map layers (climate, forest, shrubs, and the seasonality map)
-/// that sample the whole region and past its edges - sixteen 256-block tiles for a 512-block region.
+/// for every column within <see cref="NeighbourReachBlocks"/>. And before generating a column the
+/// game creates its map region and the eight around it (<c>GetOrCreateMapRegionEnsureNeighbours</c>),
+/// each whole, with model-backed map layers (climate, forest, shrubs, and the seasonality map) that
+/// sample the whole region and past its edges - sixteen 256-block tiles for a 512-block region.
 /// </summary>
 public static class TerrainFootprint
 {
@@ -27,17 +28,17 @@ public static class TerrainFootprint
 
     /// <summary>
     /// The blocks, maximum exclusive, whose terrain generating terrain for any column in the given
-    /// rectangle reads: every map region the rectangle overlaps, plus <see cref="MapLayerMarginBlocks"/>.
-    /// Widen the rectangle by <see cref="NeighbourReachBlocks"/> first for columns that are finished
-    /// rather than only given terrain.
+    /// rectangle reads: every map region the rectangle overlaps and the ring of regions around them,
+    /// plus <see cref="MapLayerMarginBlocks"/>. Widen the rectangle by <see cref="NeighbourReachBlocks"/>
+    /// first for columns that are finished rather than only given terrain.
     /// </summary>
     public static void Regions(int minX, int minZ, int maxX, int maxZ, int regionSize,
                                out int fromX, out int fromZ, out int toX, out int toZ)
     {
-        fromX = FloorDiv(minX, regionSize) * regionSize - MapLayerMarginBlocks;
-        fromZ = FloorDiv(minZ, regionSize) * regionSize - MapLayerMarginBlocks;
-        toX = (FloorDiv(maxX - 1, regionSize) + 1) * regionSize + MapLayerMarginBlocks;
-        toZ = (FloorDiv(maxZ - 1, regionSize) + 1) * regionSize + MapLayerMarginBlocks;
+        fromX = (FloorDiv(minX, regionSize) - 1) * regionSize - MapLayerMarginBlocks;
+        fromZ = (FloorDiv(minZ, regionSize) - 1) * regionSize - MapLayerMarginBlocks;
+        toX = (FloorDiv(maxX - 1, regionSize) + 2) * regionSize + MapLayerMarginBlocks;
+        toZ = (FloorDiv(maxZ - 1, regionSize) + 2) * regionSize + MapLayerMarginBlocks;
     }
 
     private static int FloorDiv(int a, int b) => a >= 0 ? a / b : (a - b + 1) / b;
