@@ -1713,36 +1713,49 @@ public class TerrainDiffusionModSystem : ModSystem
         return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
     }
 
+    /// <summary>
+    /// Stops only what chunk generation doesn't need; see <see cref="Dispose"/> for the rest.
+    /// </summary>
     private void OnShutdown()
     {
         _debugMap?.Dispose();
         _debugMap = null;
-        WatershedsCompat.Uninstall();
-        RiversCompat.Uninstall();
-        TerrainSamplerCompat.Uninstall();
-        TreeHeightFrame.Uninstall();
-        SurfaceClimateCompat.Uninstall();
         TranslocatorSearchCompat.Uninstall();
-        ClimateScale.Uninstall();
         ConfigLibCompat.Uninstall();
         StopPregeneration(forget: false);
-        _provider?.Dispose();
-        _provider = null;
-        PipelineModels.Shutdown();
+
+        // Let the last column finish at full speed rather than at the /tdiff gpulimit share.
+        InferenceThrottle.UtilizationPercent = 100;
+
+        // Still loading: nothing can be generated without the models, so the server isn't kept
+        // waiting for them. A chunk thread waiting on them dies; SaveDatabaseBackstop closes the save.
+        if (!PipelineModels.IsReady) PipelineModels.Shutdown();
     }
 
+    /// <summary>
+    /// The server disposes mods before its final save and before it stops the chunk thread, which
+    /// may still be generating a column. What generation uses is released once that thread has
+    /// stopped, so it isn't killed and the server closes the save as usual.
+    /// </summary>
     public override void Dispose()
     {
-        _debugMap?.Dispose();
-        _debugMap = null;
-        SurfaceClimateCompat.Uninstall();
-        ClimateScale.Uninstall();
-        StopPregeneration(forget: false);
-        _provider?.Dispose();
-        _provider = null;
+        OnShutdown();
 
-        // Normally OnShutdown got here first. This is the backstop for a server that never reached
-        // the shutdown run phase, where otherwise the models would stay resident with no owner.
-        PipelineModels.Shutdown();
+        TerrainDiffusionProvider provider = _provider;
+        _provider = null;
+        void Release()
+        {
+            WatershedsCompat.Uninstall();
+            RiversCompat.Uninstall();
+            TerrainSamplerCompat.Uninstall();
+            TreeHeightFrame.Uninstall();
+            SurfaceClimateCompat.Uninstall();
+            ClimateScale.Uninstall();
+            provider?.Dispose();
+            PipelineModels.Shutdown();
+        }
+
+        if (_api == null) Release();
+        else SaveDatabaseBackstop.ReleaseAfterChunkThread(_api, Release);
     }
 }

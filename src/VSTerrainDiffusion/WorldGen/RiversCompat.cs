@@ -738,6 +738,7 @@ public static class RiversCompat
         _harmony = null;
         _modelSea = null;
         _api = null;
+        _instance = null;
         _resolved = false;
         _available = false;
         Installed = false;
