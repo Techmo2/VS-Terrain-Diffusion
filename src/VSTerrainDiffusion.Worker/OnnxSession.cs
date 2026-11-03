@@ -192,6 +192,7 @@ internal sealed class OnnxSession : IDisposable
             GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
             LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR
         };
+        if (!useConfiguredProvider && _spec.CpuThreads > 0) options.IntraOpNumThreads = _spec.CpuThreads;
 
         if (useConfiguredProvider)
         {

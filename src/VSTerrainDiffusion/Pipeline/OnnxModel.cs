@@ -44,6 +44,7 @@ public sealed class OnnxModel : IModelRunner
                 : OptimizedPath(modelFilePath, name, worker.Provider),
             LoadFromFile = settings.ModelLoadMode != "memory",
             Offload = settings.OffloadModels,
+            CpuThreads = settings.CpuThreadsOr(0),
             TensorRtRtxCacheDirectory = OnnxRuntimeBootstrap.TensorRtRtxCacheDirectory,
             RocmCacheDirectory = OnnxRuntimeBootstrap.RocmCacheDirectory,
             TensorRtRtxProfileMin = profile?.Min,

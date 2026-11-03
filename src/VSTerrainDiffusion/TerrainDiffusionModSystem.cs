@@ -1178,6 +1178,7 @@ public class TerrainDiffusionModSystem : ModSystem
             $"Runtime: {OnnxRuntimeBootstrap.ActiveRuntimeDescription}",
             $"Provider: {OnnxModel.ActiveProvider}",
             $"Model resolution: {WorldPipelineModelConfig.Instance.NativeResolution:0.##} m per pixel",
+            $"CPU threads: {(InferenceSettings.Current.CpuThreads > 0 ? InferenceSettings.Current.CpuThreadsOr(0) : "auto")}",
             $"Models resident: {(InferenceSettings.Current.OffloadModels ? "no, one at a time (terraindiffusionOffloadModels)" : "yes")}",
             $"Latent batch: {_provider.LatentBatchSize}",
             $"Pipeline cache: {_provider.PipelineCachedBytes / 1048576.0:0.#} / " +

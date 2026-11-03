@@ -161,6 +161,9 @@ internal sealed class ModelSpec
     /// <summary>Create a CPU session whatever the plan's provider.</summary>
     public bool CpuOnly { get; set; }
 
+    /// <summary>Threads for a session on the CPU; 0 is ONNX Runtime's default (one per physical core).</summary>
+    public int CpuThreads { get; set; }
+
     public string? TensorRtRtxCacheDirectory { get; set; }
 
     /// <summary>Where MIGraphX keeps the programs it compiles.</summary>

@@ -46,6 +46,15 @@ public sealed class InferenceSettings
     /// </summary>
     public int GpuUtilizationPercent { get; internal set; } = 100;
 
+    /// <summary>
+    /// CPU threads for inference on the CPU (ONNX Runtime's CPU provider and OpenVINO). 0 leaves
+    /// each runtime its own default.
+    /// </summary>
+    public int CpuThreads { get; private init; }
+
+    /// <summary><see cref="CpuThreads"/>, capped at this machine's logical CPUs, or <paramref name="auto"/> when 0.</summary>
+    public int CpuThreadsOr(int auto) => CpuThreads > 0 ? Math.Min(CpuThreads, Environment.ProcessorCount) : auto;
+
     /// <summary>Verify SHA-256 of pre-existing model files on startup.</summary>
     public bool ValidateModelHashes { get; private init; } = true;
 
@@ -68,7 +77,7 @@ public sealed class InferenceSettings
     public static IEnumerable<string> AllCodes => new[]
     {
         nameof(InferenceDevice), nameof(ModelLoadMode), nameof(OffloadModels), nameof(GpuUtilizationPercent),
-        nameof(ValidateModelHashes), nameof(DownloadRuntime), nameof(DecoderPrecision), nameof(BasePrecision),
+        nameof(CpuThreads), nameof(ValidateModelHashes), nameof(DownloadRuntime), nameof(DecoderPrecision), nameof(BasePrecision),
         nameof(TileDatabase)
     }.Select(Code);
 
@@ -98,6 +107,7 @@ public sealed class InferenceSettings
             OffloadModels = Read(world, nameof(OffloadModels), "false").ToBool(defaults.OffloadModels),
             GpuUtilizationPercent = Pipeline.InferenceThrottle.Clamp(
                 Read(world, nameof(GpuUtilizationPercent), "").ToInt(defaults.GpuUtilizationPercent)),
+            CpuThreads = Math.Max(0, Read(world, nameof(CpuThreads), "0").ToInt(defaults.CpuThreads)),
             ValidateModelHashes = Read(world, nameof(ValidateModelHashes), "true").ToBool(defaults.ValidateModelHashes),
             DownloadRuntime = Read(world, nameof(DownloadRuntime), "true").ToBool(defaults.DownloadRuntime),
             DecoderPrecision = Normalize(Read(world, nameof(DecoderPrecision), defaults.DecoderPrecision)),

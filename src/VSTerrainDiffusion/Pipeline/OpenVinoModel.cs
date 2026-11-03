@@ -37,7 +37,7 @@ public sealed class OpenVinoModel : IModelRunner
         string cacheDirectory = Path.Combine(DiffusionPaths.OptimizedModelDirectory, "openvino");
         _runtime = new OpenVinoWorkerClient(
             modelPath, name, cacheDirectory, OnnxRuntimeBootstrap.OpenVinoDirectory,
-            Environment.ProcessorCount,
+            InferenceSettings.Current.CpuThreadsOr(Environment.ProcessorCount),
             message => logger.Notification("[{0}] OpenVINO '{1}': {2}", DiffusionPaths.ModId, name, message),
             cancellation);
         _backend = $"OpenVINO {OnnxRuntimeBootstrap.OpenVinoVersion}";
