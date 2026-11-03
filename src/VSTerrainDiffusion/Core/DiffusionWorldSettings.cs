@@ -65,6 +65,23 @@ public sealed class DiffusionWorldSettings
     public float AltitudeCooling { get; private set; } = 1f;
 
     /// <summary>
+    /// Whether the sea takes its shore's climate before the climate is spread to columns (see
+    /// <c>Pipeline.CoastFill</c>). Pinned when a world is created: on for new worlds, off for worlds
+    /// made before it, whose coasts were generated without it. Left out of the tile database's
+    /// resolved-settings hash: the world setting carries it there.
+    /// </summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public bool CoastFill { get; private set; }
+
+    /// <summary>
+    /// Whether vanilla's block layers may raise dry-climate water up to 20 blocks deep into land
+    /// (see <c>WorldGen.DryShallowsCompat</c>). Pinned when a world is created: off for new worlds,
+    /// on for worlds made before, whose dry coasts were generated with it. Not part of the tiles.
+    /// </summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public bool DryShallowsFill { get; private set; }
+
+    /// <summary>
     /// Scales the forest cover the model's moisture implies. Trees on the ground go as its square:
     /// vanilla accepts each candidate tree with probability <c>(byte / 255)^2</c>. World setting
     /// <c>terraindiffusionForestDensity</c>, in percent.
@@ -287,6 +304,8 @@ public sealed class DiffusionWorldSettings
                 ReadWorldConfig(worldConfig, "terraindiffusionDetailRedraw", "35").ToInt(35) / 100f, 0.05f, 4f),
             CoarseHeightNoise = Math.Clamp(
                 ReadWorldConfig(worldConfig, "terraindiffusionHeightNoise", "0").ToInt(0) / 100f, 0f, 10f),
+            CoastFill = ReadWorldConfig(worldConfig, "terraindiffusionCoastFill", "false").ToBool(false),
+            DryShallowsFill = ReadWorldConfig(worldConfig, "terraindiffusionDryShallowsFill", "true").ToBool(true),
             AltitudeCooling = Math.Clamp(
                 ReadWorldConfig(worldConfig, "terraindiffusionAltitudeCooling", "100").ToInt(100) / 100f, 0.1f, 5f),
             ForestDensity = Math.Clamp(
@@ -321,7 +340,10 @@ public sealed class DiffusionWorldSettings
             api, settings,
             ReadWorldConfig(worldConfig, "worldClimate", "realistic"),
             ReadWorldConfig(worldConfig, "polarEquatorDistance", "50000").ToInt(50000),
-            shaping.LatitudeStrength, climate);
+            shaping.LatitudeStrength, climate,
+            // Pinned when the world was created (TerrainDiffusionModSystem.PinWorldValues); a world
+            // from before version 2 keeps the profile its ground was made with.
+            ReadWorldConfig(worldConfig, "terraindiffusionLatitudeProfile", "1").ToInt(1));
 
         if (!settings.Latitude.IsNeutral)
         {

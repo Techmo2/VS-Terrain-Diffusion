@@ -394,6 +394,35 @@ public class WorldGenConfig
     public bool GlacierIce { get; set; } = true;
 
     /// <summary>
+    /// Set the coarse model's climate to what story structures force (forceTemperature, forceRain),
+    /// faded into the surroundings, instead of leaving vanilla to overwrite the climate map in a
+    /// disc; and, with <see cref="StructureBasinDepth"/>, level the ground where they ask for flat
+    /// land. Changes the terrain around those structures, and the coarse model's terrain for some
+    /// way beyond them.
+    /// </summary>
+    public bool StructureConditioning { get; set; } = true;
+
+    /// <summary>
+    /// Experimental, with <see cref="StructureConditioning"/>: also flatten the coarse relief where a
+    /// structure asks for a flat landform.
+    /// </summary>
+    public bool StructureFlatten { get; set; }
+
+    /// <summary>
+    /// Experimental, with <see cref="StructureConditioning"/>: how far the elevation the coarse model is
+    /// asked for is pulled towards sea level where a structure asks for flat ground (0 to 1, 0 off) -
+    /// the river basin's warp, so the model draws lowland, which it draws level. Structures vanilla
+    /// places at sea level are placed on the ground there instead.
+    /// </summary>
+    public float StructureBasinDepth { get; set; } = 1f;
+
+    /// <summary>
+    /// Experimental: the elevation conditioning's noise level inside those sites (lower binds tighter;
+    /// 0 leaves the world's).
+    /// </summary>
+    public float StructureElevationNoise { get; set; } = 0.02f;
+
+    /// <summary>
     /// Which way the world's ocean map and the model's terrain are made to agree.
     ///
     /// "input" conditions the model on the ocean map, so the world's "Land cover" and "Ocean scale"
@@ -461,8 +490,8 @@ public class WorldGenConfig
     public float LatitudeStrength { get; set; } = 1f;
 
     /// <summary>
-    /// Honour the world's "Starting climate" setting by placing the spawn on land whose modelled
-    /// temperature falls in the chosen band. Vanilla implements that setting by shifting its own
+    /// Honour the world's "Starting climate" setting by placing the spawn on land near sea level
+    /// whose temperature there, on the day a new world starts, falls in the chosen band. Vanilla implements that setting by shifting its own
     /// climate map, which cannot be done to a model that predicts a specific world, so the player
     /// moves instead. Turn off to spawn on the nearest land whatever its climate.
     /// </summary>
@@ -483,6 +512,12 @@ public class WorldGenConfig
     /// will go twice as far east for the same climate before it heads for a pole.
     /// </summary>
     public float StartingClimateNorthSouthCost { get; set; } = 2f;
+
+    /// <summary>
+    /// How high above sea level the spawn may be, in blocks. The spawn is always on land near sea
+    /// level, and its starting climate is judged by the temperature there.
+    /// </summary>
+    public int SpawnMaxBlocksAboveSea { get; set; } = 10;
 
     /// <summary>
     /// Overrides how much of the climate the model drives: "full" for model temperature, rainfall
@@ -555,6 +590,7 @@ public class WorldGenConfig
 
         StartingClimateSearchRadiusBlocks = (int)Clamp(StartingClimateSearchRadiusBlocks, 512f, 4_000_000f, 65536f);
         StartingClimateNorthSouthCost = Clamp(StartingClimateNorthSouthCost, 1f, 100f, 2f);
+        SpawnMaxBlocksAboveSea = (int)Clamp(SpawnMaxBlocksAboveSea, 1f, 256f, 10f);
 
         ClimateMode = (ClimateMode ?? "").Trim().ToLowerInvariant();
         if (ClimateMode is not ("full" or "off")) ClimateMode = "";

@@ -29,6 +29,9 @@ public class TerrainDiffusionModSystem : ModSystem
     private TerrainDiffusionProvider _provider;
     private Api.TerrainClimate _climate;
 
+    /// <summary>Story structures' climates and landforms the model is asked for (experimental), or null.</summary>
+    private List<Pipeline.CoarseConditioningSite> _conditioningSites;
+
     /// <summary>
     /// The generated climate for other mods (see <see cref="Api.TerrainClimate"/>): server side, and
     /// null until this world's generator is ready or on a world the mod is not generating.
@@ -183,9 +186,12 @@ public class TerrainDiffusionModSystem : ModSystem
         }
 
         ILandmaskSource landmask = BuildLandmask();
+        _conditioningSites = DiffusionConfig.Instance.WorldGen.StructureConditioning
+            ? StoryStructureConditioning.Read(_api, _settings, _api.Logger)
+            : null;
         _provider = new TerrainDiffusionProvider(
             WorldSeed(), models, _settings, _api.Logger, landmask,
-            _riverBasins, _settings.RiverBasinDepth, StoredTileSize());
+            _riverBasins, _settings.RiverBasinDepth, StoredTileSize(), _conditioningSites);
         _climate = new Api.TerrainClimate(_provider);
 
         // Before anything builds a Rivers region, which the spawn search below is the first to do.
@@ -217,6 +223,12 @@ public class TerrainDiffusionModSystem : ModSystem
 
         StartDebugMap();
 
+        // Terrain Continuity (a separate mod) slopes new ground to meet chunks built by an older
+        // setup; told what this mod would build at any column, it corrects only real steps. A plain
+        // delegate, so neither mod needs the other.
+        _api.ObjectCache[ContinuityHeightSourceKey] =
+            (System.Func<int, int, int>)((x, z) => _provider?.SampleSurfaceY(x, z, SurfaceSampleMode.Full) ?? 0);
+
         // Order terrain generation by how far it is from somebody. After a translocator hop the
         // queue is full of tiles for where the player used to be, and without this the ground they
         // are standing on is generated only once all of that has drained.
@@ -231,6 +243,13 @@ public class TerrainDiffusionModSystem : ModSystem
         // Unrelated to the climate patches below: this one only makes the static translocator
         // search affordable, and never changes what the world contains.
         TranslocatorSearchCompat.Install(_api, _provider);
+        StoryTeleportCompat.Install(_api, _provider);
+        DryShallowsCompat.Install(_settings.DryShallowsFill, _api.Logger);
+        if (!_settings.DryShallowsFill)
+        {
+            _api.Logger.Notification("[{0}] Vanilla's filling of dry-climate shallows is off: the model's water stays water.",
+                DiffusionPaths.ModId);
+        }
 
         // Both only while the model owns the climate map. Left to vanilla the stored byte is a
         // sea-level temperature already read at the game's own lapse rate, and correcting either
@@ -457,6 +476,9 @@ public class TerrainDiffusionModSystem : ModSystem
     private const string ShoreDetailCode = "terraindiffusionShoreDetail";
     private const string ShoreFadeCode = "terraindiffusionShoreFade";
     private const string OceanMapSamplesCode = "terraindiffusionOceanMapSamples";
+    private const string LatitudeProfileCode = "terraindiffusionLatitudeProfile";
+    private const string CoastFillCode = "terraindiffusionCoastFill";
+    private const string DryShallowsFillCode = "terraindiffusionDryShallowsFill";
 
     /// <summary>Where these lived before they were world settings: save game mod data.</summary>
     private const string LegacyShoreDetailKey = "vsterraindiffusion:shoredetail";
@@ -507,6 +529,24 @@ public class TerrainDiffusionModSystem : ModSystem
                 }
                 world.SetString(ShoreDetailCode, detail.ToString(CultureInfo.InvariantCulture));
                 world.SetString(ShoreFadeCode, fade.ToString(CultureInfo.InvariantCulture));
+            }
+
+            // New worlds take today's latitude profile; one made before profiles were versioned keeps
+            // version 1, so ground generated from here on still meets the ground it already has.
+            if (!world.HasAttribute(LatitudeProfileCode))
+            {
+                int version = save.IsNew ? LatitudeProfile.CurrentVersion : 1;
+                world.SetString(LatitudeProfileCode, version.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (!world.HasAttribute(DryShallowsFillCode))
+            {
+                world.SetString(DryShallowsFillCode, save.IsNew ? "false" : "true");
+            }
+
+            if (!world.HasAttribute(CoastFillCode))
+            {
+                world.SetString(CoastFillCode, save.IsNew ? "true" : "false");
             }
 
             if (!world.HasAttribute(OceanMapSamplesCode))
@@ -632,7 +672,8 @@ public class TerrainDiffusionModSystem : ModSystem
         nameof(WorldGenConfig.TranslocatorSearchTimeoutSeconds), nameof(WorldGenConfig.TranslocatorPeekPauseSeconds),
         nameof(WorldGenConfig.TranslocatorMaxRangeBlocks), nameof(WorldGenConfig.TranslocatorStoredTerrainOnly),
         nameof(WorldGenConfig.StartingClimateSearch),
-        nameof(WorldGenConfig.StartingClimateSearchRadiusBlocks), nameof(WorldGenConfig.StartingClimateNorthSouthCost)
+        nameof(WorldGenConfig.StartingClimateSearchRadiusBlocks), nameof(WorldGenConfig.StartingClimateNorthSouthCost),
+        nameof(WorldGenConfig.SpawnMaxBlocksAboveSea)
     };
 
     /// <summary>
@@ -683,6 +724,17 @@ public class TerrainDiffusionModSystem : ModSystem
     /// The ocean map is sampled near the model's origin, so a mod that reshapes it only far from
     /// there is not seen; that is what <c>/tdiff tiles clear</c> is for.
     /// </summary>
+    /// <summary>
+    /// World values <see cref="PinWorldValues"/> writes onto a world made before they existed, with
+    /// what such a world always had; a world holding these hashes as it did before they were added.
+    /// </summary>
+    private static readonly Dictionary<string, string> PinnedLegacyValues = new(StringComparer.Ordinal)
+    {
+        [LatitudeProfileCode] = "1",
+        [CoastFillCode] = "false",
+        [DryShallowsFillCode] = "true"
+    };
+
     private Dictionary<string, string> TileFingerprint(ILandmaskSource landmask)
     {
         var neutral = new HashSet<string>(InferenceSettings.AllCodes, StringComparer.Ordinal);
@@ -692,6 +744,9 @@ public class TerrainDiffusionModSystem : ModSystem
             bool shaping = entry.Key.StartsWith(InferenceSettings.CodePrefix, StringComparison.Ordinal)
                 ? !neutral.Contains(entry.Key)
                 : Array.IndexOf(TileShapingVanillaCodes, entry.Key) >= 0;
+            // A value pinned onto an older world as what it always had is no change to its tiles.
+            if (shaping && PinnedLegacyValues.TryGetValue(entry.Key, out string legacy)
+                && entry.Value?.GetValue()?.ToString() == legacy) continue;
             if (shaping) world.Add(entry.Key + "=" + entry.Value?.ToJsonToken());
         }
         world.Sort(StringComparer.Ordinal);
@@ -727,6 +782,10 @@ public class TerrainDiffusionModSystem : ModSystem
                 ? (_api.ModLoader.GetMod("rivers")?.Info.Version ?? "") + "\n" + (RiversCompat.ConfigJson() ?? "")
                 : "none"
         };
+
+        // Only when the experiment is on, so every other world keeps its fingerprint.
+        if (_conditioningSites != null)
+            inputs["story structures"] = Pipeline.CoarseConditioningSite.Fingerprint(_conditioningSites);
 
         return inputs.ToDictionary(entry => entry.Key, entry => Convert.ToHexString(
             System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(entry.Value)))[..16]);
@@ -983,6 +1042,15 @@ public class TerrainDiffusionModSystem : ModSystem
     {
         try
         {
+            // A new world starts at 08:00 on the first day of the fifth month (the game's
+            // SaveGame.GetTotalGameSecondsStart), so the starting climate is what a player reads then:
+            // the middle of that day, with the calendar's own test for which way the year runs.
+            IGameCalendar calendar = _api.World.Calendar;
+            int daysPerMonth = Math.Max(1, calendar?.DaysPerMonth ?? 12);
+            WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
+            _provider.ArrivalSeason = (4.0 + 0.5 / daysPerMonth,
+                z => worldGen.SeasonHemispheres && calendar?.OnGetLatitude != null && !(calendar.OnGetLatitude(z) > 0.0),
+                worldGen.SeasonalTemperatureStrength);
             TerrainDiffusionProvider.SpawnCandidate? land = _provider.FindSpawn();
             if (land == null)
             {
@@ -1019,7 +1087,7 @@ public class TerrainDiffusionModSystem : ModSystem
         if (spawn.MatchedClimate)
         {
             _api.Logger.Notification(
-                "[{0}] Starting climate {1}: spawning at about {2:0.#} C, {3} blocks from the map centre.",
+                "[{0}] Starting climate {1}: spawning near sea level at about {2:0.#} C on the first day, {3} blocks from the map centre.",
                 DiffusionPaths.ModId, band.Value, spawn.TemperatureC, distance);
             return;
         }
@@ -1808,9 +1876,13 @@ public class TerrainDiffusionModSystem : ModSystem
     /// may still be generating a column. What generation uses is released once that thread has
     /// stopped, so it isn't killed and the server closes the save as usual.
     /// </summary>
+    /// <summary>Where Terrain Continuity looks for a terrain mod's surface height at a block column.</summary>
+    private const string ContinuityHeightSourceKey = "terraincontinuity:surfaceheight";
+
     public override void Dispose()
     {
         OnShutdown();
+        _api?.ObjectCache.Remove(ContinuityHeightSourceKey);
 
         TerrainDiffusionProvider provider = _provider;
         _provider = null;
@@ -1820,6 +1892,8 @@ public class TerrainDiffusionModSystem : ModSystem
             WatershedsCompat.Uninstall();
             RiversCompat.Uninstall();
             TerrainSamplerCompat.Uninstall();
+            StoryTeleportCompat.Uninstall();
+            DryShallowsCompat.Uninstall();
             TreeHeightFrame.Uninstall();
             SurfaceClimateCompat.Uninstall();
             ClimateScale.Uninstall();

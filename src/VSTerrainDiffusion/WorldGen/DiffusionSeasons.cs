@@ -111,19 +111,8 @@ public class DiffusionSeasons : ModSystem
         double yearRel = totalDays / calendar.DaysPerYear % 1.0;
         SeasonalCycleMap.Sample? cycle = SeasonalCycleMap.At(_api.World.BlockAccessor, pos);
 
-        double temperature;
-        if (cycle == null)
-        {
-            double summer = SummerWeight(yearRel, pos);
-            float swing = SwingPerSigma * sample.Value.TemperatureSigmaC * _config.SeasonalTemperatureStrength;
-            temperature = climate.WorldGenTemperature - swing / 2.0 + swing * summer;
-        }
-        else
-        {
-            // The seasonal model's own year: its two harmonics, peaking at the game's midsummer.
-            temperature = climate.WorldGenTemperature + _config.SeasonalTemperatureStrength
-                * cycle.Value.TemperatureDeviation(sample.Value.TemperatureSigmaC, SeasonTheta(yearRel, pos));
-        }
+        double temperature = climate.WorldGenTemperature + SeasonalDeviation(
+            Month(yearRel), IsSouthern(pos), sample.Value.TemperatureSigmaC, _config.SeasonalTemperatureStrength, cycle);
 
         // Day and night: the coldest hour is just before dawn. The seasonal model knows each place's
         // swing (BIO2, the mean of each month's maximum minus minimum); otherwise vanilla's
@@ -154,8 +143,8 @@ public class DiffusionSeasons : ModSystem
         double yearRel = totalDays / _api.World.Calendar.DaysPerYear % 1.0;
         SeasonalCycleMap.Sample? cycle = SeasonalCycleMap.At(_api.World.BlockAccessor, posX, posZ);
         return cycle == null
-            ? RainfallFactor(sample.Value.PrecipitationCv, SummerWeight(yearRel, pos))
-            : RainfallFactor(cycle.Value, SeasonTheta(yearRel, pos));
+            ? RainfallFactor(sample.Value.PrecipitationCv, SummerWeight(Month(yearRel), IsSouthern(pos)))
+            : RainfallFactor(cycle.Value, SeasonTheta(Month(yearRel), IsSouthern(pos)));
     }
 
     /// <summary>
@@ -186,8 +175,8 @@ public class DiffusionSeasons : ModSystem
         double yearRel = totalDays / _api.World.Calendar.DaysPerYear % 1.0;
         SeasonalCycleMap.Sample? cycle = SeasonalCycleMap.At(_api.World.BlockAccessor, pos);
         return cycle == null
-            ? RainfallFactor(precipitationCv, SummerWeight(yearRel, pos))
-            : RainfallFactor(cycle.Value, SeasonTheta(yearRel, pos));
+            ? RainfallFactor(precipitationCv, SummerWeight(Month(yearRel), IsSouthern(pos)))
+            : RainfallFactor(cycle.Value, SeasonTheta(Month(yearRel), IsSouthern(pos)));
     }
 
     /// <summary>
@@ -203,36 +192,50 @@ public class DiffusionSeasons : ModSystem
     }
 
     /// <summary>
+    /// How far a day's mean temperature sits from the annual mean, at <paramref name="month"/>
+    /// (0 to 12 through the calendar year) for a place whose monthly temperatures spread by
+    /// <paramref name="sigmaC"/>. With the seasonal model's cycle it is the model's own two-harmonic
+    /// year, peaking at the game's midsummer; without, vanilla's smootherstep ramp, deepened to the
+    /// place's spread. Shared with the spawn search, which needs the first day's temperature.
+    /// </summary>
+    internal static double SeasonalDeviation(double month, bool southern, float sigmaC, float strength,
+                                             SeasonalCycleMap.Sample? cycle)
+    {
+        if (cycle != null) return strength * cycle.Value.TemperatureDeviation(sigmaC, SeasonTheta(month, southern));
+        double summer = SummerWeight(month, southern);
+        float swing = SwingPerSigma * sigmaC * strength;
+        return -swing / 2.0 + swing * summer;
+    }
+
+    /// <summary>The calendar month, 0 to 12, honouring a season override.</summary>
+    private double Month(double yearRel)
+    {
+        float? seasonOverride = _api.World.Calendar.SeasonOverride;
+        return seasonOverride.HasValue ? seasonOverride.Value * 12f : yearRel * 12.0;
+    }
+
+    /// <summary>
+    /// Whether the year runs the other way round here: the same test Vintage Story's own calendar
+    /// makes - SurvivalCoreSystem hands it OnGetLatitude and GetSeasonRel shifts the southern year
+    /// half a turn - so the temperature curve and the season the game reports agree.
+    /// </summary>
+    private bool IsSouthern(BlockPos pos) =>
+        _config.SeasonHemispheres
+        && !_api.World.Calendar.SeasonOverride.HasValue
+        && !(_api.World.Calendar.OnGetLatitude(pos.Z) > 0.0);
+
+    /// <summary>
     /// Angle through the year for the seasonal model's harmonics, 0 at midsummer: the peak of
     /// <see cref="SummerWeight"/> (month 6.5, or 0.5 in the southern half), so the model's warm season
     /// lands where the game's calendar puts summer.
     /// </summary>
-    private double SeasonTheta(double yearRel, BlockPos pos)
-    {
-        float? seasonOverride = _api.World.Calendar.SeasonOverride;
-        double month = seasonOverride.HasValue ? seasonOverride.Value * 12f : yearRel * 12.0;
-        bool southern = _config.SeasonHemispheres
-                        && !seasonOverride.HasValue
-                        && !(_api.World.Calendar.OnGetLatitude(pos.Z) > 0.0);
-        return 2.0 * Math.PI * (month - (southern ? 0.5 : 6.5)) / 12.0;
-    }
+    private static double SeasonTheta(double month, bool southern) =>
+        2.0 * Math.PI * (month - (southern ? 0.5 : 6.5)) / 12.0;
 
     /// <summary>
     /// How far into summer the year is, 0 at midwinter and 1 at midsummer, on the same smootherstep
     /// ramp vanilla uses so that the shape of the year is unchanged and only its depth differs.
     /// </summary>
-    private double SummerWeight(double yearRel, BlockPos pos)
-    {
-        float? seasonOverride = _api.World.Calendar.SeasonOverride;
-        double month = seasonOverride.HasValue ? seasonOverride.Value * 12f : yearRel * 12.0;
-
-        // The same test Vintage Story's own calendar makes - SurvivalCoreSystem hands it
-        // OnGetLatitude and GetSeasonRel shifts the southern year half a turn - so the temperature
-        // curve and the season the game reports agree about which way round the year runs.
-        bool southern = _config.SeasonHemispheres
-                        && !seasonOverride.HasValue
-                        && !(_api.World.Calendar.OnGetLatitude(pos.Z) > 0.0);
-
-        return GameMath.Smootherstep(Math.Abs(GameMath.CyclicValueDistance(southern ? 6.5 : 0.5, month, 12.0) / 6.0));
-    }
+    private static double SummerWeight(double month, bool southern) =>
+        GameMath.Smootherstep(Math.Abs(GameMath.CyclicValueDistance(southern ? 6.5 : 0.5, month, 12.0) / 6.0));
 }

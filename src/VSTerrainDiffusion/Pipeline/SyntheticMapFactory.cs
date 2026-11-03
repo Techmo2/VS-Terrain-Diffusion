@@ -104,6 +104,12 @@ public sealed class SyntheticMapFactory
     private readonly float _riverBasinDepth;
     private readonly float _landmaskStrength;
 
+    /// <summary>
+    /// Extra basin depth per pixel from structure sites, already multiplied out (0 to 1), or null.
+    /// The deeper of this and the river basin applies.
+    /// </summary>
+    private readonly Func<int, int, int, int, float[]> _siteBasins;
+
     /// <summary>Puts each row of the map in its latitude band, or null for an unbanded world.</summary>
     private readonly ILatitudeSource _latitude;
 
@@ -127,10 +133,13 @@ public sealed class SyntheticMapFactory
     /// <param name="latitude">Bands the climate channels north to south, or null to leave them flat.</param>
     /// <param name="riverBasins">Lowers the land where a river network runs, or null for none.</param>
     /// <param name="riverBasinDepth">How far a fully-river cell is pulled towards sea level, 0 to 1.</param>
+    /// <param name="siteBasins">Per-pixel basin depth from structure sites over (x1, y1, x2, y2), or null.</param>
     public SyntheticMapFactory(ulong worldSeed, ILandmaskSource landmask = null, float landmaskStrength = 1f,
                                ClimateShift climate = default, ILatitudeSource latitude = null,
-                               IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f)
+                               IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f,
+                               Func<int, int, int, int, float[]> siteBasins = null)
     {
+        _siteBasins = siteBasins;
         PipelineData data = LoadData();
         _dataQuantiles = data.DataQuantileTables;
         _aTempStd = data.ATempStd;
@@ -255,6 +264,20 @@ public sealed class SyntheticMapFactory
                 $"at ({x1}, {y1}), where {plane} were needed.");
         }
 
+        // Absolute pull per pixel: the deeper of the river basin and any structure site.
+        float[] depths = null;
+        if (basins != null)
+        {
+            depths = new float[plane];
+            for (int k = 0; k < plane; k++) depths[k] = Math.Clamp(basins[k], 0f, 1f) * _riverBasinDepth;
+        }
+        float[] sites = _siteBasins?.Invoke(x1, y1, x2, y2);
+        if (sites != null)
+        {
+            depths ??= new float[plane];
+            for (int k = 0; k < plane; k++) depths[k] = Math.Max(depths[k], Math.Clamp(sites[k], 0f, 1f));
+        }
+
         // Rows run along Z, which is the axis latitude is measured on, so a band is one climate per
         // row. Resolved up front because the two banded channels want the same rows.
         float[] bandTemperature = null, bandPrecipitation = null;
@@ -295,15 +318,15 @@ public sealed class SyntheticMapFactory
                     if (masked)
                     {
                         float rank = ApplyLandmask(TablePosition(noise, nq), sea[k], dq.Length);
-                        if (basins != null) rank = ApplyRiverBasin(rank, basins[k], dq.Length);
+                        if (depths != null) rank = ApplyBasin(rank, depths[k], dq.Length);
                         channel[k] = SampleTable(dq, rank);
                     }
-                    else if (ch == 0 && basins != null)
+                    else if (ch == 0 && depths != null)
                     {
                         // No landmask, so the model picks its own coastline - but a river still
                         // wants low ground under it.
                         channel[k] = SampleTable(dq,
-                            ApplyRiverBasin(TablePosition(noise, nq), basins[k], dq.Length));
+                            ApplyBasin(TablePosition(noise, nq), depths[k], dq.Length));
                     }
                     else if (bandedTemperature)
                         channel[k] = Math.Clamp(
@@ -455,9 +478,8 @@ public sealed class SyntheticMapFactory
     /// at the default scale, so what arrives is "somewhere in this half kilometre there is a river
     /// system", and what comes back is ground low enough to have carried one.
     /// </summary>
-    private float ApplyRiverBasin(float position, float basinStrength, int tableLength)
+    private float ApplyBasin(float position, float basin, int tableLength)
     {
-        float basin = Math.Clamp(basinStrength, 0f, 1f) * _riverBasinDepth;
         if (basin <= 0f) return position;
 
         float span = tableLength - 1f;

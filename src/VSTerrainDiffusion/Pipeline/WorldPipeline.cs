@@ -66,6 +66,7 @@ public sealed class WorldPipeline
 
     /// <summary>Extra cooling with height, in reference lapse rates; see <see cref="DiffusionWorldSettings.AltitudeCooling"/>.</summary>
     private readonly float _altitudeCooling;
+    private readonly bool _coastFill;
 
     /// <summary>Square-root metres of elevation over which <see cref="_coarseHeightNoise"/> fades in from sea level.</summary>
     private const float CoarseNoiseShoreRamp = 10f;
@@ -82,6 +83,9 @@ public sealed class WorldPipeline
     private readonly float _landmaskStrength;
     private readonly ClimateShift _climate;
     private readonly ILatitudeSource _latitude;
+
+    /// <summary>Places that ask the coarse model for a climate or landform of their own; see <see cref="CoarseConditioningSite"/>.</summary>
+    private readonly IReadOnlyList<CoarseConditioningSite> _sites;
 
     private SyntheticMapFactory _syntheticMapFactory;
     private ulong _seed;
@@ -103,8 +107,11 @@ public sealed class WorldPipeline
                          ClimateShift climate = default, ILatitudeSource latitude = null,
                          IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f,
                          CoarsePooling pooling = default, float baseRenoiseSigma = 0.35f,
-                         float coarseHeightNoise = 0f, float altitudeCooling = 1f)
+                         float coarseHeightNoise = 0f, float altitudeCooling = 1f,
+                         IReadOnlyList<CoarseConditioningSite> conditioningSites = null, bool coastFill = false)
     {
+        _coastFill = coastFill;
+        _sites = conditioningSites;
         _pooling = pooling.Factor >= 1 ? pooling : CoarsePooling.None;
         _riverBasins = riverBasins;
         _riverBasinDepth = riverBasinDepth;
@@ -177,7 +184,8 @@ public sealed class WorldPipeline
         _decoderModel = models.Decoder;
 
         _syntheticMapFactory = new SyntheticMapFactory(seed, _landmask, _landmaskStrength, _climate, _latitude,
-                                                      _riverBasins, _riverBasinDepth);
+                                                      _riverBasins, _riverBasinDepth,
+                                                      SiteBasins);
         long cacheLimitBytes = Math.Max(32L, DiffusionConfig.Instance.TileCacheMegabytes) * 1024 * 1024;
         _tileStore = new MemoryTileStore(cacheLimitBytes);
         _latentBatchSize = ResolveLatentBatchSize();
@@ -229,7 +237,8 @@ public sealed class WorldPipeline
         if (newSeed == _seed) return;
         _seed = newSeed;
         _syntheticMapFactory = new SyntheticMapFactory(newSeed, _landmask, _landmaskStrength, _climate, _latitude,
-                                                      _riverBasins, _riverBasinDepth);
+                                                      _riverBasins, _riverBasinDepth,
+                                                      SiteBasins);
         _tileStore.ClearAllCaches();
     }
 
@@ -322,6 +331,8 @@ public sealed class WorldPipeline
         // conditioning behind, and the value is really a noise level however it is named upstream.
         float[] condNoise = GaussianNoisePatch.Generate(_seed, i1, j1, s, s, 5, s, s);
         var condMixed = new float[5 * plane];
+        // Structure sites may bind the elevation conditioning tighter where they stand.
+        float[] elevationLevels = CoarseConditioningSite.ElevationNoiseLevels(_sites, _condSnr[0], i1, j1, s);
         for (int ch = 0; ch < 5; ch++)
         {
             float t = (float)Math.Atan(_condSnr[ch]);
@@ -329,6 +340,12 @@ public sealed class WorldPipeline
             for (int px = 0; px < plane; px++)
             {
                 int k = ch * plane + px;
+                if (ch == 0 && elevationLevels != null)
+                {
+                    float tp = (float)Math.Atan(elevationLevels[px]);
+                    condMixed[k] = (float)Math.Cos(tp) * condImg[k] + (float)Math.Sin(tp) * condNoise[k];
+                    continue;
+                }
                 condMixed[k] = cosT * condImg[k] + sinT * condNoise[k];
             }
         }
@@ -371,6 +388,7 @@ public sealed class WorldPipeline
         }
         if (_coarseHeightNoise > 0f) AddCoarseHeightNoise(output, i1, j1, s);
         for (int px = 0; px < plane; px++) output[plane + px] = output[px] - output[plane + px];
+        CoarseConditioningSite.ApplyRelief(_sites, output, i1, j1, s);
 
         int size = s;
         if (!_pooling.IsNone)
@@ -479,6 +497,9 @@ public sealed class WorldPipeline
             int[] windowIndex = windowIndices[b];
             int i1 = windowIndex[1] * st, j1 = windowIndex[2] * st;
 
+            // The coarse slice starts one map cell before the window (coarseWindow's offset).
+            CoarseConditioningSite.ApplyClimateToSlice(_sites, coarseSlices[b].Data, _coarseChannels,
+                windowIndex[1] - 1, windowIndex[2] - 1, 4, 4, _pooling.Factor);
             float[] cond58 = BuildLatentConditioning(coarseSlices[b]);
             Array.Copy(cond58, 0, condInputBatch, b * 58, 58);
 
@@ -669,6 +690,9 @@ public sealed class WorldPipeline
     // Public sampling API
     // =====================================================================
 
+    /// <summary>Structure sites' basin depth over a factory window (x along J, y along I).</summary>
+    private float[] SiteBasins(int x1, int y1, int x2, int y2) => CoarseConditioningSite.BasinDepths(_sites, x1, y1, x2, y2);
+
     /// <summary>
     /// The conditioning the coarse stage is handed at one cell, in real units and before it is
     /// normalised and stirred into noise: [elevation m, temperature C, BIO4, precipitation mm,
@@ -708,7 +732,11 @@ public sealed class WorldPipeline
     /// multiplied by the blend weight, then the weight itself at <see cref="CoarseModelSpec.WeightChannel"/>.
     /// </summary>
     public FloatTensor GetCoarseSlice(int ci0, int cj0, int ci1, int cj1)
-        => _coarse.GetSlice(new[] { 0, ci0, cj0 }, new[] { _coarseChannels + 1, ci1, cj1 });
+    {
+        FloatTensor slice = _coarse.GetSlice(new[] { 0, ci0, cj0 }, new[] { _coarseChannels + 1, ci1, cj1 });
+        CoarseConditioningSite.ApplyClimateToSlice(_sites, slice.Data, _coarseChannels, ci0, cj0, ci1 - ci0, cj1 - cj0, _pooling.Factor);
+        return slice;
+    }
 
     /// <summary>Result of sampling the pipeline over a native-pixel window.</summary>
     public readonly struct Sample
@@ -815,21 +843,39 @@ public sealed class WorldPipeline
         const int pad = (window - 1) / 2 + 1;
 
         int channels = _coarseChannels;
+
+        // Fetched wider by the coast fill's reach, so every cell kept below sees all the land the
+        // fill looks at whichever tile asks, and then cropped back.
+        const int margin = CoastFill.Radius;
         FloatTensor coarseSlice = _coarse.GetSlice(
-            new[] { 0, ci1 - pad, cj1 - pad }, new[] { channels + 1, ci2 + pad, cj2 + pad });
+            new[] { 0, ci1 - pad - margin, cj1 - pad - margin },
+            new[] { channels + 1, ci2 + pad + margin, cj2 + pad + margin });
+        int fh = ci2 - ci1 + 2 * (pad + margin), fw = cj2 - cj1 + 2 * (pad + margin);
+        int fetchedPlane = fh * fw;
+        var fetched = new float[channels][];
+        for (int ch = 0; ch < channels; ch++)
+        {
+            fetched[ch] = new float[fetchedPlane];
+            for (int px = 0; px < fetchedPlane; px++)
+            {
+                float weight = coarseSlice.Data[channels * fetchedPlane + px];
+                fetched[ch][px] = weight > 1e-6f ? coarseSlice.Data[ch * fetchedPlane + px] / weight : 0f;
+            }
+        }
+
+        // The model's climate over the sea is filler; give the sea its shore's climate before any
+        // of it is spread onto land (see CoastFill).
+        if (_coastFill) CoastFill.Apply(fetched, fh, fw);
+
         int ch2 = ci2 + pad - (ci1 - pad);
         int cw = cj2 + pad - (cj1 - pad);
         int coarsePlane = ch2 * cw;
-
         var coarseMap = new float[channels][];
         for (int ch = 0; ch < channels; ch++)
         {
             coarseMap[ch] = new float[coarsePlane];
-            for (int px = 0; px < coarsePlane; px++)
-            {
-                float weight = coarseSlice.Data[channels * coarsePlane + px];
-                coarseMap[ch][px] = weight > 1e-6f ? coarseSlice.Data[ch * coarsePlane + px] / weight : 0f;
-            }
+            for (int r = 0; r < ch2; r++)
+                Array.Copy(fetched[ch], (r + margin) * fw + margin, coarseMap[ch], r * cw, cw);
         }
 
         // Coarse elevation with the sqrt undone; ocean pixels clamp to zero as in Python.
@@ -854,6 +900,11 @@ public sealed class WorldPipeline
 
         int planes = ClimatePlane.CountFor(_coarseSpec);
         var climate = new float[planes * h * w];
+
+        // Story structure climates, per column; in coarse model pixels, a native pixel is n / s.
+        float toModel = (float)_pooling.Factor / s;
+        List<CoarseConditioningSite> sites = CoarseConditioningSite.ClimateSitesNear(
+            _sites, i1 * toModel, j1 * toModel, (i1 + h) * toModel, (j1 + w) * toModel);
         int plane = h * w;
         for (int r = 0; r < h; r++)
         {
@@ -876,6 +927,12 @@ public sealed class WorldPipeline
                 climate[2 * plane + idx] = BilinearSample2D(centralCoarse[4], cenH, cenW, gridY, gridX);
                 climate[3 * plane + idx] = BilinearSample2D(centralCoarse[5], cenH, cenW, gridY, gridX);
                 climate[4 * plane + idx] = beta;
+                if (sites != null)
+                {
+                    float coarseTemperature = BilinearSample2D(centralCoarse[2], cenH, cenW, gridY, gridX);
+                    CoarseConditioningSite.BlendColumn(sites, (i1 + r + 0.5f) * toModel, (j1 + c + 0.5f) * toModel,
+                        coarseTemperature, climate, plane, idx);
+                }
 
                 // The cycle channels and the diurnal range are as smooth as the coarse map; only
                 // temperature has detail at this resolution.

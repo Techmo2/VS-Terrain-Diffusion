@@ -274,15 +274,28 @@ public sealed class TerrainDiffusionProvider : IDisposable
     private long _tilesGenerated;
     private long _totalInferenceMillis;
 
+    private readonly IReadOnlyList<CoarseConditioningSite> _conditioningSites;
+
+    /// <summary>
+    /// Converts a place in world blocks to coarse model pixels: I along Z, J along X, the grid
+    /// <see cref="CoarseConditioningSite"/> works in. Pooling makes the model's grid finer than the map's.
+    /// </summary>
+    public static (float I, float J, float PerBlock) CoarseModelPixel(DiffusionWorldSettings settings, double blockX, double blockZ)
+    {
+        float perBlock = settings.CoarsePooling.Factor / (float)(Math.Max(1, settings.Scale) * CoarseCellNativePixels);
+        return ((float)((blockZ - settings.OriginBlockZ) * perBlock), (float)((blockX - settings.OriginBlockX) * perBlock), perBlock);
+    }
+
     public TerrainDiffusionProvider(ulong seed, PipelineModels models, DiffusionWorldSettings settings,
                                     ILogger logger, ILandmaskSource landmask = null,
                                     IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f,
-                                    int? tileSize = null)
+                                    int? tileSize = null, IReadOnlyList<CoarseConditioningSite> conditioningSites = null)
     {
+        _conditioningSites = conditioningSites;
         _pipeline = new WorldPipeline(seed, models, landmask, settings.Climate, settings.Latitude,
                                       riverBasins, riverBasinDepth, settings.CoarsePooling,
                                       settings.BaseRenoiseSigma, settings.CoarseHeightNoise,
-                                      settings.AltitudeCooling);
+                                      settings.AltitudeCooling, conditioningSites, settings.CoastFill);
         _seed = seed;
         _models = models;
         _landmask = landmask;
@@ -1399,15 +1412,16 @@ public sealed class TerrainDiffusionProvider : IDisposable
             {
                 for (int c = 1; c < w - 1; c++)
                 {
-                    if (!IsLandWithLandNeighbours(coarse, _pipeline.CoarseSpec.WeightChannel, plane, w, r, c)) continue;
+                    // Land, with ground near sea level somewhere in it.
+                    if (!IsLowlandCell(coarse, plane, w, r, c)) continue;
 
                     int dr = r - half, dc = c - half;
                     if (!InsideWorld(dr, dc, coarseToNative)) continue;
 
                     double cost = SpawnCost(dr, dc, northSouthCost);
                     int cellBlockZ = _settings.OriginBlockZ + dr * blocksPerCoarseCell;
-                    float temperature = _settings.WorldTemperature(
-                        CellTemperature(coarse, plane, w, r, c), cellBlockZ);
+                    int cellBlockX = _settings.OriginBlockX + dc * blocksPerCoarseCell;
+                    float temperature = CellArrivalTemperature(coarse, plane, w, r, c, cellBlockX, cellBlockZ);
 
                     if (band == null)
                     {
@@ -1436,13 +1450,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
                 _logger.Notification("[{0}] Spawn search scanned a {1}x{1} coarse box ({2} blocks across).",
                     DiffusionPaths.ModId, boxSize, boxSize * blocksPerCoarseCell);
 
-                if (band == null)
-                {
-                    return ToCandidate(shortlist[0].Row, shortlist[0].Col, half, shortlist[0].TemperatureC, false);
-                }
-
                 shortlist.Sort((a, b) => a.Cost.CompareTo(b.Cost));
-                SpawnCandidate? refined = RefineWithinCells(shortlist, half, band.Value, northSouthCost);
+                SpawnCandidate? refined = RefineWithinCells(shortlist, half, band, northSouthCost);
                 if (refined != null) return refined;
 
                 // Every cell the survey liked turned out to be wrong about itself. Widening will
@@ -1460,12 +1469,17 @@ public sealed class TerrainDiffusionProvider : IDisposable
         if (fallback == null) return null;
 
         // Every box has been searched and no land in the band exists within reach. The nearest
-        // temperature to it is still a far better spawn than dropping the player at the origin.
+        // temperature to it is still a far better spawn than dropping the player at the origin;
+        // still on low ground, the column of that cell closest to the map centre.
         _logger.Notification(
             "[{0}] Spawn search covered {1} blocks around the map centre without finding {2}.",
             DiffusionPaths.ModId, maxBox * blocksPerCoarseCell, band?.ToString() ?? "land");
-        return ToCandidate(fallback.Value.Row, fallback.Value.Col, fallback.Value.Half,
-            fallback.Value.TemperatureC, false);
+        var nearest = new List<(double Cost, int Row, int Col, float TemperatureC)>
+            { (0, fallback.Value.Row, fallback.Value.Col, fallback.Value.TemperatureC) };
+        SpawnCandidate? low = RefineWithinCells(nearest, fallback.Value.Half, null, northSouthCost);
+        return low is { } found
+            ? new SpawnCandidate(found.BlockX, found.BlockZ, found.TemperatureC, false)
+            : ToCandidate(fallback.Value.Row, fallback.Value.Col, fallback.Value.Half, fallback.Value.TemperatureC, false);
     }
 
     /// <summary>
@@ -1474,7 +1488,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
     /// spawn needs anyway, so the common case costs nothing; the rest are insurance against a cell
     /// whose average hides its own terrain.
     /// </summary>
-    private const int MaxRefinedCells = 4;
+    private const int MaxRefinedCells = 8;
 
     /// <summary>
     /// Looks inside the surveyed cells at full resolution and returns the nearest land column that
@@ -1482,7 +1496,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
     /// </summary>
     private SpawnCandidate? RefineWithinCells(
         List<(double Cost, int Row, int Col, float TemperatureC)> shortlist, int half,
-        StartingClimate band, float northSouthCost)
+        StartingClimate? band, float northSouthCost)
     {
         int examined = 0;
         foreach ((double _, int row, int col, float _) in shortlist)
@@ -1509,14 +1523,20 @@ public sealed class TerrainDiffusionProvider : IDisposable
     }
 
     /// <summary>
-    /// The land column in a tile that is in the band and costs least to walk to from the map
-    /// centre, or null if the tile has none.
+    /// The land column in a tile that stands near sea level, is in the band (any, without one) on
+    /// the day a new world starts, and costs least to walk to from the map centre; null if none.
     /// </summary>
-    private SpawnCandidate? BestColumnInTile(TerrainTile tile, StartingClimate band, float northSouthCost)
+    private SpawnCandidate? BestColumnInTile(TerrainTile tile, StartingClimate? band, float northSouthCost)
     {
+        int seaLevel = _settings.SeaLevel;
+        int maxAbove = DiffusionConfig.Instance.WorldGen.SpawnMaxBlocksAboveSea;
+        float lapsePerBlock = ClimateScale.ReferenceLapseCPerKm * _settings.AltitudeCooling / 1000f
+                              * _settings.MetersPerBlockVertical;
+        // The year's shape varies over kilometres, so one reading of it serves the tile.
+        SeasonalCycleMap.Sample? cycle = ArrivalCycle(tile.BlockX + tile.Size / 2, tile.BlockZ + tile.Size / 2);
+
         SpawnCandidate? best = null;
         double bestCost = double.MaxValue;
-
         for (int z = 0; z < tile.Size; z++)
         {
             int blockZ = tile.BlockZ + z;
@@ -1524,22 +1544,58 @@ public sealed class TerrainDiffusionProvider : IDisposable
             {
                 int index = tile.Index(x, z);
                 if (tile.ElevationMeters[index] <= 0f) continue;
-
                 int blockX = tile.BlockX + x;
                 if (!_settings.IsInsideWorld(blockX, blockZ)) continue;
 
-                float temperature = tile.TemperatureC[index];
-                if (!band.Contains(temperature)) continue;
+                int surfaceY = BuiltSurfaceY(tile.SurfaceY[index], blockX, blockZ);
+                int above = surfaceY - seaLevel;
+                if (above < 0 || above > maxAbove) continue;
 
                 double cost = SpawnCost(blockZ - _settings.OriginBlockZ, blockX - _settings.OriginBlockX,
                                         northSouthCost);
                 if (cost >= bestCost) continue;
 
+                // What the game reads at sea level here on the first day: the column's temperature
+                // taken down at the game's own lapse rate, then swung into the season.
+                float seaLevelC = tile.TemperatureC[index] + lapsePerBlock * above;
+                float temperature = ArrivalTemperature(seaLevelC, tile.TemperatureSeasonality[index] / 100f, blockZ, cycle);
+                if (band != null && !band.Value.Contains(temperature)) continue;
+
                 bestCost = cost;
-                best = new SpawnCandidate(blockX, blockZ, temperature, true);
+                best = new SpawnCandidate(blockX, blockZ, temperature, band != null);
             }
         }
         return best;
+    }
+
+    /// <summary>
+    /// When a new world starts, set by the mod system before the spawn search (it knows the
+    /// calendar): the month, 0 to 12, of the first day's middle; which way round the year runs at a
+    /// block Z; and how strongly the seasons swing. Null judges places by their annual mean.
+    /// </summary>
+    public (double Month, System.Func<int, bool> Southern, float Strength)? ArrivalSeason { get; set; }
+
+    /// <summary>The seasonal model's year shape at a column, or null (annual model, or no reading).</summary>
+    private SeasonalCycleMap.Sample? ArrivalCycle(int blockX, int blockZ)
+    {
+        if (!_pipeline.CoarseSpec.HasSeasonalCycle) return null;
+        Span<float> channels = stackalloc float[_pipeline.CoarseSpec.Channels];
+        if (!CoarseChannelsAt(blockX, blockZ, channels)) return null;
+        Span<float> shape = stackalloc float[8];
+        shape[0] = channels[CoarseChannel.TemperatureShapeCos];
+        shape[1] = channels[CoarseChannel.TemperatureShapeSin];
+        return new SeasonalCycleMap.Sample(shape);
+    }
+
+    /// <summary>
+    /// A sea-level annual temperature as a player arriving on a new world's first day reads it (the
+    /// day's mean, before the hour and the weather): what the starting climate is judged by.
+    /// </summary>
+    private float ArrivalTemperature(float seaLevelAnnualC, float sigmaC, int blockZ, SeasonalCycleMap.Sample? cycle)
+    {
+        if (ArrivalSeason is not { } season) return seaLevelAnnualC;
+        return seaLevelAnnualC + (float)DiffusionSeasons.SeasonalDeviation(
+            season.Month, season.Southern(blockZ), sigmaC, season.Strength, cycle);
     }
 
     /// <summary>
@@ -1553,6 +1609,49 @@ public sealed class TerrainDiffusionProvider : IDisposable
     {
         double northSouth = dr * northSouthCost;
         return northSouth * northSouth + (double)dc * dc;
+    }
+
+    /// <summary>
+    /// Whether a coarse cell is land with ground near sea level somewhere in it: its mean above
+    /// sea, and its fifth percentile within twice the spawn's height limit plus a little (the
+    /// percentile is itself an average over the cell).
+    /// </summary>
+    private bool IsLowlandCell(FloatTensor coarse, int plane, int width, int row, int col)
+    {
+        int index = row * width + col;
+        float weight = coarse.Data[_pipeline.CoarseSpec.WeightChannel * plane + index];
+        if (weight <= 1e-6f) return false;
+        float meanRoot = coarse.Data[index] / weight;
+        if (meanRoot <= 0f) return false;
+        float p5Root = meanRoot - coarse.Data[plane + index] / weight;
+        float p5 = Math.Sign(p5Root) * p5Root * p5Root;
+        float limit = (DiffusionConfig.Instance.WorldGen.SpawnMaxBlocksAboveSea * 2 + 4) * _settings.MetersPerBlockVertical;
+        return p5 <= limit;
+    }
+
+    /// <summary>
+    /// A coarse cell's temperature as a player arriving on the first day would read it at sea
+    /// level: the cell's mean, carried down from its mean elevation at the game's lapse rate,
+    /// through the world's settings, and swung into the season.
+    /// </summary>
+    private float CellArrivalTemperature(FloatTensor coarse, int plane, int width, int row, int col, int blockX, int blockZ)
+    {
+        int index = row * width + col;
+        float weight = coarse.Data[_pipeline.CoarseSpec.WeightChannel * plane + index];
+        if (weight <= 1e-6f) return 0f;
+        float root = Math.Max(0f, coarse.Data[index] / weight);
+        float seaLevel = _settings.WorldTemperature(CellTemperature(coarse, plane, width, row, col), blockZ)
+                         + ClimateScale.ReferenceLapseCPerKm * _settings.AltitudeCooling / 1000f * root * root;
+        float sigmaC = coarse.Data[CoarseChannel.TemperatureSeasonality * plane + index] / weight / 100f;
+        SeasonalCycleMap.Sample? cycle = null;
+        if (_pipeline.CoarseSpec.HasSeasonalCycle)
+        {
+            Span<float> shape = stackalloc float[8];
+            shape[0] = coarse.Data[CoarseChannel.TemperatureShapeCos * plane + index] / weight;
+            shape[1] = coarse.Data[CoarseChannel.TemperatureShapeSin * plane + index] / weight;
+            cycle = new SeasonalCycleMap.Sample(shape);
+        }
+        return ArrivalTemperature(seaLevel, sigmaC, blockZ, cycle);
     }
 
     /// <summary>Mean temperature of a coarse cell, in degrees, straight from the model.</summary>
@@ -1648,7 +1747,9 @@ public sealed class TerrainDiffusionProvider : IDisposable
                                                        pooling: _settings.CoarsePooling,
                                                        baseRenoiseSigma: _settings.BaseRenoiseSigma,
                                                        coarseHeightNoise: _settings.CoarseHeightNoise,
-                                                       altitudeCooling: _settings.AltitudeCooling)
+                                                       altitudeCooling: _settings.AltitudeCooling,
+                                                       conditioningSites: _conditioningSites,
+                                                       coastFill: _settings.CoastFill)
                 {
                     CoarseWindowStore = _store?.CoarseWindows(RiverFreeCoarseVariant)
                 };
