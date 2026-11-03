@@ -86,6 +86,21 @@
     },
     {
       "category": "terraindiffusion",
+      "code": "terraindiffusionClimateModel",
+      "dataType": "dropdown",
+      "values": [
+        "seasonal",
+        "annual"
+      ],
+      "names": [
+        "seasonal",
+        "annual"
+      ],
+      "default": "seasonal",
+      "onlyDuringWorldCreate": true
+    },
+    {
+      "category": "terraindiffusion",
       "code": "terraindiffusionCoarsePooling",
       "dataType": "dropdown",
       "values": [

@@ -51,6 +51,15 @@ public class DiffusionSeasons : ModSystem
     private const float WetSeasonPerCv = 1f / 1.70f;
 
     /// <summary>
+    /// Rain multiplier departure per unit departure of the seasonal model's monthly rain from its
+    /// mean, on a seasonal-model world. The same measured transfer as <see cref="WetSeasonPerCv"/>,
+    /// restated per standard deviation instead of per amplitude of vanilla's smootherstep year (whose
+    /// <c>2s - 1</c> has an RMS of 0.753): realised CV = 2.26 × the multiplier's standard deviation,
+    /// so the model's monthly rain shape is scaled by 1 / 2.26 to come out at the model's own CV.
+    /// </summary>
+    private const double RainShapeGain = 1.0 / 2.2575;
+
+    /// <summary>
     /// Loads on the client as well as the server. Only the climate hook runs there; everything that
     /// touches the model or generates terrain lives in server-side systems.
     /// </summary>
@@ -100,15 +109,27 @@ public class DiffusionSeasons : ModSystem
 
         IGameCalendar calendar = _api.World.Calendar;
         double yearRel = totalDays / calendar.DaysPerYear % 1.0;
-        double summer = SummerWeight(yearRel, pos);
+        SeasonalCycleMap.Sample? cycle = SeasonalCycleMap.At(_api.World.BlockAccessor, pos);
 
-        float swing = SwingPerSigma * sample.Value.TemperatureSigmaC * _config.SeasonalTemperatureStrength;
-        double temperature = climate.WorldGenTemperature - swing / 2.0 + swing * summer;
+        double temperature;
+        if (cycle == null)
+        {
+            double summer = SummerWeight(yearRel, pos);
+            float swing = SwingPerSigma * sample.Value.TemperatureSigmaC * _config.SeasonalTemperatureStrength;
+            temperature = climate.WorldGenTemperature - swing / 2.0 + swing * summer;
+        }
+        else
+        {
+            // The seasonal model's own year: its two harmonics, peaking at the game's midsummer.
+            temperature = climate.WorldGenTemperature + _config.SeasonalTemperatureStrength
+                * cycle.Value.TemperatureDeviation(sample.Value.TemperatureSigmaC, SeasonTheta(yearRel, pos));
+        }
 
-        // Day and night, on vanilla's shape: clear desert air swings far more than damp air,
-        // and the coldest hour is just before dawn.
+        // Day and night: the coldest hour is just before dawn. The seasonal model knows each place's
+        // swing (BIO2, the mean of each month's maximum minus minimum); otherwise vanilla's
+        // stand-in, where clear desert air swings far more than damp air.
         double hourOfDay = totalDays % 1.0 * calendar.HoursPerDay;
-        double diurnalRange = 18.0 - climate.WorldgenRainfall * 13.0;
+        double diurnalRange = cycle?.DiurnalRangeC ?? 18.0 - climate.WorldgenRainfall * 13.0;
         double dayPhase = GameMath.SmoothStep(Math.Abs(GameMath.CyclicValueDistance(4.0, hourOfDay, 24.0) / 12.0));
         temperature += (dayPhase - 0.5) * diurnalRange;
 
@@ -130,8 +151,11 @@ public class DiffusionSeasons : ModSystem
         SeasonalityMap.Sample? sample = SeasonalityMap.At(_api.World.BlockAccessor, pos);
         if (sample == null) return 1f;
 
-        return RainfallFactor(sample.Value.PrecipitationCv,
-            SummerWeight(totalDays / _api.World.Calendar.DaysPerYear % 1.0, pos));
+        double yearRel = totalDays / _api.World.Calendar.DaysPerYear % 1.0;
+        SeasonalCycleMap.Sample? cycle = SeasonalCycleMap.At(_api.World.BlockAccessor, posX, posZ);
+        return cycle == null
+            ? RainfallFactor(sample.Value.PrecipitationCv, SummerWeight(yearRel, pos))
+            : RainfallFactor(cycle.Value, SeasonTheta(yearRel, pos));
     }
 
     /// <summary>
@@ -157,9 +181,41 @@ public class DiffusionSeasons : ModSystem
     /// just then, which says nothing about the shape of the year.
     /// </summary>
     public float RainfallFactorAt(BlockPos pos, double totalDays, float precipitationCv)
-        => !_config.SeasonalPrecipitation
-            ? 1f
-            : RainfallFactor(precipitationCv, SummerWeight(totalDays / _api.World.Calendar.DaysPerYear % 1.0, pos));
+    {
+        if (!_config.SeasonalPrecipitation) return 1f;
+        double yearRel = totalDays / _api.World.Calendar.DaysPerYear % 1.0;
+        SeasonalCycleMap.Sample? cycle = SeasonalCycleMap.At(_api.World.BlockAccessor, pos);
+        return cycle == null
+            ? RainfallFactor(precipitationCv, SummerWeight(yearRel, pos))
+            : RainfallFactor(cycle.Value, SeasonTheta(yearRel, pos));
+    }
+
+    /// <summary>
+    /// The seasonal model's rain at this point in the year: its monthly shape, scaled by
+    /// <see cref="RainShapeGain"/> for vanilla's rain transfer and by the configured strength, and
+    /// held above <see cref="WorldGenConfig.SeasonalPrecipitationFloor"/> as the annual path is.
+    /// </summary>
+    private float RainfallFactor(SeasonalCycleMap.Sample cycle, double theta)
+    {
+        double shape = cycle.RelativeRain(theta) - 1.0;
+        return (float)Math.Max(_config.SeasonalPrecipitationFloor,
+            1.0 + RainShapeGain * _config.SeasonalPrecipitationStrength * shape);
+    }
+
+    /// <summary>
+    /// Angle through the year for the seasonal model's harmonics, 0 at midsummer: the peak of
+    /// <see cref="SummerWeight"/> (month 6.5, or 0.5 in the southern half), so the model's warm season
+    /// lands where the game's calendar puts summer.
+    /// </summary>
+    private double SeasonTheta(double yearRel, BlockPos pos)
+    {
+        float? seasonOverride = _api.World.Calendar.SeasonOverride;
+        double month = seasonOverride.HasValue ? seasonOverride.Value * 12f : yearRel * 12.0;
+        bool southern = _config.SeasonHemispheres
+                        && !seasonOverride.HasValue
+                        && !(_api.World.Calendar.OnGetLatitude(pos.Z) > 0.0);
+        return 2.0 * Math.PI * (month - (southern ? 0.5 : 6.5)) / 12.0;
+    }
 
     /// <summary>
     /// How far into summer the year is, 0 at midwinter and 1 at midsummer, on the same smootherstep

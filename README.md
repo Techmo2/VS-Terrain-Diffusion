@@ -48,6 +48,7 @@ and `/worldconfig <code> <value>` changes one later.
 | Vertical exaggeration    | `terraindiffusionVerticalExaggeration` | 1x      | Multiplies terrain height. 1x is true scale. |
 | Sea level                | `terraindiffusionSeaLevel`             | vanilla | `128` fixes the sea at Y 128, so every block a taller world adds goes above it. |
 | Climate                  | `terraindiffusionClimate`              | model   | Whether the model drives climate as well as terrain. |
+| Climate model            | `terraindiffusionClimateModel`         | seasonal | `seasonal` also predicts the shape of each place's year, when its rain falls and its day-night swing, which give Köppen classes. `annual` is the original model; worlds made before this setting keep it. The two draw different land from the same seed. |
 | Terrain intensity        | `terraindiffusionCoarsePooling`        | off     | Packs 2x or 4x the landscape into the same distance: ranges, valleys and coasts closer together, relief steeper. |
 | Intensity mode           | `terraindiffusionCoarsePoolMode`       | average | `extreme` keeps each block's highest ground and deepest valley floor: taller peaks, deeper cuts, less realistic. |
 | Detail redraw            | `terraindiffusionDetailRedraw`         | 35      | Hundredths. How much of the detail model's first draw is redrawn. 70–100 varies coast shapes and small valleys by 10–17 m on average. |
@@ -351,7 +352,29 @@ Neither channel fits Vintage Story's packed climate integer, whose interpolator 
 three bytes, so they are map region mod data — saved with the region and, unlike its other maps,
 sent to clients. A vanilla client falls back to vanilla's seasons for display.
 
+On a `seasonal` world the year also has the model's shape: a second temperature harmonic (short
+sharp or long flat summers), the timing of the wet season and any second rainy season, and the
+day-night swing (BIO2) in place of vanilla's `18 − 13 × rainfall`. These live in a second region map
+beside the first. An `annual` world keeps its sine year with the wet season in summer.
+
 `/tdiff season <x> <z>` walks a year at a position and prints what it does.
+
+### Climate for other mods
+
+`api.ModLoader.GetModSystem<TerrainDiffusionModSystem>().Climate` (server side; null on a world the
+mod is not generating) answers for any block column, generating its tile if needed — call it from
+world generation or another background thread:
+
+| Member | Returns |
+| ------ | ------- |
+| `TryGetClimate(x, z, out ClimateRecord)` | Annual mean temperature, BIO4, rainfall and BIO15 as the game uses them (world settings applied), ground elevation, the six seasonal-cycle channels and the diurnal range. |
+| `ClimateRecord.Months()` | Twelve monthly temperatures and rainfalls. Month 0 is the first month after midsummer. |
+| `ClimateRecord.KoppenClass` | Köppen–Geiger class (Beck et al. 2018), an index into `Koppen.Classes`; `Koppen.Water` under the sea. |
+| `ClimateRecord.KoppenMemberships(softness)` | A weight per class summing to 1, blending across class boundaries; `Koppen.Softness` sets how wide. |
+| `TryGetCoarseChannels(x, z, span)` | The coarse model's raw output (`TerrainClimate.ChannelNames`), smooth at 7.68 km. |
+
+On an `annual` world `ClimateRecord.HasSeasonalCycle` is false: the cycle is approximated (rain
+peaking in summer) and the diurnal range is NaN. `/tdiff climate [x z]` prints what the API returns.
 
 ## Commands
 
@@ -364,6 +387,7 @@ sent to clients. A vanilla client falls back to vanilla's seasons for display.
 | `map`                | The debug map's address, and how many tiles it is holding. |
 | `here`               | Elevation, slope, full bioclimate and derived cover where you stand, plus the latitude diagnostics below. |
 | `season <x> <z>`     | The same diagnostics at a position, and the year's temperature and rainfall cycle there. Usable from a server console, where `here` is not. |
+| `climate [x z]`      | What [the climate API](#climate-for-other-mods) returns: annual figures, twelve months, diurnal range, Köppen class and its blend. Your position by default. |
 | `column <x> <z>`     | What actually got generated in a column, next to what the model said.   |
 | `tiles [clear]`      | The [tile database](#tile-database): its file, tiles stored, size, and this session's reads and writes. `clear` empties it. |
 | `pregen <radius> [x z]` | Fills the tile database for every chunk within `radius` blocks of `x z` (absolute block coordinates; spawn by default). See [Pregenerating](#pregenerating-for-a-server). |

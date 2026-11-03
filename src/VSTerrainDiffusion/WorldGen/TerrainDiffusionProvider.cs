@@ -436,8 +436,8 @@ public sealed class TerrainDiffusionProvider : IDisposable
         {
             FloatTensor coarse = _pipeline.GetCoarseSlice(i, j, i + 1, j + 1);
 
-            // Channel 6 is the blend weight every other channel has to be divided by.
-            float weight = coarse.Data[6];
+            // The last channel is the blend weight every other channel has to be divided by.
+            float weight = coarse.Data[_pipeline.CoarseSpec.WeightChannel];
             if (weight <= 1e-6f) return null;
 
             float elevation = coarse.Data[0] / weight;
@@ -461,6 +461,66 @@ public sealed class TerrainDiffusionProvider : IDisposable
         {
             _scheduler.Exit();
         }
+    }
+
+    /// <summary>The coarse model this world runs, and so which channels <see cref="CoarseChannelsAt"/> fills.</summary>
+    public CoarseModelSpec CoarseSpec => _pipeline.CoarseSpec;
+
+    /// <summary>
+    /// Every channel of the coarse model at a block column, in the units of <see cref="CoarseChannel"/>
+    /// except that elevation and its fifth percentile are metres. Bilinear between coarse cell
+    /// centres, as the pipeline samples its climate. The coarse map is the model's raw output: none
+    /// of the world's climate settings are in it (<see cref="TerrainTile"/> has those for the four
+    /// annual channels). False on failure.
+    /// </summary>
+    public bool CoarseChannelsAt(double blockX, double blockZ, Span<float> channels)
+    {
+        int scale = Math.Max(1, _settings.Scale);
+        int cells = CoarseCellNativePixels;
+        double ci = ((blockZ - _settings.OriginBlockZ) / scale + 0.5) / cells - 0.5;
+        double cj = ((blockX - _settings.OriginBlockX) / scale + 0.5) / cells - 0.5;
+        int i0 = (int)Math.Floor(ci), j0 = (int)Math.Floor(cj);
+        float fi = (float)(ci - i0), fj = (float)(cj - j0);
+
+        int count = _pipeline.CoarseSpec.Channels, weightBase = 4 * _pipeline.CoarseSpec.WeightChannel;
+        float[] data;
+        _scheduler.Enter();
+        try
+        {
+            data = _pipeline.GetCoarseSlice(i0, j0, i0 + 2, j0 + 2).Data;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        finally
+        {
+            _scheduler.Exit();
+        }
+
+        Span<float> cell = stackalloc float[4];
+        for (int ch = 0; ch < count && ch < channels.Length; ch++)
+        {
+            for (int k = 0; k < 4; k++)
+            {
+                float weight = data[weightBase + k];
+                if (weight <= 1e-6f) return false;
+                float value = data[ch * 4 + k] / weight;
+                if (ch == CoarseChannel.Elevation)
+                {
+                    value = Math.Sign(value) * value * value;
+                }
+                else if (ch == CoarseChannel.ElevationP5)
+                {
+                    // Stored as elevation minus the fifth percentile, both in square-root metres.
+                    float root = data[k] / weight - value;
+                    value = Math.Sign(root) * root * root;
+                }
+                cell[k] = value;
+            }
+            channels[ch] = (1 - fi) * ((1 - fj) * cell[0] + fj * cell[1]) + fi * ((1 - fj) * cell[2] + fj * cell[3]);
+        }
+        return true;
     }
 
     public TerrainTile GetTile(int tileX, int tileZ)
@@ -1206,7 +1266,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
             for (int col = 0; col < size; col++)
             {
                 int index = row * size + col;
-                float weight = coarse.Data[6 * plane + index];
+                float weight = coarse.Data[_pipeline.CoarseSpec.WeightChannel * plane + index];
                 if (weight <= 1e-6f) continue;
 
                 float value = coarse.Data[index] / weight;
@@ -1339,7 +1399,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
             {
                 for (int c = 1; c < w - 1; c++)
                 {
-                    if (!IsLandWithLandNeighbours(coarse, plane, w, r, c)) continue;
+                    if (!IsLandWithLandNeighbours(coarse, _pipeline.CoarseSpec.WeightChannel, plane, w, r, c)) continue;
 
                     int dr = r - half, dc = c - half;
                     if (!InsideWorld(dr, dc, coarseToNative)) continue;
@@ -1499,7 +1559,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
     private float CellTemperature(FloatTensor coarse, int plane, int width, int row, int col)
     {
         int index = row * width + col;
-        float weight = coarse.Data[6 * plane + index];
+        float weight = coarse.Data[_pipeline.CoarseSpec.WeightChannel * plane + index];
         if (weight <= 1e-6f) return 0f;
 
         // The coarse model's temperature is at its own ground, on the model's lapse rate; altitude
@@ -1535,14 +1595,14 @@ public sealed class TerrainDiffusionProvider : IDisposable
          nativeI * _settings.Scale + _settings.OriginBlockZ);
 
     /// <summary>A coarse pixel counts as land only if all eight neighbours are above sea level too.</summary>
-    private static bool IsLandWithLandNeighbours(FloatTensor coarse, int plane, int width, int row, int col)
+    private static bool IsLandWithLandNeighbours(FloatTensor coarse, int weightChannel, int plane, int width, int row, int col)
     {
         for (int dr = -1; dr <= 1; dr++)
         {
             for (int dc = -1; dc <= 1; dc++)
             {
                 int index = (row + dr) * width + (col + dc);
-                float weight = coarse.Data[6 * plane + index];
+                float weight = coarse.Data[weightChannel * plane + index];
                 if (weight <= 1e-6f) return false;
                 // Channel 0 is elevation in signed-sqrt space, so its sign is the sign of elevation.
                 if (coarse.Data[index] / weight <= 0f) return false;
@@ -1610,12 +1670,13 @@ public sealed class TerrainDiffusionProvider : IDisposable
         int i0 = (int)Math.Floor(ci), j0 = (int)Math.Floor(cj);
         double fi = ci - i0, fj = cj - j0;
 
-        // Channel 0 is the blended elevation and channel 6 the blend weight it is divided by.
+        // Channel 0 is the blended elevation and the last channel the blend weight it is divided by.
         float[] data = pipeline.GetCoarseSlice(i0, j0, i0 + 2, j0 + 2).Data;
+        int weight = 4 * pipeline.CoarseSpec.WeightChannel;
         double Cell(int r, int c)
         {
             int k = r * 2 + c;
-            return data[4 * 6 + k] > 1e-6f ? data[k] / data[4 * 6 + k] : 0.0;
+            return data[weight + k] > 1e-6f ? data[k] / data[weight + k] : 0.0;
         }
         return (1 - fi) * ((1 - fj) * Cell(0, 0) + fj * Cell(0, 1)) +
                fi * ((1 - fj) * Cell(1, 0) + fj * Cell(1, 1));

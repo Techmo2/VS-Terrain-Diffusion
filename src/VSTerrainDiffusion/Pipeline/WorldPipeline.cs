@@ -36,6 +36,10 @@ public sealed class WorldPipeline
     private static readonly int[] CondDims = { 16, 16, 4, 16, 5, 1 };
 
     private readonly WorldPipelineModelConfig _config;
+
+    /// <summary>The coarse model's channels; the coarse map adds the blend weight after them, at this index.</summary>
+    private readonly CoarseModelSpec _coarseSpec;
+    private readonly int _coarseChannels;
     private readonly int _latentCompression;
     private readonly float[] _modelMeans;
     private readonly float[] _modelStds;
@@ -123,8 +127,15 @@ public sealed class WorldPipeline
         _latitude = latitude != null && !latitude.IsNeutral ? latitude : null;
 
         _latentCompression = _config.LatentCompression;
-        _modelMeans = _config.CoarseMeans;
-        _modelStds = _config.CoarseStds;
+        _coarseSpec = models.CoarseSpec ?? CoarseModelSpec.Annual;
+        _coarseChannels = _coarseSpec.Channels;
+        _modelMeans = _coarseSpec.Means(_config);
+        _modelStds = _coarseSpec.Stds(_config);
+        if (_modelMeans.Length < _coarseChannels || _modelStds.Length < _coarseChannels)
+        {
+            throw new ArgumentException(
+                $"The {_coarseSpec.Code} coarse model has {_coarseChannels} channels but statistics for {_modelMeans.Length}");
+        }
         _residualMean = _config.ResidualMean;
         _residualStd = _config.ResidualStd;
         _histogramRaw = _config.HistogramRaw ?? new float[5];
@@ -190,6 +201,9 @@ public sealed class WorldPipeline
 
     public ulong Seed => _seed;
 
+    /// <summary>The coarse model this pipeline runs, and so which channels its coarse map holds.</summary>
+    public CoarseModelSpec CoarseSpec => _coarseSpec;
+
     public float NativeResolution => _config.NativeResolution;
 
     public long TotalComputedWindowCount => _tileStore.TotalComputedWindowCount;
@@ -253,9 +267,10 @@ public sealed class WorldPipeline
         int n = _pooling.Factor;
         int s = CoarseTileSize / n, st = CoarseTileStride / n;
         float[] weights = LinearWeightWindow(s);
-        var outWindow = new TensorWindow(new[] { 7, s, s }, new[] { 7, st, st });
+        int mapChannels = _coarseChannels + 1;
+        var outWindow = new TensorWindow(new[] { mapChannels, s, s }, new[] { mapChannels, st, st });
 
-        return _tileStore.GetOrCreate("base_coarse_map", new int?[] { 7, null, null },
+        return _tileStore.GetOrCreate("base_coarse_map", new int?[] { mapChannels, null, null },
             (windowIndex, _) => StoredCoarseTile(windowIndex, weights, s), outWindow,
             Array.Empty<InfiniteTensor>(), Array.Empty<TensorWindow>());
     }
@@ -263,13 +278,14 @@ public sealed class WorldPipeline
     private FloatTensor StoredCoarseTile(int[] windowIndex, float[] weights, int size)
     {
         ICoarseWindowStore store = CoarseWindowStore;
-        int length = 7 * size * size;
+        int mapChannels = _coarseChannels + 1;
+        int length = mapChannels * size * size;
         float[] stored = store?.TryLoad(windowIndex[1], windowIndex[2], length);
-        if (stored != null) return new FloatTensor(new[] { 7, size, size }, stored);
+        if (stored != null) return new FloatTensor(new[] { mapChannels, size, size }, stored);
 
         FloatTensor computed = CoarseTile(windowIndex, weights);
         Interlocked.Increment(ref _coarseWindowsComputed);
-        store?.Save(windowIndex[1], windowIndex[2], computed.Data);
+        store?.Save(windowIndex[1], windowIndex[2], computed.Data, mapChannels);
         return computed;
     }
 
@@ -278,6 +294,7 @@ public sealed class WorldPipeline
         const int s = CoarseTileSize, st = CoarseTileStride;
         int plane = s * s;
         int i1 = windowIndex[1] * st, j1 = windowIndex[2] * st;
+        int channels = _coarseChannels;
 
         // Synthetic conditioning: [elevSqrt, temp, tempStd, precip, precipStd].
         // Python samples with the coordinates intentionally swapped.
@@ -317,7 +334,7 @@ public sealed class WorldPipeline
         }
 
         var scheduler = new EdmScheduler(20);
-        float[] sample = GaussianNoisePatch.Generate(_seed + 1, i1, j1, s, s, 6, s, s);
+        float[] sample = GaussianNoisePatch.Generate(_seed + 1, i1, j1, s, s, channels, s, s);
         for (int k = 0; k < sample.Length; k++) sample[k] *= scheduler.Sigmas[0];
 
         var condInputs = new float[5][];
@@ -328,25 +345,25 @@ public sealed class WorldPipeline
             condShapes[ci] = new long[] { 1 };
         }
 
-        var xIn = new float[11 * plane];
-        Array.Copy(condMixed, 0, xIn, 6 * plane, 5 * plane);
+        var xIn = new float[(channels + 5) * plane];
+        Array.Copy(condMixed, 0, xIn, channels * plane, 5 * plane);
 
         for (int step = 0; step < 20; step++)
         {
             float sigma = scheduler.Sigmas[step];
             float cNoise = EdmScheduler.TrigflowPreconditionNoise(sigma);
             float[] scaledIn = EdmScheduler.PreconditionInputs(sample, sigma);
-            Array.Copy(scaledIn, 0, xIn, 0, 6 * plane);
+            Array.Copy(scaledIn, 0, xIn, 0, channels * plane);
 
             InferencePreemption.ThrowIfPreempted();
             float[] modelOut = _coarseModel.RunModel(
-                xIn, new long[] { 1, 11, s, s }, new[] { cNoise }, condInputs, condShapes);
+                xIn, new long[] { 1, channels + 5, s, s }, new[] { cNoise }, condInputs, condShapes);
             sample = scheduler.Step(modelOut, sample);
         }
 
         // Denormalise, then turn channel 1 into the p5 difference.
-        var output = new float[6 * plane];
-        for (int ch = 0; ch < 6; ch++)
+        var output = new float[channels * plane];
+        for (int ch = 0; ch < channels; ch++)
         {
             float mean = _modelMeans[ch], std = _modelStds[ch];
             for (int px = 0; px < plane; px++)
@@ -358,16 +375,16 @@ public sealed class WorldPipeline
         int size = s;
         if (!_pooling.IsNone)
         {
-            output = Pool(output, s, _pooling);
+            output = Pool(output, channels, s, _pooling);
             size = s / _pooling.Factor;
             plane = size * size;
         }
 
-        var result = new FloatTensor(new[] { 7, size, size });
-        for (int ch = 0; ch < 6; ch++)
+        var result = new FloatTensor(new[] { channels + 1, size, size });
+        for (int ch = 0; ch < channels; ch++)
             for (int px = 0; px < plane; px++)
                 result.Data[ch * plane + px] = output[ch * plane + px] * weights[px];
-        Array.Copy(weights, 0, result.Data, 6 * plane, plane);
+        Array.Copy(weights, 0, result.Data, channels * plane, plane);
         return result;
     }
 
@@ -391,15 +408,15 @@ public sealed class WorldPipeline
     }
 
     /// <summary>
-    /// Pools a (6, s, s) coarse output to (6, s/n, s/n), as the reference's
+    /// Pools a (channels, s, s) coarse output to (channels, s/n, s/n), as the reference's
     /// <c>_pool_coarse_conditioning</c>: averages everywhere, or, for an extreme pool, the highest
     /// elevation and the lowest fifth percentile in each block.
     /// </summary>
-    private static float[] Pool(float[] input, int s, CoarsePooling pooling)
+    private static float[] Pool(float[] input, int channels, int s, CoarsePooling pooling)
     {
         int n = pooling.Factor, size = s / n, plane = s * s, pooledPlane = size * size;
-        var output = new float[6 * pooledPlane];
-        for (int ch = 0; ch < 6; ch++)
+        var output = new float[channels * pooledPlane];
+        for (int ch = 0; ch < channels; ch++)
         {
             bool max = pooling.Extreme && ch == 0, min = pooling.Extreme && ch == 1;
             for (int pi = 0; pi < size; pi++)
@@ -426,7 +443,8 @@ public sealed class WorldPipeline
     {
         const int s = LatentTileSize, st = LatentTileStride;
         var outWindow = new TensorWindow(new[] { 6, s, s }, new[] { 6, st, st });
-        var coarseWindow = new TensorWindow(new[] { 7, 4, 4 }, new[] { 7, 1, 1 }, new[] { 0, -1, -1 });
+        int mapChannels = _coarseChannels + 1;
+        var coarseWindow = new TensorWindow(new[] { mapChannels, 4, 4 }, new[] { mapChannels, 1, 1 }, new[] { 0, -1, -1 });
         float[] weights = LinearWeightWindow(s);
 
         float initialT = (float)Math.Atan(EdmScheduler.SigmaMax / SigmaData);
@@ -514,7 +532,10 @@ public sealed class WorldPipeline
         return results;
     }
 
-    /// <summary>Builds the 58-value conditioning vector from a (7, 4, 4) coarse slice.</summary>
+    /// <summary>
+    /// Builds the 58-value conditioning vector from a (channels + 1, 4, 4) coarse slice. Only the
+    /// annual channels reach the base model, whatever else the coarse model produced.
+    /// </summary>
     private float[] BuildLatentConditioning(FloatTensor coarseSlice)
     {
         const int n = 16;
@@ -524,7 +545,7 @@ public sealed class WorldPipeline
         {
             for (int px = 0; px < n; px++)
             {
-                float w = coarseSlice.Data[6 * n + px];
+                float w = coarseSlice.Data[_coarseChannels * n + px];
                 condFlat[ch * n + px] = w > 1e-6f ? coarseSlice.Data[ch * n + px] / w : 0f;
             }
         }
@@ -649,10 +670,6 @@ public sealed class WorldPipeline
     // =====================================================================
 
     /// <summary>
-    /// Coarse tensor slice with shape [7, ci1-ci0, cj1-cj0] in coarse index units
-    /// (1 unit = 256 native pixels). Channel 6 is the blend weight.
-    /// </summary>
-    /// <summary>
     /// The conditioning the coarse stage is handed at one cell, in real units and before it is
     /// normalised and stirred into noise: [elevation m, temperature C, BIO4, precipitation mm,
     /// BIO15]. For the debug map, so what the model was asked for can be read against what it
@@ -686,8 +703,12 @@ public sealed class WorldPipeline
         return sum / sea.Length;
     }
 
+    /// <summary>
+    /// The coarse map over [ci0, ci1) x [cj0, cj1): <see cref="CoarseSpec"/>'s channels, each
+    /// multiplied by the blend weight, then the weight itself at <see cref="CoarseModelSpec.WeightChannel"/>.
+    /// </summary>
     public FloatTensor GetCoarseSlice(int ci0, int cj0, int ci1, int cj1)
-        => _coarse.GetSlice(new[] { 0, ci0, cj0 }, new[] { 7, ci1, cj1 });
+        => _coarse.GetSlice(new[] { 0, ci0, cj0 }, new[] { _coarseChannels + 1, ci1, cj1 });
 
     /// <summary>Result of sampling the pipeline over a native-pixel window.</summary>
     public readonly struct Sample
@@ -696,9 +717,10 @@ public sealed class WorldPipeline
         public readonly float[] Elevation;
 
         /// <summary>
-        /// Climate channels, row-major (5 * H * W): mean temperature (C), temperature seasonality,
-        /// annual precipitation (mm), precipitation seasonality, and the local lapse rate (K/m).
-        /// Null when climate was not requested.
+        /// Climate channels, row-major (planes * H * W), indexed by <see cref="ClimatePlane"/>: mean
+        /// temperature (C), temperature seasonality, annual precipitation (mm), precipitation
+        /// seasonality, the local lapse rate (K/m), and for a seasonal coarse model the six cycle
+        /// channels and the diurnal range. Null when climate was not requested.
         /// </summary>
         public readonly float[] Climate;
 
@@ -792,19 +814,20 @@ public sealed class WorldPipeline
         const int window = 15;
         const int pad = (window - 1) / 2 + 1;
 
+        int channels = _coarseChannels;
         FloatTensor coarseSlice = _coarse.GetSlice(
-            new[] { 0, ci1 - pad, cj1 - pad }, new[] { 7, ci2 + pad, cj2 + pad });
+            new[] { 0, ci1 - pad, cj1 - pad }, new[] { channels + 1, ci2 + pad, cj2 + pad });
         int ch2 = ci2 + pad - (ci1 - pad);
         int cw = cj2 + pad - (cj1 - pad);
         int coarsePlane = ch2 * cw;
 
-        var coarseMap = new float[6][];
-        for (int ch = 0; ch < 6; ch++)
+        var coarseMap = new float[channels][];
+        for (int ch = 0; ch < channels; ch++)
         {
             coarseMap[ch] = new float[coarsePlane];
             for (int px = 0; px < coarsePlane; px++)
             {
-                float weight = coarseSlice.Data[6 * coarsePlane + px];
+                float weight = coarseSlice.Data[channels * coarsePlane + px];
                 coarseMap[ch][px] = weight > 1e-6f ? coarseSlice.Data[ch * coarsePlane + px] / weight : 0f;
             }
         }
@@ -823,13 +846,14 @@ public sealed class WorldPipeline
 
         const int centralPad = window / 2;
         int cenH = ch2 - 2 * centralPad, cenW = cw - 2 * centralPad;
-        var centralCoarse = new float[6][][];
-        for (int ch = 0; ch < 6; ch++)
+        var centralCoarse = new float[channels][][];
+        for (int ch = 0; ch < channels; ch++)
         {
             centralCoarse[ch] = CropArray(To2D(coarseMap[ch], ch2, cw), centralPad, centralPad, cenH, cenW);
         }
 
-        var climate = new float[5 * h * w];
+        int planes = ClimatePlane.CountFor(_coarseSpec);
+        var climate = new float[planes * h * w];
         int plane = h * w;
         for (int r = 0; r < h; r++)
         {
@@ -852,6 +876,14 @@ public sealed class WorldPipeline
                 climate[2 * plane + idx] = BilinearSample2D(centralCoarse[4], cenH, cenW, gridY, gridX);
                 climate[3 * plane + idx] = BilinearSample2D(centralCoarse[5], cenH, cenW, gridY, gridX);
                 climate[4 * plane + idx] = beta;
+
+                // The cycle channels and the diurnal range are as smooth as the coarse map; only
+                // temperature has detail at this resolution.
+                for (int k = ClimatePlane.TemperatureShapeCos; k < planes; k++)
+                {
+                    int coarseChannel = k - ClimatePlane.TemperatureShapeCos + CoarseChannel.TemperatureShapeCos;
+                    climate[k * plane + idx] = BilinearSample2D(centralCoarse[coarseChannel], cenH, cenW, gridY, gridX);
+                }
             }
         }
         return climate;

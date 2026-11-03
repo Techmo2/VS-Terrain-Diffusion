@@ -318,8 +318,8 @@ public sealed class TerrainTileStore : IDisposable
         public float[] TryLoad(int windowI, int windowJ, int length) =>
             _store.TryLoadCoarse(CoarseKey(_variant, windowI, windowJ), length);
 
-        public void Save(int windowI, int windowJ, float[] data) =>
-            _store.SaveCoarse(CoarseKey(_variant, windowI, windowJ), data);
+        public void Save(int windowI, int windowJ, float[] data, int planes) =>
+            _store.SaveCoarse(CoarseKey(_variant, windowI, windowJ), data, planes);
     }
 
     private static long CoarseKey(int variant, int windowI, int windowJ) =>
@@ -358,10 +358,10 @@ public sealed class TerrainTileStore : IDisposable
     /// Written at once rather than queued: a window is rare, small, and comes from inside the
     /// pipeline, which has just spent far longer computing it.
     /// </summary>
-    private void SaveCoarse(long key, float[] data)
+    private void SaveCoarse(long key, float[] data, int planes)
     {
         if (_writeFailed) return;
-        byte[] blob = TileCodec.EncodeWindow(data);
+        byte[] blob = TileCodec.EncodeWindow(data, planes);
         try
         {
             lock (_gate)
@@ -636,11 +636,10 @@ public static class TileCodec
     }
 
     /// <summary>A coarse window: whole square planes of floats, channel after channel.</summary>
-    public static byte[] EncodeWindow(float[] data)
+    public static byte[] EncodeWindow(float[] data, int planes)
     {
-        int planes = 7;
         int size = (int)Math.Round(Math.Sqrt(data.Length / planes));
-        if (planes * size * size != data.Length) throw new ArgumentException("not seven square planes", nameof(data));
+        if (planes * size * size != data.Length) throw new ArgumentException($"not {planes} square planes", nameof(data));
 
         int plane = size * size;
         var raw = new byte[data.Length * 4];
@@ -657,13 +656,14 @@ public static class TileCodec
     {
         int size = Header(blob, WindowMagic);
         int plane = size * size;
-        if (7 * plane != expectedLength)
-            throw new InvalidDataException($"coarse window of {7 * plane} values where {expectedLength} were expected");
+        int planes = expectedLength / plane;
+        if (planes * plane != expectedLength)
+            throw new InvalidDataException($"coarse window of {size}x{size} planes where {expectedLength} values were expected");
 
         byte[] raw = Decompress(blob, expectedLength * 4);
         var data = new float[expectedLength];
         var bits = new int[plane];
-        for (int p = 0; p < 7; p++)
+        for (int p = 0; p < planes; p++)
         {
             Join(raw, p * plane * 4, size, bits);
             for (int i = 0; i < plane; i++) data[p * plane + i] = BitConverter.Int32BitsToSingle(bits[i]);

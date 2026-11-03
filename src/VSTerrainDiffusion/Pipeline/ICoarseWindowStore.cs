@@ -9,5 +9,6 @@ public interface ICoarseWindowStore
     /// <summary>The stored window, exactly as it was computed, or null.</summary>
     float[] TryLoad(int windowI, int windowJ, int length);
 
-    void Save(int windowI, int windowJ, float[] data);
+    /// <summary>Keeps a window of <paramref name="planes"/> square planes (the coarse model's channels and the blend weight).</summary>
+    void Save(int windowI, int windowJ, float[] data, int planes);
 }

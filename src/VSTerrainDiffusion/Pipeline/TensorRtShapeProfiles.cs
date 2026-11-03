@@ -19,8 +19,9 @@ internal static class TensorRtShapeProfiles
         {
             case "coarse":
             {
-                // Six noisy channels plus five conditioning channels, and five scalar inputs.
-                string shape = $"x:1x11x{coarse}x{coarse},noise_labels:1," +
+                // The model's noisy channels plus five conditioning channels, and five scalar inputs.
+                int channels = Core.InferenceSettings.Current.CoarseModel.Channels + 5;
+                string shape = $"x:1x{channels}x{coarse}x{coarse},noise_labels:1," +
                                "cond_0:1,cond_1:1,cond_2:1,cond_3:1,cond_4:1";
                 return (shape, shape);
             }

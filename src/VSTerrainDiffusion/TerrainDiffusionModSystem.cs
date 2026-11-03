@@ -27,6 +27,13 @@ public class TerrainDiffusionModSystem : ModSystem
     private ICoreServerAPI _api;
     private DiffusionWorldSettings _settings;
     private TerrainDiffusionProvider _provider;
+    private Api.TerrainClimate _climate;
+
+    /// <summary>
+    /// The generated climate for other mods (see <see cref="Api.TerrainClimate"/>): server side, and
+    /// null until this world's generator is ready or on a world the mod is not generating.
+    /// </summary>
+    public Api.TerrainClimate Climate => _climate;
 
     /// <summary>The running <c>/tdiff pregen</c> job, if any.</summary>
     private TilePregenerator _pregen;
@@ -179,6 +186,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _provider = new TerrainDiffusionProvider(
             WorldSeed(), models, _settings, _api.Logger, landmask,
             _riverBasins, _settings.RiverBasinDepth, StoredTileSize());
+        _climate = new Api.TerrainClimate(_provider);
 
         // Before anything builds a Rivers region, which the spawn search below is the first to do.
         if (RiversCompat.Installed) RiversCompat.UseModelSea(_provider.IsCoarseSea);
@@ -421,6 +429,7 @@ public class TerrainDiffusionModSystem : ModSystem
         try
         {
             SeasonalityMap.Generate(mapRegion, regionX, regionZ, _api.WorldManager.RegionSize, _provider);
+            SeasonalCycleMap.Generate(mapRegion, regionX, regionZ, _api.WorldManager.RegionSize, _provider);
         }
         catch (Exception e)
         {
@@ -1097,6 +1106,12 @@ public class TerrainDiffusionModSystem : ModSystem
                 .WithArgs(api.ChatCommands.Parsers.Int("x"), api.ChatCommands.Parsers.Int("z"))
                 .HandleWith(OnSeasonCommand)
             .EndSubCommand()
+            .BeginSubCommand("climate")
+                .WithDescription("Show the climate other mods see at a position (yours by default): monthly " +
+                                 "temperature and rain, diurnal range and Köppen class")
+                .WithArgs(api.ChatCommands.Parsers.OptionalInt("x"), api.ChatCommands.Parsers.OptionalInt("z"))
+                .HandleWith(OnClimateCommand)
+            .EndSubCommand()
             .BeginSubCommand("rivers")
                 .WithDescription("Report the Rivers network around a position, for working out why rivers come up short")
                 .WithArgs(api.ChatCommands.Parsers.OptionalInt("x"), api.ChatCommands.Parsers.OptionalInt("z"))
@@ -1575,6 +1590,61 @@ public class TerrainDiffusionModSystem : ModSystem
                      $"this column is {climate.PrecipitationMm / Math.Max(1f, band):0.00}x)";
     }
 
+    /// <summary>Prints <see cref="Api.TerrainClimate"/>'s answer for one column, the same one other mods get.</summary>
+    private Vintagestory.API.Common.TextCommandResult OnClimateCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
+    {
+        if (_climate == null) return Vintagestory.API.Common.TextCommandResult.Error("Terrain Diffusion is not generating this world.");
+
+        int x, z;
+        if (!args.Parsers[0].IsMissing && !args.Parsers[1].IsMissing)
+        {
+            x = (int)args[0];
+            z = (int)args[1];
+        }
+        else if (args.Caller.Entity != null)
+        {
+            x = (int)args.Caller.Entity.Pos.X;
+            z = (int)args.Caller.Entity.Pos.Z;
+        }
+        else
+        {
+            return Vintagestory.API.Common.TextCommandResult.Error("Give a position: /tdiff climate <x> <z>");
+        }
+
+        if (!_climate.TryGetClimate(x, z, out Api.ClimateRecord c))
+            return Vintagestory.API.Common.TextCommandResult.Error("The climate could not be computed there.");
+
+        var culture = System.Globalization.CultureInfo.InvariantCulture;
+        var lines = new List<string>
+        {
+            $"Climate at ({x}, {z}), {_climate.ClimateModel} model" + (c.HasSeasonalCycle ? "" : " (seasonal cycle approximated)"),
+            string.Format(culture, "Ground {0:0} m; annual mean {1:0.0} C, seasonality {2:0} (sd {3:0.0} C); " +
+                "rain {4:0} mm, CV {5:0}%; diurnal range {6}",
+                c.ElevationMeters, c.TemperatureC, c.TemperatureSeasonality, c.TemperatureSeasonality / 100f,
+                c.PrecipitationMm, c.PrecipitationCv, float.IsNaN(c.DiurnalRangeC) ? "n/a" : $"{c.DiurnalRangeC:0.0} C")
+        };
+
+        if (c.IsWater)
+        {
+            lines.Add("Under the sea: no Köppen class.");
+            return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
+        }
+
+        Api.MonthlyClimate months = c.Months();
+        lines.Add("Months from midsummer:  " + string.Join(" ", months.TemperatureC.Select(t => t.ToString("0", culture).PadLeft(4))) + " C");
+        lines.Add("                        " + string.Join(" ", months.PrecipitationMm.Select(p => p.ToString("0", culture).PadLeft(4))) + " mm");
+
+        int hard = c.KoppenClass;
+        float[] soft = c.KoppenMemberships();
+        string blend = string.Join(", ", Enumerable.Range(0, Api.Koppen.Count)
+            .Where(i => soft[i] >= 0.01f)
+            .OrderByDescending(i => soft[i])
+            .Take(4)
+            .Select(i => $"{Api.Koppen.Classes[i].Code} {soft[i] * 100f:0}%"));
+        lines.Add($"Köppen {Api.Koppen.Classes[hard].Code} ({Api.Koppen.Classes[hard].Name}); blend: {blend}");
+        return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
+    }
+
     /// <summary>
     /// Walks a year at one position and prints what the climate does, which is the only practical
     /// way to see whether the model's seasonality survived the trip through the region map.
@@ -1744,6 +1814,7 @@ public class TerrainDiffusionModSystem : ModSystem
 
         TerrainDiffusionProvider provider = _provider;
         _provider = null;
+        _climate = null;
         void Release()
         {
             WatershedsCompat.Uninstall();

@@ -60,6 +60,18 @@ public static class ModelAssetManager
         Sha256 = "d6ca15b21b2e35d5e594a9ac7a4249a2376590c0ad2b5b49a1e6e2d033450008"
     };
 
+    /// <summary>
+    /// The seasonal coarse model (<see cref="CoarseModelSpec.Seasonal"/>), exported from
+    /// <c>td30m_seasonal_ft</c> with the reference repository's ONNX exporter.
+    /// </summary>
+    private static readonly Asset SeasonalCoarseAsset = new()
+    {
+        FileName = "coarse_model.seasonal.onnx",
+        SizeBytes = 22626150,
+        Sha256 = "7aa8783fa496b5c742014a5a0f17f6d39246b9d490cc9e62aa90f241206079ef",
+        UrlOverride = ReleaseUrl("coarse-seasonal-v1", "coarse_model.seasonal.onnx")
+    };
+
     private static readonly Asset Fp32BaseAsset = new()
     {
         FileName = "base_model.onnx",
@@ -118,7 +130,7 @@ public static class ModelAssetManager
     /// exports of the same weights, so they are named by the FP32 originals.
     /// </summary>
     public static string ModelIdentity =>
-        $"{RepositorySlug}@{Revision}|{Fp32CoarseAsset.Sha256}|{Fp32BaseAsset.Sha256}|{Fp32DecoderAsset.Sha256}";
+        $"{RepositorySlug}@{Revision}|{SelectedCoarseAsset.Sha256}|{Fp32BaseAsset.Sha256}|{Fp32DecoderAsset.Sha256}";
 
     private static readonly object Gate = new();
 
@@ -140,10 +152,15 @@ public static class ModelAssetManager
     };
 
     /// <summary>
-    /// Always FP32: there is no half-precision coarse model to download, because it is not worth
-    /// shipping until its layernorms are re-exported.
+    /// The world's coarse model, always FP32: there is no half-precision coarse model to download,
+    /// because it is not worth shipping until its layernorms are re-exported.
     /// </summary>
-    private static Asset SelectedCoarseAsset => Fp32CoarseAsset;
+    private static Asset SelectedCoarseAsset => InferenceSettings.Current.ClimateModel switch
+    {
+        "annual" => Fp32CoarseAsset,
+        "seasonal" => SeasonalCoarseAsset,
+        var other => throw new ModelAssetException($"{nameof(InferenceSettings.ClimateModel)} \"{other}\" does not name a model")
+    };
 
     private static Asset SelectedBaseAsset => InferenceSettings.Current.BasePrecision switch
     {

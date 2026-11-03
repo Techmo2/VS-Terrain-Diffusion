@@ -71,6 +71,16 @@ public sealed class InferenceSettings
     public bool TileDatabase { get; private init; } = true;
 
     /// <summary>
+    /// Which coarse model the world is generated with (<see cref="Pipeline.CoarseModelSpec"/>). It
+    /// shapes the land as well as the climate, so it is part of the tile database's fingerprint, not
+    /// one of <see cref="AllCodes"/>. A world saved before the setting existed has none and keeps the
+    /// annual model it was made with; new worlds default to seasonal in <c>worldconfig.json</c>.
+    /// </summary>
+    public string ClimateModel { get; private init; } = Pipeline.CoarseModelSpec.Annual.Code;
+
+    public Pipeline.CoarseModelSpec CoarseModel => Pipeline.CoarseModelSpec.ByCode(ClimateModel);
+
+    /// <summary>
     /// The world config codes of the settings that only decide how terrain is computed, never what
     /// it is - or, for the device and precisions, whose effect is recorded another way.
     /// </summary>
@@ -112,7 +122,8 @@ public sealed class InferenceSettings
             DownloadRuntime = Read(world, nameof(DownloadRuntime), "true").ToBool(defaults.DownloadRuntime),
             DecoderPrecision = Normalize(Read(world, nameof(DecoderPrecision), defaults.DecoderPrecision)),
             BasePrecision = Normalize(Read(world, nameof(BasePrecision), defaults.BasePrecision)),
-            TileDatabase = Read(world, nameof(TileDatabase), "true").ToBool(defaults.TileDatabase)
+            TileDatabase = Read(world, nameof(TileDatabase), "true").ToBool(defaults.TileDatabase),
+            ClimateModel = Normalize(Read(world, nameof(ClimateModel), defaults.ClimateModel))
         };
 
         if (Array.IndexOf(AllModelLoadModes, settings.ModelLoadMode) < 0)
@@ -120,6 +131,13 @@ public sealed class InferenceSettings
             throw DiffusionFailure.Fatal(api.Logger,
                 $"World setting {Code(nameof(ModelLoadMode))} is \"{settings.ModelLoadMode}\", which is not one of " +
                 $"{string.Join(", ", AllModelLoadModes)}. Change it with /worldconfig.");
+        }
+
+        if (Array.IndexOf(Pipeline.CoarseModelSpec.AllCodes, settings.ClimateModel) < 0)
+        {
+            throw DiffusionFailure.Fatal(api.Logger,
+                $"World setting {Code(nameof(ClimateModel))} is \"{settings.ClimateModel}\", which is not one of " +
+                $"{string.Join(", ", Pipeline.CoarseModelSpec.AllCodes)}.");
         }
 
         InferenceCompatibility compatibility = InferenceCompatibility.Current;

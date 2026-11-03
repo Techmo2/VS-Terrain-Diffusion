@@ -25,6 +25,9 @@ public sealed class PipelineModels : IDisposable
     private static int _loadGeneration;
 
     public IModelRunner Coarse { get; private set; }
+
+    /// <summary>Which coarse model <see cref="Coarse"/> is: its channels and their statistics.</summary>
+    public CoarseModelSpec CoarseSpec { get; private set; } = CoarseModelSpec.Annual;
     public IModelRunner Base { get; private set; }
     public IModelRunner Decoder { get; private set; }
 
@@ -39,7 +42,7 @@ public sealed class PipelineModels : IDisposable
     /// <paramref name="coarse"/> separately, never the copy.
     /// </summary>
     internal PipelineModels WithCoarse(IModelRunner coarse) =>
-        new() { Coarse = coarse, Base = Base, Decoder = Decoder, Worker = Worker };
+        new() { Coarse = coarse, CoarseSpec = CoarseSpec, Base = Base, Decoder = Decoder, Worker = Worker };
 
     /// <summary>True once the models are resident and ready to run.</summary>
     public static bool IsReady => _instance != null;
@@ -137,7 +140,11 @@ public sealed class PipelineModels : IDisposable
         {
             CancellationToken token = cancellation.Token;
             ModelAssetManager.EnsureAssetsReady(logger, token);
-            loading = new PipelineModels { Worker = StartWorker(logger, token) };
+            loading = new PipelineModels
+            {
+                Worker = StartWorker(logger, token),
+                CoarseSpec = InferenceSettings.Current.CoarseModel
+            };
             token.ThrowIfCancellationRequested();
 
             // Closes off whichever of the two downloads announced itself. Nothing is said at all on
