@@ -43,18 +43,43 @@ public static class SaveDatabaseBackstop
         ILogger logger = api.Logger;
         var watcher = new Thread(() =>
         {
-            if (chunkThread != null) chunkThread.Join(ChunkThreadWait);
-            try { release(); }
-            catch (Exception e) { Log(logger, l => l.Warning("[{0}] Shutting down: {1}", Core.DiffusionPaths.ModId, e)); }
+            // Nothing here may throw: an exception on this thread would take the whole game down.
+            try
+            {
+                WaitFor(chunkThread);
+                try { release(); }
+                catch (Exception e) { Log(logger, l => l.Warning("[{0}] Shutting down: {1}", Core.DiffusionPaths.ModId, e)); }
 
-            // The final save runs after mods are disposed, so only once the server has stopped is
-            // its connection done with. Never closed under a thread that is still running.
-            var clock = Stopwatch.StartNew();
-            while (api.Server.CurrentRunPhase < EnumServerRunPhase.Exit && clock.Elapsed < ExitWait) Thread.Sleep(200);
-            if (api.Server.CurrentRunPhase < EnumServerRunPhase.Exit || chunkThread is { IsAlive: true }) return;
-            CloseIfLeftOpen(api, logger);
+                // The final save runs after mods are disposed, so only once the server has stopped is
+                // its connection done with. Never closed under a thread that is still running.
+                var clock = Stopwatch.StartNew();
+                while (api.Server.CurrentRunPhase < EnumServerRunPhase.Exit && clock.Elapsed < ExitWait) Thread.Sleep(200);
+                if (api.Server.CurrentRunPhase < EnumServerRunPhase.Exit || chunkThread is { IsAlive: true }) return;
+                CloseIfLeftOpen(api, logger);
+            }
+            catch (Exception e)
+            {
+                Log(logger, l => l.Warning("[{0}] Shutdown watcher: {1}", Core.DiffusionPaths.ModId, e.Message));
+            }
         }) { IsBackground = true, Name = "TerrainDiffusion shutdown" };
         watcher.Start();
+    }
+
+    /// <summary>
+    /// Waits for the chunk thread to stop, up to <see cref="ChunkThreadWait"/>. A thread that was
+    /// never started has nothing to wait for; Join would throw on it.
+    /// </summary>
+    private static void WaitFor(Thread chunkThread)
+    {
+        if (chunkThread == null || (chunkThread.ThreadState & System.Threading.ThreadState.Unstarted) != 0) return;
+        try
+        {
+            chunkThread.Join(ChunkThreadWait);
+        }
+        catch (ThreadStateException)
+        {
+            // Not started after all, or already gone.
+        }
     }
 
     private static Thread FindChunkThread(ICoreServerAPI api) =>
