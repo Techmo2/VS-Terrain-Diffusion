@@ -3,6 +3,7 @@ using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
+using Vintagestory.GameContent;
 using Vintagestory.ServerMods;
 using VSTerrainDiffusion.Core;
 
@@ -22,6 +23,11 @@ namespace VSTerrainDiffusion.WorldGen;
 /// above it (<c>(y - seaLevel) / (MapSizeY - seaLevel)</c>), and follows the sea wherever it goes.
 /// The few things written as fractions of world height are moved through <see cref="HeightFrame"/>
 /// by <see cref="BlockLayerAltitude"/> and <see cref="TreeHeightFrame"/>.
+///
+/// Clouds sit at the top of the world, and vanilla's cloud map reaches only four view distances
+/// out, so with the sea moved down the clouds hang so far overhead that the map's edge shows well
+/// above the horizon. <see cref="LowerClouds"/> puts them as far above the sea as in a default
+/// vanilla world.
 /// </summary>
 public class SeaLevelOverride : ModSystem
 {
@@ -32,6 +38,12 @@ public class SeaLevelOverride : ModSystem
 
     /// <summary>Least room below it, for a sea floor and the rock beneath.</summary>
     private const int MinimumBlocksBelowSea = 32;
+
+    /// <summary>How far clouds are above the sea in a default vanilla world: 256 tall, sea at 110.</summary>
+    private const int VanillaCloudsAboveSea = 256 - 110;
+
+    /// <summary>Vanilla's world setting for cloud height, as a fraction of world height.</summary>
+    private const string CloudHeightCode = "cloudypos";
 
     private static HeightFrame? _current;
 
@@ -52,6 +64,9 @@ public class SeaLevelOverride : ModSystem
 
         // Registered after Rivers', whose generator (execute order 0) resets sea level here.
         api.Event.ServerRunPhase(EnumServerRunPhase.ModsAndConfigReady, Apply);
+
+        // The weather system reads its cloud height when the save loads; players are sent it as they join.
+        api.Event.ServerRunPhase(EnumServerRunPhase.RunGame, LowerClouds);
     }
 
     public override void AssetsFinalize(ICoreAPI api)
@@ -87,6 +102,23 @@ public class SeaLevelOverride : ModSystem
                 DiffusionPaths.ModId, seaLevel, mapSizeY, clamped);
         }
         return clamped;
+    }
+
+    /// <summary>
+    /// Puts clouds <see cref="VanillaCloudsAboveSea"/> above a moved sea, unless the world sets its
+    /// own cloud height. Not saved: <c>/weather cloudypos</c> still overrides it until a restart.
+    /// </summary>
+    private void LowerClouds()
+    {
+        if (_seaLevel is not int seaLevel) return;
+        if (_api.WorldManager.SaveGame.WorldConfiguration?.HasAttribute(CloudHeightCode) == true) return;
+        if (_api.ModLoader.GetModSystem<WeatherSystemServer>() is not { } weather) return;
+
+        int mapSizeY = _api.WorldManager.MapSizeY;
+        int cloudY = Math.Min(mapSizeY, seaLevel + VanillaCloudsAboveSea);
+        weather.CloudLevelRel = cloudY / (float)mapSizeY;
+        _api.Logger.Notification("[{0}] Clouds at y {1}, {2} blocks above the sea as in a default world.",
+            DiffusionPaths.ModId, cloudY, cloudY - seaLevel);
     }
 
     private void Apply()
