@@ -581,7 +581,7 @@ tiles are generated. `/tdiff map` prints the address; the default binding is loo
 |---|---|
 | Coarse model input | elevation, temperature, temperature seasonality, precipitation, precipitation seasonality asked for; river basin conditioning |
 | Coarse model output | elevation, mean temperature, temperature seasonality, annual precipitation, precipitation seasonality |
-| Full resolution | model elevation, slope, mean temperature, temperature seasonality, annual precipitation, precipitation seasonality, rainfall byte, forest and shrub cover from the model, forest and shrub maps as the game reads them |
+| Full resolution | model elevation, slope, mean temperature, temperature seasonality, annual precipitation, precipitation seasonality, Köppen class (with a legend of the classes on the map), diurnal temperature range, rainfall byte, forest and shrub cover from the model, forest and shrub maps as the game reads them |
 | Vanilla channels | surface height as built (Rivers' valleys and channels included), ocean map, vanilla forest map, vanilla shrub map |
 
 Drag to pan, wheel to zoom, hover a column for every layer.

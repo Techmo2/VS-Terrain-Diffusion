@@ -70,7 +70,11 @@ public sealed class DebugMapServer : IDisposable
     public bool IsRunning => _listener != null && _listener.IsListening;
 
     /// <summary>One displayable quantity per column, in the order the wire format carries them.</summary>
-    private readonly record struct Layer(string Id, string Label, string Unit, string Category);
+    /// <summary>
+    /// One map layer. A categorical layer stores a class index in each byte (its range is fixed at
+    /// 0-255, so the byte is the value) and the page paints it from <see cref="Api.Koppen.Classes"/>.
+    /// </summary>
+    private readonly record struct Layer(string Id, string Label, string Unit, string Category, bool Categorical = false);
 
     private sealed class RecordedTile
     {
@@ -134,6 +138,8 @@ public sealed class DebugMapServer : IDisposable
             new Layer("tempSeasonality", "Temperature seasonality", "BIO4", Final),
             new Layer("precipitation", "Annual precipitation", "mm", Final),
             new Layer("precipCv", "Precipitation seasonality", "% CV", Final),
+            new Layer("koppen", "Köppen class", "", Final, Categorical: true),
+            new Layer("diurnalRange", "Diurnal temperature range", "°C", Final),
             new Layer("rainfall", "Rainfall byte (as the game reads it)", "0-255", Final),
             new Layer("forestModel", "Forest cover from the model", "0-255", Final),
             new Layer("forest", "Forest map (as the game reads it)", "0-255", Final),
@@ -314,6 +320,26 @@ public sealed class DebugMapServer : IDisposable
         int surfaceOff = Off("surfaceY"), elevationOff = Off("elevation"), slopeOff = Off("slope");
         int temperatureOff = Off("temperature"), seasonalityOff = Off("tempSeasonality");
         int precipitationOff = Off("precipitation"), cvOff = Off("precipCv"), rainfallOff = Off("rainfall");
+        int koppenOff = Off("koppen"), diurnalOff = Off("diurnalRange");
+
+        // The seasonal cycle and diurnal range, once per tile: like the coarse layers, they vary only
+        // over the model's 7.68 km cells. An annual-model world approximates the cycle per cell instead.
+        bool seasonal = _provider.CoarseSpec.HasSeasonalCycle;
+        Span<float> cycle = stackalloc float[6];
+        float diurnalRange = float.NaN;
+        if (seasonal)
+        {
+            Span<float> channels = stackalloc float[Pipeline.CoarseChannel.SeasonalCount];
+            if (_provider.CoarseChannelsAt(centreX, centreZ, channels))
+            {
+                channels.Slice(Pipeline.CoarseChannel.TemperatureShapeCos, 6).CopyTo(cycle);
+                diurnalRange = channels[Pipeline.CoarseChannel.DiurnalRange];
+            }
+            else
+            {
+                seasonal = false;
+            }
+        }
         (string Id, int[] Map, DiffusionForestMapLayer Layer)[] covers =
         {
             ("forestModel", forest.Model, forestLayer), ("forest", forest.Applied, forestLayer),
@@ -378,6 +404,13 @@ public sealed class DebugMapServer : IDisposable
                     new Bioclim(meanTemperature, meanSeasonality, meanPrecipitation, meanCv));
 
                 for (int c = 0; c < coarseValues.Length; c++) values[coarseOffsets[c] + cell] = coarseValues[c];
+
+                // Köppen from the cell's mean climate, as /tdiff climate and the climate API classify a column.
+                if (!seasonal) Api.ClimateRecord.ApproximateCycle(meanPrecipitation, meanCv, cycle);
+                var record = new Api.ClimateRecord(meanTemperature, meanSeasonality, meanPrecipitation, meanCv,
+                    (float)(elevation / n), seasonal, cycle, diurnalRange);
+                values[koppenOff + cell] = record.KoppenClass;
+                values[diurnalOff + cell] = float.IsNaN(diurnalRange) ? 0f : diurnalRange;
             }
         }
 
@@ -388,6 +421,13 @@ public sealed class DebugMapServer : IDisposable
         for (int layer = 0; layer < layerCount; layer++)
         {
             int off = layer * cells;
+            if (_layers[layer].Categorical)
+            {
+                min[layer] = 0f;
+                max[layer] = 255f;
+                for (int i = 0; i < cells; i++) data[off + i] = (byte)Math.Clamp((int)values[off + i], 0, 255);
+                continue;
+            }
             float lo = float.MaxValue, hi = float.MinValue;
             for (int i = 0; i < cells; i++)
             {
@@ -563,9 +603,20 @@ public sealed class DebugMapServer : IDisposable
         {
             if (i > 0) json.Append(',');
             json.Append($"{{\"id\":\"{_layers[i].Id}\",\"label\":\"{Escape(_layers[i].Label)}\","
-                        + $"\"unit\":\"{Escape(_layers[i].Unit)}\",\"category\":\"{Escape(_layers[i].Category)}\"}}");
+                        + $"\"unit\":\"{Escape(_layers[i].Unit)}\",\"category\":\"{Escape(_layers[i].Category)}\""
+                        + (_layers[i].Categorical ? ",\"categorical\":true" : "") + "}");
         }
-        json.Append("]}");
+        json.Append("],");
+
+        // The classes a categorical layer's bytes index, with their usual map colours; sea last.
+        json.Append($"\"climateModel\":\"{_provider.CoarseSpec.Code}\",");
+        json.Append("\"koppen\":[");
+        for (int i = 0; i < Api.Koppen.Count; i++)
+        {
+            Api.Koppen.ClassInfo c = Api.Koppen.Classes[i];
+            json.Append($"{{\"code\":\"{c.Code}\",\"name\":\"{Escape(c.Name)}\",\"rgb\":\"#{c.Rgb:x6}\"}},");
+        }
+        json.Append("{\"code\":\"sea\",\"name\":\"Sea\",\"rgb\":\"#1c3a5e\"}]}");
 
         context.Response.Headers["Cache-Control"] = "no-store";
         Write(context, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(json.ToString()));
