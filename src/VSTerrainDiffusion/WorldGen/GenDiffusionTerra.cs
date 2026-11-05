@@ -22,6 +22,9 @@ public sealed class GenDiffusionTerra
     private readonly DiffusionWorldSettings _settings;
     private readonly GlobalConfig _globalConfig;
 
+    /// <summary>Lake water for closed depressions, or null when the world has it off.</summary>
+    private readonly LakeWater _lakes;
+
     private readonly int _mapSizeY;
     private readonly int _seaLevel;
 
@@ -32,11 +35,13 @@ public sealed class GenDiffusionTerra
         public float Weight;
     }
 
-    public GenDiffusionTerra(ICoreServerAPI api, TerrainDiffusionProvider provider, DiffusionWorldSettings settings)
+    public GenDiffusionTerra(ICoreServerAPI api, TerrainDiffusionProvider provider, DiffusionWorldSettings settings,
+                             LakeWater lakes)
     {
         _api = api;
         _provider = provider;
         _settings = settings;
+        _lakes = lakes;
         _globalConfig = GlobalConfig.GetInstance(api);
         _mapSizeY = settings.MapSizeY;
         _seaLevel = settings.SeaLevel;
@@ -64,6 +69,15 @@ public sealed class GenDiffusionTerra
         var surfaceY = new int[ChunkSize * ChunkSize];
         var isOcean = new bool[ChunkSize * ChunkSize];
         var freezes = new bool[ChunkSize * ChunkSize];
+
+        // The top water block of every column: the sea's flush row, or a lake's surface. A peek's
+        // chunks are thrown away, so it takes the lakes as far as they are known rather than
+        // generating the rest of their region.
+        short[] lakeTop = _lakes?.ChunkLakeTop(chunkX, chunkZ, settle: !ChunkPeekScope.Active);
+        if (lakeTop is { Length: 0 }) lakeTop = null;
+        var waterTop = new int[ChunkSize * ChunkSize];
+        var isLake = new bool[ChunkSize * ChunkSize];
+        int maxWaterTop = _seaLevel - 1;
 
         int minSurface = int.MaxValue;
         int maxSurface = 0;
@@ -121,6 +135,11 @@ public sealed class GenDiffusionTerra
                 isOcean[index2d] = tile.ElevationMeters[tileIndex] < 0f;
                 freezes[index2d] = tile.TemperatureC[tileIndex] < WaterFreezingTempOnGen;
 
+                int lake = lakeTop?[index2d] ?? 0;
+                isLake[index2d] = lake >= _seaLevel && lake > y;
+                waterTop[index2d] = isLake[index2d] ? lake : _seaLevel - 1;
+                if (waterTop[index2d] > maxWaterTop) maxWaterTop = waterTop[index2d];
+
                 if (y < minSurface) minSurface = y;
                 if (y > maxSurface) maxSurface = y;
             }
@@ -142,7 +161,7 @@ public sealed class GenDiffusionTerra
             data.SetBlockBulk(y % ChunkSize * ChunkSize * ChunkSize, ChunkSize, ChunkSize, defaultRockId);
         }
 
-        int fillTop = Math.Max(maxSurface, _seaLevel - 1);
+        int fillTop = Math.Max(maxSurface, maxWaterTop);
 
         for (int lz = 0; lz < ChunkSize; lz++)
         {
@@ -150,7 +169,8 @@ public sealed class GenDiffusionTerra
             {
                 int index2d = lz * ChunkSize + lx;
                 int surface = surfaceY[index2d];
-                int waterId = isOcean[index2d] ? saltWaterId : freshWaterId;
+                int top = waterTop[index2d];
+                int waterId = isOcean[index2d] && !isLake[index2d] ? saltWaterId : freshWaterId;
 
                 for (int y = solidTo + 1; y <= fillTop; y++)
                 {
@@ -164,7 +184,7 @@ public sealed class GenDiffusionTerra
                         if (riverColumn != null &&
                             RiversCompat.Carved(riverColumn[index2d], y, _seaLevel, _mapSizeY))
                         {
-                            if (y < _seaLevel)
+                            if (y <= top)
                             {
                                 blocks.SetFluid(index3d, freshWaterId);
                             }
@@ -173,10 +193,10 @@ public sealed class GenDiffusionTerra
 
                         blocks[index3d] = defaultRockId;
                     }
-                    else if (y < _seaLevel)
+                    else if (y <= top)
                     {
                         // Freshwater lakes can freeze over; open ocean uses the salt water block.
-                        int fluid = (y == _seaLevel - 1 && freezes[index2d] && waterId != saltWaterId)
+                        int fluid = (y == top && freezes[index2d] && waterId != saltWaterId)
                             ? lakeIceId
                             : waterId;
                         blocks.SetFluid(index3d, fluid);
@@ -194,7 +214,7 @@ public sealed class GenDiffusionTerra
 
                 // Rain lands on the water surface where there is water, and on the ground otherwise.
                 terrainHeightMap[index2d] = (ushort)surface;
-                rainHeightMap[index2d] = (ushort)Math.Clamp(Math.Max(surface, _seaLevel - 1), 1, _mapSizeY - 2);
+                rainHeightMap[index2d] = (ushort)Math.Clamp(Math.Max(surface, top), 1, _mapSizeY - 2);
             }
         }
 

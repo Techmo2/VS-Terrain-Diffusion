@@ -488,13 +488,38 @@ public sealed class TerrainDiffusionProvider : IDisposable
     /// </summary>
     public bool CoarseChannelsAt(double blockX, double blockZ, Span<float> channels)
     {
+        CoarseCellAt(blockX, blockZ, out int i0, out int j0, out float fi, out float fj);
+        int count = _pipeline.CoarseSpec.Channels;
+        Span<float> corners = stackalloc float[4 * count];
+        if (!CoarseCorners(i0, j0, corners)) return false;
+        InterpolateCorners(corners, count, fi, fj, channels);
+        return true;
+    }
+
+    /// <summary>
+    /// The coarse cell whose centre is at or before a block column on both axes, and how far the
+    /// column lies towards the next centres (0 to 1): the 2x2 cells <see cref="CoarseCorners"/>
+    /// reads, and the weights to blend them with.
+    /// </summary>
+    public void CoarseCellAt(double blockX, double blockZ, out int i0, out int j0, out float fi, out float fj)
+    {
         int scale = Math.Max(1, _settings.Scale);
         int cells = CoarseCellNativePixels;
         double ci = ((blockZ - _settings.OriginBlockZ) / scale + 0.5) / cells - 0.5;
         double cj = ((blockX - _settings.OriginBlockX) / scale + 0.5) / cells - 0.5;
-        int i0 = (int)Math.Floor(ci), j0 = (int)Math.Floor(cj);
-        float fi = (float)(ci - i0), fj = (float)(cj - j0);
+        i0 = (int)Math.Floor(ci);
+        j0 = (int)Math.Floor(cj);
+        fi = (float)(ci - i0);
+        fj = (float)(cj - j0);
+    }
 
+    /// <summary>
+    /// The coarse channels of the 2x2 cells from (i0, j0), decoded to real units: corner k (0..3,
+    /// row-major) of channel c at <c>c * 4 + k</c>. False if the coarse stage failed or a cell is
+    /// missing.
+    /// </summary>
+    public bool CoarseCorners(int i0, int j0, Span<float> corners)
+    {
         int count = _pipeline.CoarseSpec.Channels, weightBase = 4 * _pipeline.CoarseSpec.WeightChannel;
         float[] data;
         _scheduler.Enter();
@@ -511,8 +536,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
             _scheduler.Exit();
         }
 
-        Span<float> cell = stackalloc float[4];
-        for (int ch = 0; ch < count && ch < channels.Length; ch++)
+        for (int ch = 0; ch < count && 4 * ch + 3 < corners.Length; ch++)
         {
             for (int k = 0; k < 4; k++)
             {
@@ -529,11 +553,21 @@ public sealed class TerrainDiffusionProvider : IDisposable
                     float root = data[k] / weight - value;
                     value = Math.Sign(root) * root * root;
                 }
-                cell[k] = value;
+                corners[ch * 4 + k] = value;
             }
-            channels[ch] = (1 - fi) * ((1 - fj) * cell[0] + fj * cell[1]) + fi * ((1 - fj) * cell[2] + fj * cell[3]);
         }
         return true;
+    }
+
+    /// <summary>Blends <see cref="CoarseCorners"/> output at fractions (fi, fj) into one value per channel.</summary>
+    public static void InterpolateCorners(ReadOnlySpan<float> corners, int count, float fi, float fj, Span<float> channels)
+    {
+        for (int ch = 0; ch < count && ch < channels.Length; ch++)
+        {
+            int c = ch * 4;
+            channels[ch] = (1 - fi) * ((1 - fj) * corners[c] + fj * corners[c + 1])
+                           + fi * ((1 - fj) * corners[c + 2] + fj * corners[c + 3]);
+        }
     }
 
     public TerrainTile GetTile(int tileX, int tileZ)
@@ -1573,7 +1607,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
     /// calendar): the month, 0 to 12, of the first day's middle; which way round the year runs at a
     /// block Z; and how strongly the seasons swing. Null judges places by their annual mean.
     /// </summary>
-    public (double Month, System.Func<int, bool> Southern, float Strength)? ArrivalSeason { get; set; }
+    public (double Month, System.Func<int, bool> Southern, float Strength, System.Func<int, double> WinterGain)? ArrivalSeason { get; set; }
 
     /// <summary>The seasonal model's year shape at a column, or null (annual model, or no reading).</summary>
     private SeasonalCycleMap.Sample? ArrivalCycle(int blockX, int blockZ)
@@ -1595,7 +1629,7 @@ public sealed class TerrainDiffusionProvider : IDisposable
     {
         if (ArrivalSeason is not { } season) return seaLevelAnnualC;
         return seaLevelAnnualC + (float)DiffusionSeasons.SeasonalDeviation(
-            season.Month, season.Southern(blockZ), sigmaC, season.Strength, cycle);
+            season.Month, season.Southern(blockZ), sigmaC, season.Strength, cycle, season.WinterGain(blockZ));
     }
 
     /// <summary>

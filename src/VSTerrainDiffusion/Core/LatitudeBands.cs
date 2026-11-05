@@ -217,7 +217,7 @@ public sealed class LatitudeBands : ILatitudeSource
     /// <param name="strength">How much of the band to apply, 0 to 1.</param>
     public static LatitudeBands ForWorld(ICoreServerAPI api, DiffusionWorldSettings settings,
                                          string worldClimate, int polarEquatorDistance, float strength,
-                                         ClimateShift climate, int profileVersion)
+                                         ClimateShift climate, int profileVersion, bool bandedRainfallBias = true)
     {
         if (strength <= 0f) return None;
         if (worldClimate != "realistic")
@@ -241,7 +241,10 @@ public sealed class LatitudeBands : ILatitudeSource
         // Read through the calendar rather than caching the delegate, so a mod that installs its
         // own latitude later is still the one that gets honoured.
         return Over(z => calendar.OnGetLatitude(z), blocksPerCoarsePixel, settings.OriginBlockZ,
-                    strength, climate, profileVersion >= 2 ? status + $", profile {profileVersion}" : status, profileVersion);
+                    strength, climate,
+                    (profileVersion >= 2 ? status + $", profile {profileVersion}" : status)
+                    + (bandedRainfallBias ? "" : ", no banded rainfall bias"),
+                    profileVersion, bandedRainfallBias);
     }
 
     /// <summary>
@@ -256,7 +259,7 @@ public sealed class LatitudeBands : ILatitudeSource
     /// <param name="profileVersion">Which <see cref="LatitudeProfile"/> the world was created with.</param>
     public static LatitudeBands Over(System.Func<double, double> latitude, double blocksPerCoarsePixel,
                                      double originBlockZ, float strength, ClimateShift climate, string status,
-                                     int profileVersion = LatitudeProfile.CurrentVersion)
+                                     int profileVersion = LatitudeProfile.CurrentVersion, bool bandedRainfallBias = true)
     {
         if (latitude == null || strength <= 0f) return None;
 
@@ -295,7 +298,7 @@ public sealed class LatitudeBands : ILatitudeSource
                                        ClimateShift.ScaleFloorC, ClimateShift.ScaleCeilingC);
             float wantedMm = neutralMm * (float)Math.Pow(Math.Max(1e-3f, bandMm / neutralMm), strength);
 
-            LatitudeBandPlan plan = SyntheticMapFactory.PlanLatitude(wantedC, wantedMm);
+            LatitudeBandPlan plan = SyntheticMapFactory.PlanLatitude(wantedC, wantedMm, bandedRainfallBias);
             conditioningC[i] = plan.ConditioningTemperatureC;
             conditioningMm[i] = plan.ConditioningPrecipitationMm;
             offsetC[i] = plan.TemperatureOffsetC;

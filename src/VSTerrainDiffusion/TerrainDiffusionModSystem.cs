@@ -47,6 +47,7 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     private const string PregenSaveKey = "terraindiffusionPregen";
     private GenDiffusionTerra _generator;
+    private LakeWater _lakes;
     private DiffusionSurface _surface;
     private DebugMapServer _debugMap;
     private DiffusionForestMapLayer _forestLayer;
@@ -234,7 +235,8 @@ public class TerrainDiffusionModSystem : ModSystem
         // are standing on is generated only once all of that has drained.
         _provider.TileUrgency = DistanceToNearestPlayer;
 
-        _generator = new GenDiffusionTerra(_api, _provider, _settings);
+        _lakes = CreateLakes();
+        _generator = new GenDiffusionTerra(_api, _provider, _settings, _lakes);
         _surface = new DiffusionSurface(_api, _provider);
 
         InstallTerrain();
@@ -479,6 +481,11 @@ public class TerrainDiffusionModSystem : ModSystem
     private const string LatitudeProfileCode = "terraindiffusionLatitudeProfile";
     private const string CoastFillCode = "terraindiffusionCoastFill";
     private const string DryShallowsFillCode = "terraindiffusionDryShallowsFill";
+    private const string WaterFillCode = "terraindiffusionWaterFill";
+    private const string WaterRegionCode = "terraindiffusionWaterRegion";
+
+    /// <summary>World settings that decide what is built on the tiles, never what a tile holds.</summary>
+    private static readonly string[] TileNeutralWorldCodes = { WaterFillCode, WaterRegionCode };
 
     /// <summary>Where these lived before they were world settings: save game mod data.</summary>
     private const string LegacyShoreDetailKey = "vsterraindiffusion:shoredetail";
@@ -542,6 +549,18 @@ public class TerrainDiffusionModSystem : ModSystem
             if (!world.HasAttribute(DryShallowsFillCode))
             {
                 world.SetString(DryShallowsFillCode, save.IsNew ? "false" : "true");
+            }
+
+            // Lakes are new: a world made before them keeps its open depressions, so ground generated
+            // from here on still meets the ground it already has.
+            if (!world.HasAttribute(WaterFillCode))
+            {
+                world.SetString(WaterFillCode, save.IsNew ? "true" : "false");
+            }
+
+            if (!world.HasAttribute(WaterRegionCode))
+            {
+                world.SetString(WaterRegionCode, "1024");
             }
 
             if (!world.HasAttribute(CoastFillCode))
@@ -738,6 +757,7 @@ public class TerrainDiffusionModSystem : ModSystem
     private Dictionary<string, string> TileFingerprint(ILandmaskSource landmask)
     {
         var neutral = new HashSet<string>(InferenceSettings.AllCodes, StringComparer.Ordinal);
+        neutral.UnionWith(TileNeutralWorldCodes);
         var world = new List<string>();
         foreach (KeyValuePair<string, IAttribute> entry in _api.WorldManager.SaveGame.WorldConfiguration)
         {
@@ -1050,7 +1070,8 @@ public class TerrainDiffusionModSystem : ModSystem
             WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
             _provider.ArrivalSeason = (4.0 + 0.5 / daysPerMonth,
                 z => worldGen.SeasonHemispheres && calendar?.OnGetLatitude != null && !(calendar.OnGetLatitude(z) > 0.0),
-                worldGen.SeasonalTemperatureStrength);
+                worldGen.SeasonalTemperatureStrength,
+                z => DiffusionSeasons.WinterGain(_api.World, z));
             TerrainDiffusionProvider.SpawnCandidate? land = _provider.FindSpawn();
             if (land == null)
             {
@@ -1109,6 +1130,17 @@ public class TerrainDiffusionModSystem : ModSystem
         try
         {
             int blockX = land.Value.BlockX, blockZ = land.Value.BlockZ;
+            if (_lakes != null && _lakes.IsLake(blockX, blockZ))
+            {
+                (int x, int z)? shore = NearestDryLand(blockX, blockZ);
+                if (shore != null)
+                {
+                    _api.Logger.Notification("[{0}] The spawn search's column ({1}, {2}) is under a lake; moved to " +
+                        "dry land at ({3}, {4}).", DiffusionPaths.ModId, blockX, blockZ, shore.Value.x, shore.Value.z);
+                    (blockX, blockZ) = shore.Value;
+                }
+            }
+
             TerrainTile tile = _provider.GetTileAt(blockX, blockZ);
             int index = tile.Index(blockX - tile.BlockX, blockZ - tile.BlockZ);
             int y = Math.Min(_settings.MapSizeY - 2, tile.SurfaceY[index] + 1);
@@ -1124,6 +1156,67 @@ public class TerrainDiffusionModSystem : ModSystem
     }
 
     private (int X, int Y, int Z)? _pendingSpawn;
+
+    /// <summary>
+    /// The nearest column to a spawn under a lake that is land above the sea and not under a lake,
+    /// searching outward square by square up to <see cref="SpawnShoreSearchBlocks"/>; null if none.
+    /// </summary>
+    private (int x, int z)? NearestDryLand(int blockX, int blockZ)
+    {
+        TerrainTile tile = null;
+        for (int r = 1; r <= SpawnShoreSearchBlocks; r++)
+        {
+            (int x, int z)? best = null;
+            long bestDistance = long.MaxValue;
+            for (int dz = -r; dz <= r; dz++)
+            for (int dx = -r; dx <= r; dx++)
+            {
+                if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
+                long distance = (long)dx * dx + (long)dz * dz;
+                if (distance >= bestDistance) continue;
+
+                int x = blockX + dx, z = blockZ + dz;
+                if (!_settings.IsInsideWorld(x, z)) continue;
+                _provider.GetTileAt(x, z, ref tile);
+                int index = tile.Index(x - tile.BlockX, z - tile.BlockZ);
+                if (tile.ElevationMeters[index] <= 0f || tile.SurfaceY[index] < _settings.SeaLevel) continue;
+                if (_lakes.IsLake(x, z)) continue;
+
+                best = (x, z);
+                bestDistance = distance;
+            }
+            if (best != null) return best;
+        }
+        return null;
+    }
+
+    private const int SpawnShoreSearchBlocks = 256;
+
+    /// <summary>
+    /// Lake water for this world, or null when it has lakes off or another mod fills the terrain.
+    /// </summary>
+    private LakeWater CreateLakes()
+    {
+        if (!_settings.WaterFill)
+        {
+            _api.Logger.Notification("[{0}] Lakes are off for this world: depressions above sea level stay dry.",
+                DiffusionPaths.ModId);
+            return null;
+        }
+
+        if (WatershedsCompat.IsPresent(_api))
+        {
+            _api.Logger.Notification("[{0}] Lakes are left to Algernon's Watersheds, which fills this world's terrain.",
+                DiffusionPaths.ModId);
+            return null;
+        }
+
+        var lakes = new LakeWater(_provider, _settings, _api.Logger);
+        _api.Logger.Notification(
+            "[{0}] Lakes: closed depressions fill with fresh water, in regions of {1} blocks ({2}x{2} tiles of {3}).",
+            DiffusionPaths.ModId, lakes.RegionBlocks, lakes.RegionTiles, _provider.TileSize);
+        return lakes;
+    }
 
     private void ApplyPendingSpawn()
     {
@@ -1273,6 +1366,7 @@ public class TerrainDiffusionModSystem : ModSystem
             $"Settings screen: {(ConfigLibCompat.IsPresent(_api) ? "ConfigLib" : "not installed")}",
             $"Debug map: {(_debugMap?.IsRunning == true ? _debugMap.Url : "off")}",
             $"Tiles generated: {_provider.TilesGenerated}",
+            $"Lakes: {(_lakes == null ? "off" : _lakes.Describe())}",
             $"Tile database: {DescribeTileStore(_provider.Store)}",
             $"Pregeneration: {(_pregen == null ? "none" : _pregen.Describe())}",
             $"Tile size: {_provider.TileSize}x{_provider.TileSize} blocks",

@@ -82,6 +82,21 @@ public sealed class DiffusionWorldSettings
     public bool DryShallowsFill { get; private set; }
 
     /// <summary>
+    /// Whether closed depressions fill with fresh water up to where they would spill (see
+    /// <c>WorldGen.LakeWater</c>). World setting <c>terraindiffusionWaterFill</c>, pinned when a world
+    /// is created: on for new worlds, off for worlds made before it. Not part of the tiles.
+    /// </summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public bool WaterFill { get; private set; }
+
+    /// <summary>
+    /// Edge of the squares lakes are computed in, in blocks; a lake cannot cross one's edge. Rounded
+    /// down to whole terrain tiles. World setting <c>terraindiffusionWaterRegion</c>. Not part of the tiles.
+    /// </summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public int WaterRegionBlocks { get; private set; } = 1024;
+
+    /// <summary>
     /// Scales the forest cover the model's moisture implies. Trees on the ground go as its square:
     /// vanilla accepts each candidate tree with probability <c>(byte / 255)^2</c>. World setting
     /// <c>terraindiffusionForestDensity</c>, in percent.
@@ -95,7 +110,9 @@ public sealed class DiffusionWorldSettings
     /// How far the land is lowered where sneeze's Rivers runs a river, 0 to 1, so the model draws a
     /// valley for it rather than a ridge to be cut through. Nothing without that mod. Measured against
     /// ~505 m either side of a corridor: 0.3 brings it to 334 m, 0.5 to 251 m, 1.0 to 28 m but
-    /// drowns a fifth of it. World setting <c>terraindiffusionRiverValleyDepth</c>, in percent.
+    /// drowns a fifth of it. World setting <c>terraindiffusionRiverValleyDepth</c>, in percent: 20 for
+    /// new worlds (worldconfig.json); a world from before the setting existed reads 30, what it was
+    /// generated with.
     /// </summary>
     public float RiverBasinDepth { get; private set; } = 0.3f;
 
@@ -306,6 +323,11 @@ public sealed class DiffusionWorldSettings
                 ReadWorldConfig(worldConfig, "terraindiffusionHeightNoise", "0").ToInt(0) / 100f, 0f, 10f),
             CoastFill = ReadWorldConfig(worldConfig, "terraindiffusionCoastFill", "false").ToBool(false),
             DryShallowsFill = ReadWorldConfig(worldConfig, "terraindiffusionDryShallowsFill", "true").ToBool(true),
+            // Pinned when the world was created (TerrainDiffusionModSystem.PinWorldValues); a world from
+            // before lakes reads off, as it was generated.
+            WaterFill = ReadWorldConfig(worldConfig, "terraindiffusionWaterFill", "false").ToBool(false),
+            WaterRegionBlocks = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionWaterRegion", "1024").ToInt(1024), 128, 8192),
             AltitudeCooling = Math.Clamp(
                 ReadWorldConfig(worldConfig, "terraindiffusionAltitudeCooling", "100").ToInt(100) / 100f, 0.1f, 5f),
             ForestDensity = Math.Clamp(
@@ -343,7 +365,9 @@ public sealed class DiffusionWorldSettings
             shaping.LatitudeStrength, climate,
             // Pinned when the world was created (TerrainDiffusionModSystem.PinWorldValues); a world
             // from before version 2 keeps the profile its ground was made with.
-            ReadWorldConfig(worldConfig, "terraindiffusionLatitudeProfile", "1").ToInt(1));
+            ReadWorldConfig(worldConfig, "terraindiffusionLatitudeProfile", "1").ToInt(1),
+            // Off for new worlds (worldconfig.json); a world made before the setting reads true, as generated.
+            ReadWorldConfig(worldConfig, "terraindiffusionBandedRainfallBias", "true").ToBool(true));
 
         if (!settings.Latitude.IsNeutral)
         {

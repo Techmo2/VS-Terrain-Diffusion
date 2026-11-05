@@ -112,7 +112,8 @@ public class DiffusionSeasons : ModSystem
         SeasonalCycleMap.Sample? cycle = SeasonalCycleMap.At(_api.World.BlockAccessor, pos);
 
         double temperature = climate.WorldGenTemperature + SeasonalDeviation(
-            Month(yearRel), IsSouthern(pos), sample.Value.TemperatureSigmaC, _config.SeasonalTemperatureStrength, cycle);
+            Month(yearRel), IsSouthern(pos), sample.Value.TemperatureSigmaC, _config.SeasonalTemperatureStrength, cycle,
+            WinterGain(_api.World, pos.Z));
 
         // Day and night: the coldest hour is just before dawn. The seasonal model knows each place's
         // swing (BIO2, the mean of each month's maximum minus minimum); otherwise vanilla's
@@ -199,12 +200,48 @@ public class DiffusionSeasons : ModSystem
     /// place's spread. Shared with the spawn search, which needs the first day's temperature.
     /// </summary>
     internal static double SeasonalDeviation(double month, bool southern, float sigmaC, float strength,
-                                             SeasonalCycleMap.Sample? cycle)
+                                             SeasonalCycleMap.Sample? cycle, double winterGain = 1.0)
     {
-        if (cycle != null) return strength * cycle.Value.TemperatureDeviation(sigmaC, SeasonTheta(month, southern));
-        double summer = SummerWeight(month, southern);
-        float swing = SwingPerSigma * sigmaC * strength;
-        return -swing / 2.0 + swing * summer;
+        double deviation;
+        if (cycle != null)
+        {
+            deviation = strength * cycle.Value.TemperatureDeviation(sigmaC, SeasonTheta(month, southern));
+        }
+        else
+        {
+            double summer = SummerWeight(month, southern);
+            float swing = SwingPerSigma * sigmaC * strength;
+            deviation = -swing / 2.0 + swing * summer;
+        }
+        // Colder than the annual mean: deepened by the winter gain. Summers are left as they are.
+        return deviation < 0.0 ? deviation * winterGain : deviation;
+    }
+
+    /// <summary>World setting: how much deeper winters get per unit of latitude, in percent.</summary>
+    public const string WinterAmplificationCode = "terraindiffusionWinterAmplification";
+
+    /// <summary>
+    /// The default, fitted so a world's coldest month at a latitude matches vanilla's. Vanilla's
+    /// midwinter sits 32.5 C x |latitude| below the annual mean (its <c>ModTemperature</c>: a swing
+    /// of |latitude| x 65 peak to peak). Measured end to end on seed 777 (the game's own sea-level
+    /// temperature through a year, 21 latitudes), the model's own winters came out 0.65-0.90 of
+    /// vanilla's drop from |latitude| 0.3 poleward: k = 0.58 would match the drop, 0.78 the coldest
+    /// month itself, our annual means running a few degrees warmer around |latitude| 0.4-0.5.
+    /// </summary>
+    public const int DefaultWinterAmplificationPercent = 80;
+
+    /// <summary>
+    /// The factor winter deviations are multiplied by at a block Z: 1 + k x |latitude|, so winters
+    /// deepen with distance from the equator, the way vanilla's do, while each place keeps its own
+    /// shape - a maritime coast still milder than the interior. Read from the world config, which
+    /// clients have too, and changeable after a world is created.
+    /// </summary>
+    internal static double WinterGain(IWorldAccessor world, int blockZ)
+    {
+        double k = (world.Config?.GetAsInt(WinterAmplificationCode, DefaultWinterAmplificationPercent)
+                    ?? DefaultWinterAmplificationPercent) / 100.0;
+        if (k <= 0.0 || world.Calendar?.OnGetLatitude == null) return 1.0;
+        return 1.0 + k * Math.Min(1.0, Math.Abs(world.Calendar.OnGetLatitude(blockZ)));
     }
 
     /// <summary>The calendar month, 0 to 12, honouring a season override.</summary>

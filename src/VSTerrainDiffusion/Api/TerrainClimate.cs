@@ -30,9 +30,10 @@ public sealed class TerrainClimate
     private readonly TerrainDiffusionProvider _provider;
 
     /// <summary>
-    /// The coarse channels of the last chunk asked about, per thread. They vary over the model's
-    /// 7.68 km cells, so one read serves a whole chunk, and world generation asks about the same
-    /// chunk hundreds of times in a row.
+    /// The 2x2 coarse cells around the last column asked about, per thread, decoded. They span
+    /// the model's 7.68 km cells, so one read serves many chunks, and each column blends them for
+    /// itself. (Reading one value at each chunk's centre instead made the seasonal cycle and the
+    /// diurnal range step at every chunk border, and with them anything chosen by Köppen class.)
     /// </summary>
     [ThreadStatic] private static CoarseCache _coarseCache;
 
@@ -40,7 +41,8 @@ public sealed class TerrainClimate
     {
         /// <summary>Weak, so a thread that outlives a world does not keep that world's provider alive.</summary>
         public readonly WeakReference<TerrainDiffusionProvider> Provider = new(null);
-        public long Chunk = long.MinValue;
+        public long Cells = long.MinValue;
+        public readonly float[] Corners = new float[4 * CoarseChannel.SeasonalCount];
         public readonly float[] Channels = new float[CoarseChannel.SeasonalCount];
     }
 
@@ -111,15 +113,16 @@ public sealed class TerrainClimate
     private float[] ChunkCoarseChannels(int blockX, int blockZ)
     {
         CoarseCache cache = _coarseCache ??= new CoarseCache();
-        int chunkX = blockX >> 5, chunkZ = blockZ >> 5;
-        long chunk = ((long)chunkX << 32) | (uint)chunkZ;
-        if (cache.Chunk == chunk && cache.Provider.TryGetTarget(out TerrainDiffusionProvider cached) && cached == _provider)
-            return cache.Channels;
-
-        cache.Chunk = long.MinValue;
-        if (!_provider.CoarseChannelsAt(chunkX * 32 + 16, chunkZ * 32 + 16, cache.Channels)) return null;
-        cache.Chunk = chunk;
-        cache.Provider.SetTarget(_provider);
+        _provider.CoarseCellAt(blockX + 0.5, blockZ + 0.5, out int i0, out int j0, out float fi, out float fj);
+        long cells = ((long)i0 << 32) | (uint)j0;
+        if (cache.Cells != cells || !cache.Provider.TryGetTarget(out TerrainDiffusionProvider cached) || cached != _provider)
+        {
+            cache.Cells = long.MinValue;
+            if (!_provider.CoarseCorners(i0, j0, cache.Corners)) return null;
+            cache.Cells = cells;
+            cache.Provider.SetTarget(_provider);
+        }
+        TerrainDiffusionProvider.InterpolateCorners(cache.Corners, _provider.CoarseSpec.Channels, fi, fj, cache.Channels);
         return cache.Channels;
     }
 

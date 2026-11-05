@@ -614,6 +614,9 @@ public sealed class SyntheticMapFactory
 
     private static readonly float[] LogResponseLandMm = Log(ResponseLandMm, BandedRainfallBias);
 
+    /// <summary>The rainfall curve as measured, without the banded bias.</summary>
+    private static readonly float[] LogResponseLandMmUnbiased = Log(ResponseLandMm, 1f);
+
     private static float[] Log(float[] values, float bias)
     {
         var result = new float[values.Length];
@@ -639,8 +642,13 @@ public sealed class SyntheticMapFactory
     /// <param name="wantedC">Mean annual temperature the band wants on the ground, in Celsius.</param>
     /// <param name="wantedMm">Annual rainfall the band wants on the ground, in millimetres.</param>
     /// <exception cref="InvalidOperationException">The model's data is not on disk.</exception>
-    public static LatitudeBandPlan PlanLatitude(float wantedC, float wantedMm)
+    /// <param name="bandedRainfallBias">
+    /// Whether to apply <see cref="BandedRainfallBias"/>. It was measured on latitude profile 1;
+    /// world setting <c>terraindiffusionBandedRainfallBias</c>, off for new worlds.
+    /// </param>
+    public static LatitudeBandPlan PlanLatitude(float wantedC, float wantedMm, bool bandedRainfallBias = true)
     {
+        float[] logLandMm = bandedRainfallBias ? LogResponseLandMm : LogResponseLandMmUnbiased;
         PipelineData data = LoadData();
         float[] temperature = data.DataQuantileTables[TemperatureChannel];
         float[] rainfall = data.DataQuantileTables[PrecipitationChannel];
@@ -649,14 +657,14 @@ public sealed class SyntheticMapFactory
             Interp(wantedC, ResponseLandC, ResponseConditioningC, true),
             temperature[0], temperature[temperature.Length - 1]);
         float conditioningMm = Math.Clamp(
-            (float)Math.Exp(Interp((float)Math.Log(Math.Max(1f, wantedMm)), LogResponseLandMm,
+            (float)Math.Exp(Interp((float)Math.Log(Math.Max(1f, wantedMm)), logLandMm,
                                    LogResponseConditioningMm, true)),
             rainfall[0], rainfall[rainfall.Length - 1]);
 
         float deliveredC = Interp(conditioningC, ResponseConditioningC, ResponseLandC, true);
         float deliveredMm = (float)Math.Exp(
             Interp((float)Math.Log(Math.Max(1f, conditioningMm)), LogResponseConditioningMm,
-                   LogResponseLandMm, true));
+                   logLandMm, true));
 
         return new LatitudeBandPlan(
             conditioningC, conditioningMm,
