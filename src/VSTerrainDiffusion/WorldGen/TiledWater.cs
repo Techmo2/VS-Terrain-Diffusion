@@ -104,6 +104,21 @@ public sealed class WaterRegion
 
     public bool HasTile(int tileX, int tileZ) => _tiles == null || _tiles[tileZ * _s + tileX] != null;
 
+    /// <summary>
+    /// Approximate heap of a region with every tile but the last in, the most it holds: three height
+    /// arrays per column, the pass and seam edges, and the two node level tables of a solve.
+    /// </summary>
+    public static long InProgressBytes(int tileSize, int regionTiles)
+    {
+        long tiles = (long)regionTiles * regionTiles;
+        long columns = tiles * tileSize * tileSize;
+        // Passes (rough ground has up to ~8t a tile), and half of 8 seams of up to 3t pairs
+        long edges = tiles * (8L * tileSize + 4 * 3L * tileSize);
+        long nodes = tiles * (4L * tileSize - 4) + 1;
+        long chunks = columns / (ChunkSize * ChunkSize);
+        return columns * 3 * sizeof(short) + edges * 3 * sizeof(int) + 2 * nodes * sizeof(int) + chunks * 8;
+    }
+
     /// <summary>Approximate heap held, in bytes. Safe to read without the caller's lock; then approximate.</summary>
     public long ApproxBytes
     {

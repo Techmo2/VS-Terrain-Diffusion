@@ -1213,8 +1213,9 @@ public class TerrainDiffusionModSystem : ModSystem
 
         var lakes = new LakeWater(_provider, _settings, _api.Logger);
         _api.Logger.Notification(
-            "[{0}] Lakes: closed depressions fill with fresh water, in regions of {1} blocks ({2}x{2} tiles of {3}).",
-            DiffusionPaths.ModId, lakes.RegionBlocks, lakes.RegionTiles, _provider.TileSize);
+            "[{0}] Lakes: closed depressions fill with fresh water, in regions of {1} blocks ({2}x{2} tiles of {3}); " +
+            "up to {4} MB of lake state in memory.",
+            DiffusionPaths.ModId, lakes.RegionBlocks, lakes.RegionTiles, _provider.TileSize, lakes.BudgetBytes / 1048576);
         return lakes;
     }
 

@@ -23,8 +23,17 @@ public sealed class LakeWater
 {
     private const int ChunkSize = WaterRegion.ChunkSize;
 
-    /// <summary>Regions kept in memory before the least recently used are dropped.</summary>
-    private const long BudgetBytes = 256L * 1024 * 1024;
+    /// <summary>
+    /// Regions held while being built, which the memory budget always leaves room for: a 3x3 block,
+    /// everything a player near a region's corner can be generating into at once.
+    /// </summary>
+    private const int RegionsInProgress = 9;
+
+    /// <summary>The budget never goes below this, so small regions keep plenty of finished ones.</summary>
+    private const long MinBudgetBytes = 256L * 1024 * 1024;
+
+    /// <summary>Bytes of regions kept in memory before the least recently used are dropped.</summary>
+    private readonly long _budgetBytes;
 
     private readonly TerrainDiffusionProvider _provider;
     private readonly ILogger _logger;
@@ -57,7 +66,12 @@ public sealed class LakeWater
         _regionTiles = Math.Max(1, settings.WaterRegionBlocks / _tileSize);
         _seaLevel = settings.SeaLevel;
         _maxY = settings.MapSizeY - 2;
+        _budgetBytes = Math.Max(MinBudgetBytes,
+            RegionsInProgress * WaterRegion.InProgressBytes(_tileSize, _regionTiles));
     }
+
+    /// <summary>Memory the regions may hold before the least recently used are dropped.</summary>
+    public long BudgetBytes => _budgetBytes;
 
     /// <summary>Region edge in tiles.</summary>
     public int RegionTiles => _regionTiles;
@@ -160,10 +174,10 @@ public sealed class LakeWater
 
         long forced = Interlocked.Read(ref _tilesForced);
         string text = $"regions of {RegionBlocks} blocks; {regions} in memory ({complete} complete, " +
-                      $"{bytes / 1048576.0:0.#} MB); {forced} tile(s) generated early for lakes";
+                      $"{bytes / 1048576.0:0.#} of {_budgetBytes / 1048576} MB); {forced} tile(s) generated early for lakes";
         if (forced > 0) text += $" ({Interlocked.Read(ref _forcedMillis) / 1000.0:0.#} s waited)";
         long dropped = Interlocked.Read(ref _regionsDropped);
-        if (dropped > 0) text += $"; {dropped} region(s) dropped to stay within {BudgetBytes / 1048576} MB";
+        if (dropped > 0) text += $"; {dropped} region(s) dropped to stay within budget";
         long failed = Interlocked.Read(ref _regionsFailed);
         if (failed > 0) text += $"; {failed} region(s) FAILED their check";
         return text;
@@ -257,13 +271,13 @@ public sealed class LakeWater
     {
         long bytes = 0;
         foreach (Entry entry in _regions.Values) bytes += entry.Region.ApproxBytes;
-        if (bytes <= BudgetBytes) return;
+        if (bytes <= _budgetBytes) return;
 
         var byAge = new List<KeyValuePair<long, Entry>>(_regions);
         byAge.Sort((a, b) => a.Value.LastUse.CompareTo(b.Value.LastUse));
         foreach (KeyValuePair<long, Entry> old in byAge)
         {
-            if (bytes <= BudgetBytes * 9 / 10) break;
+            if (bytes <= _budgetBytes * 9 / 10) break;
             if (old.Key == keep) continue;
             if (!_regions.TryRemove(old.Key, out Entry removed)) continue;
             bytes -= removed.Region.ApproxBytes;
