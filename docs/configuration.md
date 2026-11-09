@@ -1,77 +1,27 @@
-# Mod configuration reference
+# Configuration
 
-The mod writes `ModConfig/vsterraindiffusion.json` inside your Vintage Story data folder the first
-time it runs, and rewrites it on every start with any missing keys filled in and any out-of-range
-values pulled back into range.
+`ModConfig/vsterraindiffusion.json` in the data folder. The mod writes it on first start, then on every
+start fills in missing keys and pulls out-of-range values back into range. With
+[ConfigLib](https://mods.vintagestory.at/configlib) installed, the same fields get an in-game screen.
 
-With [ConfigLib](https://mods.vintagestory.at/configlib) installed the same file gets an in-game
-settings screen, with every field below on it. ConfigLib edits this file in place rather than
-keeping one of its own. Only `TerrainSamplerHeight`, `VerboseInference` and
-`TranslocatorStoredTerrainOnly` take effect the moment they are saved; the rest are read when the
-world generator starts.
+`TerrainSamplerHeight`, `VerboseInference` and `WorldGen.TranslocatorStoredTerrainOnly` apply on save.
+Everything else is read when the world generator starts. Keep `WorldGen` fixed once a world is
+explored, or new chunks won't match old ones.
 
-The listing below is the file exactly as the mod generates it, with a comment on every field. **JSON
-does not allow comments** — copy values out of it, do not paste the whole thing over your config.
-[Ranges](#ranges) at the end gives every numeric field's hard limit, the narrower range worth
-staying inside, and its default.
+Per-world settings (terrain, water, device, precision) aren't in this file. See
+[World settings](world-settings.md) and [Performance](performance.md).
 
-Settings under `WorldGen` change what the world looks like; keep them fixed after exploration so new
-chunks do not disagree with the ones already on disk.
-
-## World settings
-
-The world options and how the model runs (device, precisions, GPU limit, model loading, downloads)
-are saved with each world, set in the Customize screen's Terrain Diffusion tab. The codes and
-defaults are in the [README](README.md#creating-a-world). A dedicated server sets them in
-`serverconfig.json`:
-
-```json
-"WorldConfig": {
-  "WorldConfiguration": {
-    "terraindiffusionInferenceDevice": "cuda",
-    "terraindiffusionBasePrecision": "fp16"
-  }
-}
-```
-
-`/worldconfig <code> <value>` changes one on an existing world; it is read the next time the world
-loads. ONNX Runtime runs in a worker process that starts with each world and exits with it, so a
-device change needs no game restart.
-
-As a world loads the mod checks which devices and precisions this machine can run and logs the
-result. The Customize screen is built before any mod code runs, so it lists every value; a world
-naming one this machine cannot run, or an unrecognised value, stops loading with the reason and the
-values that would work. The mod never changes the device or a precision itself.
-
-| device | runs when |
-|---|---|
-| `auto`, `cpu` | always (Windows or Linux on x64 or arm64, macOS on Apple silicon; ONNX Runtime 1.24.4 has no Intel Mac build) |
-| `openvino` | 64-bit Linux, CPU with SSE4.2 |
-| `cuda` | 64-bit Windows or Linux, NVIDIA GPU and driver supporting the CUDA build in use (12: compute 5.0+, driver 525+; 13: compute 7.5+, driver 580+). Linux also needs the CUDA toolkit and cuDNN 9 installed |
-| `tensorrt-rtx` | 64-bit Windows or Linux, compute capability 8.6, 8.9, 12.0 or 12.1, driver 580+ |
-| `rocm` | 64-bit Linux, an AMD GPU visible to ROCm (`/dev/kfd` openable, so the user is in the `render` group), and ROCm 7 with MIGraphX installed (`libamdhip64.so.7`, `libmigraphx_c.so.3`) |
-| `directml` | Windows 10 1903+, Direct3D 12 GPU |
-| `coreml` | macOS 10.15+ |
-
-| precision | runs when |
-|---|---|
-| `fp32` | always |
-| `fp16` | at least one GPU device above can run |
-| `int8` (decoder) | always |
+Below is the default file with a comment on every field. JSON doesn't allow comments, so copy values
+from it rather than the whole file.
 
 ## The file
 
 ```jsonc
 {
-  // How this mod answers Algernon's Terrain Sampler, which other mods use to predict terrain
-  // without generating it: "full", "coarse" or "stored". Full builds the model's terrain tile around
-  // the position and matches the generated terrain exactly, but runs the model for ground not
-  // generated yet (~3 s a new tile on an RTX 3060). Coarse answers from the coarse model: under 1 ms,
-  // blurred to about 512 blocks (5 blocks off on average). Stored is exact where the tile is in the
-  // tile database and coarse elsewhere, so it never generates a tile, and with the coarse windows
-  // also stored (/tdiff pregen) it does not run the model at all: for a server with pregenerated
-  // terrain. The first sample in a new 32 km area also pays for building Rivers' network there
-  // (~10 s), in every mode. Takes effect immediately.
+  // How this mod answers Algernon's Terrain Sampler. Can be "full", "coarse" or "stored". 
+  // Full (Slowest) - Using the full resolution decoder output. 
+  // Coarse (Fastest) - Using the low resolution coarse model output.
+  // Stored (Compromise) - Using full resolution decoder output if it already exists in the tile database, coarse otherwise.
   "TerrainSamplerHeight": "full",
 
   // Total megabytes of decoded tensor windows kept across all pipeline stages.
@@ -422,10 +372,8 @@ values that would work. The mod never changes the device or a precision itself.
 
 ## Ranges
 
-**Clamped to** is the hard limit: anything outside it is pulled back on load, and a value that is
-not a number at all is replaced with the default. **Useful** is the narrower range where the setting
-does something worth having — nothing outside it is forbidden, and the two differ because the clamp
-only has to stop the mod breaking, not stop the world looking silly.
+**Clamped to** is the hard limit enforced on load. A value that isn't a number is reset to the
+default. **Useful** is where a setting does something worth having.
 
 | Field | Clamped to | Useful | Default |
 | --- | --- | --- | --- |
@@ -469,20 +417,4 @@ only has to stop the mod breaking, not stop the world looking silly.
 | `ScaleOverride` | 0, or 1 – 16 | 0, or 1 – 6 | 0 |
 | `VerticalExaggerationOverride` | 0, or 0.05 – 20 | 0, or 0.5 – 2 | 0 |
 
-An unrecognised `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls back to its
-default.
-
-Only the selected models are downloaded, into `TerrainDiffusionModels/`:
-
-| setting | file |
-|---|---|
-| `terraindiffusionDecoderPrecision: "int8"` | `decoder_model.int8.onnx` |
-| `terraindiffusionDecoderPrecision: "fp16"` | `decoder_model.fp16.256.onnx` |
-| `terraindiffusionBasePrecision: "fp16"` | `base_model.fp16.onnx` |
-
-The decoder's half-precision file carries a window size because a decoder graph is exported for one
-height and width and loads at no other. 256x256 is fixed in the pipeline; `TerrainTileSizeBlocks`
-changes how many windows run per tile, not their shape.
-
-Recipes are under `scripts/`; each model is built and published by a workflow in
-`.github/workflows/` that verifies its exact size and SHA-256.
+An unrecognised `HeightMode`, `RainfallBasis`, `OceanMap` or `ClimateMode` falls back to its default.

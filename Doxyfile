@@ -6,10 +6,10 @@ PROJECT_BRIEF          = "Diffusion-model terrain generation for Vintage Story"
 OUTPUT_DIRECTORY       = docs/api
 CREATE_SUBDIRS         = NO
 
-INPUT                  = src/VSTerrainDiffusion src/VSTerrainDiffusion.Worker README.md
-FILE_PATTERNS          = *.cs
+INPUT                  = src/VSTerrainDiffusion src/VSTerrainDiffusion.Worker README.md docs
+FILE_PATTERNS          = *.cs *.md
 RECURSIVE              = YES
-EXCLUDE_PATTERNS       = */obj/* */bin/*
+EXCLUDE_PATTERNS       = */obj/* */bin/* */docs/api/*
 # Vendored third-party code, documented upstream.
 EXCLUDE                = src/VSTerrainDiffusion/Pipeline/FastNoiseLite.cs
 USE_MDFILE_AS_MAINPAGE = README.md
@@ -23,6 +23,8 @@ EXTRACT_ANON_NSPACES   = YES
 HIDE_UNDOC_MEMBERS     = NO
 JAVADOC_AUTOBRIEF      = YES
 MARKDOWN_SUPPORT       = YES
+# Heading anchors as GitHub makes them, so the docs/ pages link the same in both.
+MARKDOWN_ID_STYLE      = GITHUB
 SOURCE_BROWSER         = YES
 INLINE_SOURCES         = NO
 
