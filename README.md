@@ -10,7 +10,7 @@ Put the release zip in `Mods`. The mod is server-side. Clients may install it so
 matches the server. The models (~2.2 GB) and ONNX Runtime download on first launch, with progress on
 the loading screen.
 
-It needs Vintage Story 1.22 and ~3 GB of RAM. A GPU is strongly recommended.
+It needs Vintage Story 1.22 and GPU with at least ~6 GB of memory for the fp32 models.
 
 | Platform              | Device (auto) | Needs                           |
 | --------------------- | ------------- | ------------------------------- |
