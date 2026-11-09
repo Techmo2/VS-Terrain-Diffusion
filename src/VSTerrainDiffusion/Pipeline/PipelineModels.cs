@@ -15,25 +15,50 @@ namespace VSTerrainDiffusion.Pipeline;
 /// </summary>
 public sealed class PipelineModels : IDisposable
 {
+    /// <summary>Guards every static load field below.</summary>
     private static readonly object Gate = new();
+
+    /// <summary>The loaded models, or null.</summary>
     private static volatile PipelineModels _instance;
+
+    /// <summary>The loader thread, while one owns the load.</summary>
     private static Thread _loadThread;
+
+    /// <summary>Set when the current load finishes, succeeded or not. Replaced for each new load.</summary>
     private static volatile ManualResetEventSlim Loaded = new(false);
+
+    /// <summary>Backing field of <see cref="LoadFailure"/>.</summary>
     private static volatile Exception _loadFailure;
+
+    /// <summary>Cancels the current load; null when none is running.</summary>
     private static CancellationTokenSource _loadCancellation;
+
+    /// <summary>
+    /// A load requested while a cancelled one was still unwinding; started when it finishes.
+    /// </summary>
     private static ILogger _pendingLoadLogger;
+
+    /// <summary>
+    /// Bumped by each load and by <see cref="Shutdown"/>, so a stale loader can tell it lost.
+    /// </summary>
     private static int _loadGeneration;
 
+    /// <summary>The coarse model: climate and low-resolution elevation from conditioning.</summary>
     public IModelRunner Coarse { get; private set; }
 
     /// <summary>Which coarse model <see cref="Coarse"/> is: its channels and their statistics.</summary>
     public CoarseModelSpec CoarseSpec { get; private set; } = CoarseModelSpec.Annual;
+
+    /// <summary>The base model: latents at full resolution from the coarse output.</summary>
     public IModelRunner Base { get; private set; }
+
+    /// <summary>The decoder: elevation from the base model's latents.</summary>
     public IModelRunner Decoder { get; private set; }
 
     /// <summary>The process the models run in. Shared by <see cref="WithCoarse"/> copies, owned here.</summary>
     public InferenceWorker Worker { get; private set; }
 
+    /// <summary>Built by <see cref="Load"/> and <see cref="WithCoarse"/> only.</summary>
     private PipelineModels() { }
 
     /// <summary>
@@ -80,6 +105,14 @@ public sealed class PipelineModels : IDisposable
         }
     }
 
+    /// <summary>
+    /// Starts a new loader thread for a new load generation. Called under <see cref="Gate"/>.
+    /// </summary>
+    /// <param name="logger">The server log.</param>
+    /// <param name="completionAlreadyPrepared">
+    /// True when <see cref="BeginLoad"/> already replaced <see cref="Loaded"/> and cleared the failure for a
+    /// queued load.
+    /// </param>
     private static void StartLoadLocked(ILogger logger, bool completionAlreadyPrepared = false)
     {
         if (!completionAlreadyPrepared)
@@ -133,6 +166,13 @@ public sealed class PipelineModels : IDisposable
             DiffusionPaths.ModId, OnnxRuntimeBootstrap.Provider, InferenceSettings.Code(nameof(InferenceSettings.DecoderPrecision)));
     }
 
+    /// <summary>
+    /// The loader thread: assets, worker, then the three models. Publishes them unless <see cref="Shutdown"/>
+    /// or a newer load overtook it, and disposes whatever it built otherwise.
+    /// </summary>
+    /// <param name="logger">The server log.</param>
+    /// <param name="generation">This load's generation.</param>
+    /// <param name="cancellation">This load's cancellation, which it disposes.</param>
     private static void Load(ILogger logger, int generation, CancellationTokenSource cancellation)
     {
         PipelineModels loading = null;
@@ -271,6 +311,17 @@ public sealed class PipelineModels : IDisposable
         return worker;
     }
 
+    /// <summary>
+    /// Compiles a model with OpenVINO, falling back to ONNX Runtime on the CPU if it will not compile.
+    /// </summary>
+    /// <param name="worker">The ONNX Runtime worker.</param>
+    /// <param name="openVinoPath">The graph for OpenVINO.</param>
+    /// <param name="cpuPath">
+    /// The graph for the CPU fallback; null to reuse <paramref name="openVinoPath"/>.
+    /// </param>
+    /// <param name="name">The model's role.</param>
+    /// <param name="logger">The server log.</param>
+    /// <param name="cancellation">Abandons the load.</param>
     private static IModelRunner LoadOpenVinoOrCpu(InferenceWorker worker, string openVinoPath, string cpuPath,
                                                    string name, ILogger logger,
                                                    CancellationToken cancellation)
@@ -306,6 +357,7 @@ public sealed class PipelineModels : IDisposable
             "Terrain Diffusion models are unavailable", _loadFailure);
     }
 
+    /// <summary>Disposes the models, then the worker they ran in.</summary>
     public void Dispose()
     {
         Coarse?.Dispose();

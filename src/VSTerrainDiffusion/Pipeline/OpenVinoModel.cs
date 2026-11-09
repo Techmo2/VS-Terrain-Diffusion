@@ -12,20 +12,54 @@ namespace VSTerrainDiffusion.Pipeline;
 /// <summary>A model hosted by an isolated OpenVINO worker.</summary>
 public sealed class OpenVinoModel : IModelRunner
 {
+    /// <summary>Serialises runs, the switch to the CPU and disposal.</summary>
     private readonly object _gate = new();
+
+    /// <summary>The ONNX Runtime worker, for the CPU fallback.</summary>
     private readonly InferenceWorker _worker;
+
+    /// <summary>The graph the CPU fallback loads.</summary>
     private readonly string _fallbackModelPath;
+
+    /// <summary>The model's role ("coarse", "base" or "decoder").</summary>
     private readonly string _name;
+
+    /// <summary>The server log.</summary>
     private readonly ILogger _logger;
+
+    /// <summary>The OpenVINO worker; null after a failure or disposal.</summary>
     private OpenVinoWorkerClient _runtime;
+
+    /// <summary>The ONNX Runtime CPU model, once OpenVINO has failed.</summary>
     private OnnxModel _fallback;
+
+    /// <summary>Set when both OpenVINO and the fallback failed; every later run throws it.</summary>
     private Exception _terminalFailure;
+
+    /// <summary>Backing field of <see cref="Backend"/>.</summary>
     private string _backend;
+
+    /// <summary>Set by <see cref="Dispose"/>.</summary>
     private bool _disposed;
+
+    /// <summary>Backing field of <see cref="RunCount"/>.</summary>
     private long _runCount;
+
+    /// <summary>Backing field of <see cref="RunItems"/>.</summary>
     private long _runItems;
+
+    /// <summary>Wall time of every run, in <see cref="System.Diagnostics.Stopwatch"/> ticks.</summary>
     private long _runStopwatchTicks;
 
+    /// <summary>Compiles a graph in a new OpenVINO worker process.</summary>
+    /// <param name="worker">The ONNX Runtime worker, kept for the CPU fallback.</param>
+    /// <param name="modelPath">The graph OpenVINO compiles.</param>
+    /// <param name="fallbackModelPath">
+    /// The graph ONNX Runtime loads if OpenVINO fails later; null to reuse <paramref name="modelPath"/>.
+    /// </param>
+    /// <param name="name">The model's role.</param>
+    /// <param name="logger">The server log.</param>
+    /// <param name="cancellation">Abandons the compile.</param>
     internal OpenVinoModel(InferenceWorker worker, string modelPath, string fallbackModelPath, string name,
                            ILogger logger, CancellationToken cancellation)
     {
@@ -46,15 +80,20 @@ public sealed class OpenVinoModel : IModelRunner
             stopwatch.ElapsedMilliseconds);
     }
 
+    /// <inheritdoc/>
     public string Backend => _backend;
 
+    /// <inheritdoc/>
     public long RunCount => Interlocked.Read(ref _runCount);
 
+    /// <inheritdoc/>
     public long RunItems => Interlocked.Read(ref _runItems);
 
+    /// <inheritdoc/>
     public long RunMilliseconds =>
         Interlocked.Read(ref _runStopwatchTicks) * 1000 / Stopwatch.Frequency;
 
+    /// <inheritdoc/>
     public float[] RunModel(float[] x, long[] xShape, float[] noiseLabels,
                             float[][] condInputs, long[][] condShapes)
     {
@@ -105,6 +144,18 @@ public sealed class OpenVinoModel : IModelRunner
         }
     }
 
+    /// <summary>
+    /// Replaces the failed OpenVINO worker with an ONNX Runtime CPU model for good, then reruns the call on
+    /// it. Called under <see cref="_gate"/>.
+    /// </summary>
+    /// <param name="openVinoFailure">Why OpenVINO failed.</param>
+    /// <param name="x">See <see cref="RunModel"/>.</param>
+    /// <param name="xShape">See <see cref="RunModel"/>.</param>
+    /// <param name="noiseLabels">See <see cref="RunModel"/>.</param>
+    /// <param name="condInputs">See <see cref="RunModel"/>.</param>
+    /// <param name="condShapes">See <see cref="RunModel"/>.</param>
+    /// <returns>The CPU model's output.</returns>
+    /// <exception cref="InvalidOperationException">The CPU model could not be loaded either.</exception>
     private float[] SwitchToCpuAndRetry(OpenVinoWorkerException openVinoFailure,
                                          float[] x, long[] xShape, float[] noiseLabels,
                                          float[][] condInputs, long[][] condShapes)
@@ -133,6 +184,7 @@ public sealed class OpenVinoModel : IModelRunner
         return _fallback.RunModel(x, xShape, noiseLabels, condInputs, condShapes);
     }
 
+    /// <summary>Ends the OpenVINO worker, or unloads the fallback. Safe to call twice.</summary>
     public void Dispose()
     {
         lock (_gate)

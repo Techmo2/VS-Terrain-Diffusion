@@ -2,46 +2,6 @@ using System;
 
 namespace VSTerrainDiffusion.Pipeline;
 
-/// <summary>Indices into a coarse model's output (and the coarse map, which adds a blend weight after the last).</summary>
-public static class CoarseChannel
-{
-    /// <summary>Elevation, signed square-root metres.</summary>
-    public const int Elevation = 0;
-
-    /// <summary>Fifth percentile of elevation, signed square-root metres (the map stores elevation minus this).</summary>
-    public const int ElevationP5 = 1;
-
-    /// <summary>Mean annual temperature at the cell's elevation, °C (BIO1).</summary>
-    public const int Temperature = 2;
-
-    /// <summary>Standard deviation of monthly mean temperatures × 100 (BIO4).</summary>
-    public const int TemperatureSeasonality = 3;
-
-    /// <summary>Annual precipitation, mm (BIO12).</summary>
-    public const int Precipitation = 4;
-
-    /// <summary>Coefficient of variation of monthly precipitation, % (BIO15).</summary>
-    public const int PrecipitationCv = 5;
-
-    /// <summary>Second harmonic of the temperature cycle, cosine and sine, °C.</summary>
-    public const int TemperatureShapeCos = 6, TemperatureShapeSin = 7;
-
-    /// <summary>First harmonic of precipitation relative to the monthly mean: when the wet season falls.</summary>
-    public const int WetSeasonCos = 8, WetSeasonSin = 9;
-
-    /// <summary>Second harmonic of precipitation relative to the monthly mean: a second rainy season, sharp monsoons.</summary>
-    public const int SecondRainyCos = 10, SecondRainySin = 11;
-
-    /// <summary>Mean diurnal temperature range, °C (BIO2).</summary>
-    public const int DiurnalRange = 12;
-
-    /// <summary>The annual statistics every coarse model has: elevation, its fifth percentile and four climate channels.</summary>
-    public const int AnnualCount = 6;
-
-    /// <summary>The annual channels plus the six seasonal-cycle channels and the diurnal range.</summary>
-    public const int SeasonalCount = 13;
-}
-
 /// <summary>
 /// A coarse model a world can be generated with: which file it is, how many channels it produces and
 /// how they are normalised. The base model and decoder are shared; only the first
@@ -77,6 +37,7 @@ public sealed class CoarseModelSpec
             3.0757797509575635f
         });
 
+    /// <summary>Every model's <see cref="Code"/>, for the world config's choices.</summary>
     public static readonly string[] AllCodes = { Annual.Code, Seasonal.Code };
 
     /// <summary>The world config value naming this model.</summary>
@@ -85,9 +46,19 @@ public sealed class CoarseModelSpec
     /// <summary>Channels the model produces; the coarse map has one more, the blend weight.</summary>
     public readonly int Channels;
 
+    /// <summary>
+    /// Per-channel means the model's output is normalised by; null to take them from the pipeline config.
+    /// </summary>
     private readonly float[] _means;
+
+    /// <summary>Per-channel standard deviations, as <see cref="_means"/>.</summary>
     private readonly float[] _stds;
 
+    /// <summary>Only the instances above exist.</summary>
+    /// <param name="code">See <see cref="Code"/>.</param>
+    /// <param name="channels">See <see cref="Channels"/>.</param>
+    /// <param name="means">See <see cref="_means"/>.</param>
+    /// <param name="stds">See <see cref="_stds"/>.</param>
     private CoarseModelSpec(string code, int channels, float[] means, float[] stds)
     {
         Code = code;
@@ -102,25 +73,20 @@ public sealed class CoarseModelSpec
     /// <summary>Index of the blend weight in the coarse map.</summary>
     public int WeightChannel => Channels;
 
+    /// <summary>Per-channel means that undo the model's output normalisation.</summary>
+    /// <param name="config">
+    /// The downloaded pipeline config, which holds the annual model's statistics.
+    /// </param>
     public float[] Means(WorldPipelineModelConfig config) => _means ?? config.CoarseMeans;
 
+    /// <summary>Per-channel standard deviations that undo the model's output normalisation.</summary>
+    /// <param name="config">The downloaded pipeline config.</param>
     public float[] Stds(WorldPipelineModelConfig config) => _stds ?? config.CoarseStds;
 
+    /// <summary>The model a world config value names.</summary>
+    /// <param name="code">A <see cref="Code"/>.</param>
+    /// <exception cref="ArgumentException">No model has that code.</exception>
     public static CoarseModelSpec ByCode(string code) =>
         Array.Find(new[] { Annual, Seasonal }, spec => spec.Code == code)
         ?? throw new ArgumentException($"\"{code}\" is not a coarse model; expected one of {string.Join(", ", AllCodes)}");
-}
-
-/// <summary>
-/// Planes of <see cref="WorldPipeline.Sample.Climate"/>, in the reference pipeline's native climate
-/// order: <c>[T, Tseas, P, Pcv, β, t2c, t2s, p1c, p1s, p2c, p2s, DTR]</c>.
-/// </summary>
-public static class ClimatePlane
-{
-    public const int Temperature = 0, TemperatureSeasonality = 1, Precipitation = 2, PrecipitationCv = 3, LapseRate = 4;
-    public const int TemperatureShapeCos = 5, TemperatureShapeSin = 6, WetSeasonCos = 7, WetSeasonSin = 8;
-    public const int SecondRainyCos = 9, SecondRainySin = 10, DiurnalRange = 11;
-
-    /// <summary>Five for the annual model, twelve with the seasonal cycle.</summary>
-    public static int CountFor(CoarseModelSpec spec) => spec.HasSeasonalCycle ? 12 : 5;
 }

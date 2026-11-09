@@ -9,8 +9,13 @@ namespace VSTerrainDiffusion.Pipeline;
 /// </summary>
 public static class PortableRng
 {
+    /// <summary>PCG64's LCG multiplier.</summary>
     private const ulong Pcg64Mult = 6364136223846793005UL;
+
+    /// <summary>PCG64's LCG increment.</summary>
     private const ulong Pcg64Inc = 1442695040888963407UL;
+
+    /// <summary>2^-32, scaling a 32-bit output into the unit interval.</summary>
     private const double Inv2P32 = 1.0 / 4294967296.0;
 
     /// <summary>Portable 64-bit seed from (baseSeed, ty, tx); matches world_pipeline._tile_seed.</summary>

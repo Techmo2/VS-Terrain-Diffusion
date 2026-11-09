@@ -204,12 +204,25 @@ public sealed class CoarseConditioningSite
         return levels;
     }
 
+    /// <summary>Whether this site's influence, fade included, touches the window.</summary>
+    /// <param name="i0">The window's first row.</param>
+    /// <param name="j0">The window's first column.</param>
+    /// <param name="h">The window's height.</param>
+    /// <param name="w">The window's width.</param>
     private bool Reaches(int i0, int j0, int h, int w)
     {
         float reach = Radius + Fade + 1f;
         return I + reach >= i0 && I - reach <= i0 + h && J + reach >= j0 && J - reach <= j0 + w;
     }
 
+    /// <summary>
+    /// Moves one value toward <paramref name="target"/> by <paramref name="weight"/> (0 keeps it, 1 replaces
+    /// it).
+    /// </summary>
+    /// <param name="values">The plane.</param>
+    /// <param name="index">The value's index.</param>
+    /// <param name="target">The site's value.</param>
+    /// <param name="weight">The site's weight here.</param>
     private static void Blend(float[] values, int index, float target, float weight) =>
         values[index] += (target - values[index]) * weight;
 

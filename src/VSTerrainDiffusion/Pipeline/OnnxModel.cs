@@ -16,15 +16,39 @@ namespace VSTerrainDiffusion.Pipeline;
 /// </summary>
 public sealed class OnnxModel : IModelRunner
 {
+    /// <summary>Backing field of <see cref="ActiveProvider"/>.</summary>
     private static volatile InferenceProvider _activeProvider = InferenceProvider.Cpu;
 
+    /// <summary>The worker process the session lives in.</summary>
     private readonly InferenceWorker _worker;
+
+    /// <summary>The worker's handle for this model.</summary>
     private readonly int _id;
+
+    /// <summary>Set once the worker has been told to unload the model.</summary>
     private bool _disposed;
+
+    /// <summary>Backing field of <see cref="RunCount"/>.</summary>
     private long _runCount;
+
+    /// <summary>Backing field of <see cref="RunItems"/>.</summary>
     private long _runItems;
+
+    /// <summary>Run time reported by the worker, summed.</summary>
     private long _runNanoseconds;
 
+    /// <summary>
+    /// Loads a graph into the worker, which creates its session on the worker's provider (or the CPU if that
+    /// fails).
+    /// </summary>
+    /// <param name="worker">The worker to load into.</param>
+    /// <param name="modelFilePath">The .onnx file.</param>
+    /// <param name="name">
+    /// The model's role ("coarse", "base" or "decoder"); names the optimised cache file and the TensorRT RTX
+    /// shape profile.
+    /// </param>
+    /// <param name="logger">The server log.</param>
+    /// <param name="cancellation">Abandons the load.</param>
     public OnnxModel(InferenceWorker worker, string modelFilePath, string name, ILogger logger,
                      CancellationToken cancellation = default)
     {
@@ -62,6 +86,7 @@ public sealed class OnnxModel : IModelRunner
     /// </summary>
     public static InferenceProvider ActiveProvider => _activeProvider;
 
+    /// <inheritdoc/>
     public string Backend { get; }
 
     /// <summary>Number of completed inference calls since this model was loaded.</summary>
@@ -111,6 +136,7 @@ public sealed class OnnxModel : IModelRunner
         return Path.Combine(DiffusionPaths.OptimizedModelDirectory, fileName);
     }
 
+    /// <summary>Unloads the model from the worker. Safe to call twice.</summary>
     public void Dispose()
     {
         if (_disposed) return;

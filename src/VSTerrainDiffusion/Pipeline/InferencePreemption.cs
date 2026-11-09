@@ -4,25 +4,6 @@ using System.Threading;
 namespace VSTerrainDiffusion.Pipeline;
 
 /// <summary>
-/// Thrown out of the middle of a tile's inference when something more urgent needs the device.
-/// Caught by the scheduler, which runs the urgent work and then starts this tile again.
-/// </summary>
-public sealed class InferencePreemptedException : Exception
-{
-    public InferencePreemptedException() : base("Inference was preempted by higher priority work.") { }
-}
-
-/// <summary>A single unit of preemptible work. One per attempt at generating a tile.</summary>
-public sealed class PreemptionToken
-{
-    private volatile bool _preempted;
-
-    public bool IsPreempted => _preempted;
-
-    public void Preempt() => _preempted = true;
-}
-
-/// <summary>
 /// Where the pipeline asks whether it should still be running.
 ///
 /// Checked between model runs rather than inside one. A run is 2-8 ms for the coarse model and
@@ -38,6 +19,7 @@ public sealed class PreemptionToken
 /// </summary>
 public static class InferencePreemption
 {
+    /// <summary>This thread's current attempt, or null outside one or inside <see cref="Suspend"/>.</summary>
     [ThreadStatic] private static PreemptionToken _current;
 
     /// <summary>Binds a token to this thread for the duration of one attempt.</summary>
@@ -65,15 +47,24 @@ public static class InferencePreemption
         return restore;
     }
 
+    /// <summary>Ends a <see cref="Begin"/> scope.</summary>
     private sealed class Scope : IDisposable
     {
+        /// <summary>Unbinds the attempt.</summary>
         public void Dispose() => _current = null;
     }
 
+    /// <summary>Ends a <see cref="Suspend"/> scope.</summary>
     private sealed class Restore : IDisposable
     {
+        /// <summary>The attempt suspended, to rebind.</summary>
         private readonly PreemptionToken _saved;
+
+        /// <summary>Remembers the attempt to rebind.</summary>
+        /// <param name="saved">This thread's attempt when the scope began.</param>
         public Restore(PreemptionToken saved) => _saved = saved;
+
+        /// <summary>Rebinds the suspended attempt.</summary>
         public void Dispose() => _current = _saved;
     }
 }

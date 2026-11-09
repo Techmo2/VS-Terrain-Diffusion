@@ -27,6 +27,7 @@ public static class InferenceThrottle
     /// <summary>Not worth a context switch, and Thread.Sleep cannot resolve it anyway.</summary>
     private static readonly long MinimumSleepTicks = Stopwatch.Frequency / 1000;
 
+    /// <summary>Backing field of <see cref="UtilizationPercent"/>.</summary>
     private static volatile int _percent = 100;
 
     /// <summary>
@@ -35,6 +36,9 @@ public static class InferenceThrottle
     /// </summary>
     private static long _debtTicks;
 
+    /// <summary>
+    /// Idle time slept so far, in Stopwatch ticks; read by <see cref="TotalThrottleMillis"/>.
+    /// </summary>
     private static long _sleptTicks;
 
     /// <summary>
@@ -58,6 +62,7 @@ public static class InferenceThrottle
     /// </summary>
     public static int Clamp(int percent) => percent < 5 ? 5 : percent > 100 ? 100 : percent;
 
+    /// <summary>Whether the limiter is on, i.e. below 100%.</summary>
     public static bool IsLimiting => _percent < 100;
 
     /// <summary>Wall-clock milliseconds given up to the limiter since startup.</summary>

@@ -22,12 +22,14 @@ public readonly record struct CoarsePooling(int Factor, bool Extreme)
     /// <summary>The factors that divide both the coarse tile (64) and its stride (48).</summary>
     public static readonly int[] Allowed = { 1, 2, 4, 8, 16 };
 
+    /// <summary>Whether this is no pooling at all.</summary>
     public bool IsNone => Factor <= 1;
 
     /// <summary>A factor this pipeline can run, or <see cref="None"/>.</summary>
     public static CoarsePooling Of(int factor, bool extreme) =>
         Array.IndexOf(Allowed, factor) > 0 ? new CoarsePooling(factor, extreme) : None;
 
+    /// <summary>For logs and reports: "off", or the factor and, if extreme, its rule.</summary>
     public override string ToString() =>
         IsNone ? "off" : $"{Factor}x{(Extreme ? ", max elevation / min p5" : "")}";
 }

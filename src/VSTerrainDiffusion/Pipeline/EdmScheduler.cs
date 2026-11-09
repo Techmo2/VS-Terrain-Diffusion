@@ -28,9 +28,16 @@ namespace VSTerrainDiffusion.Pipeline;
 /// </summary>
 public sealed class EdmScheduler
 {
+    /// <summary>The data's standard deviation σ_data that EDM preconditioning assumes.</summary>
     public const float SigmaData = 0.5f;
+
+    /// <summary>The lowest noise level of the schedule.</summary>
     public const float SigmaMin = 0.002f;
+
+    /// <summary>The highest noise level of the schedule, where sampling starts.</summary>
     public const float SigmaMax = 80.0f;
+
+    /// <summary>The Karras schedule's ρ: higher spends more steps at low noise.</summary>
     private const float Rho = 7.0f;
 
     /// <summary>Sigmas (numSteps + 1 entries; the last is zero).</summary>
@@ -39,12 +46,20 @@ public sealed class EdmScheduler
     /// <summary>Timesteps, c_noise = 0.25 * log(sigma).</summary>
     public readonly float[] Timesteps;
 
+    /// <summary>Steps in the schedule.</summary>
     private readonly int _numSteps;
 
+    /// <summary>The next step <see cref="Step"/> will take.</summary>
     private int _stepIndex;
+
+    /// <summary>Steps taken so far, capped at 2; the second-order update needs one previous output.</summary>
     private int _lowerOrderNums;
+
+    /// <summary>The previous step's x0 prediction, for the second-order update.</summary>
     private float[] _prevModelOutput;
 
+    /// <summary>A schedule of <paramref name="numSteps"/> steps, ready for the first.</summary>
+    /// <param name="numSteps">Steps from <see cref="SigmaMax"/> to zero; at least 2.</param>
     public EdmScheduler(int numSteps)
     {
         _numSteps = numSteps;
@@ -54,6 +69,7 @@ public sealed class EdmScheduler
         Reset();
     }
 
+    /// <summary>Rewinds to the first step, to sample again with the same schedule.</summary>
     public void Reset()
     {
         _stepIndex = 0;

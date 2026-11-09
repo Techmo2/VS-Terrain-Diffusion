@@ -25,13 +25,18 @@ internal static class CoastFill
     /// <summary>How far, in coarse cells, a sea cell looks for land. Callers fetch this much margin.</summary>
     public const int Radius = 4;
 
+    /// <summary>Standard deviation of the Gaussian weights, in coarse cells.</summary>
     private const float Sigma = 1.5f;
 
     /// <summary>Weight of the sea cell's own value: a land cell three sigmas away.</summary>
     private static readonly float OwnWeight = MathF.Exp(-4.5f);
 
+    /// <summary>
+    /// The weights by offset, (2 <see cref="Radius"/> + 1)² row-major; zero outside the radius.
+    /// </summary>
     private static readonly float[] Kernel = BuildKernel();
 
+    /// <summary>Computes <see cref="Kernel"/>.</summary>
     private static float[] BuildKernel()
     {
         int size = 2 * Radius + 1;

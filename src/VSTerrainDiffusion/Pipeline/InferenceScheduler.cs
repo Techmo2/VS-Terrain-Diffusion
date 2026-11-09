@@ -31,14 +31,6 @@ public sealed class InferenceScheduler : IDisposable
     /// </summary>
     private const int MaxPreemptions = 3;
 
-    private sealed class Waiter
-    {
-        public long Priority;
-        public int Preemptions;
-        public readonly ManualResetEventSlim Ready = new(false);
-        public PreemptionToken Token = new();
-    }
-
     /// <summary>
     /// Least time between one tile being dropped and the next. Every preemption throws away
     /// whatever that tile had computed, so without a floor a player moving steadily can have each
@@ -47,12 +39,48 @@ public sealed class InferenceScheduler : IDisposable
     /// </summary>
     private const long PreemptionCooldownMs = 2000;
 
+    /// <summary>One caller waiting for, or holding, the device.</summary>
+    private sealed class Waiter
+    {
+        /// <summary>Distance in blocks to the nearest player; smaller runs sooner.</summary>
+        public long Priority;
+
+        /// <summary>Times this work has been dropped part way through.</summary>
+        public int Preemptions;
+
+        /// <summary>Set when it is this waiter's turn.</summary>
+        public readonly ManualResetEventSlim Ready = new(false);
+
+        /// <summary>The current attempt's token; replaced after each preemption.</summary>
+        public PreemptionToken Token = new();
+    }
+
+    /// <summary>Guards the queue, <see cref="_running"/> and <see cref="_lastPreemptionMs"/>.</summary>
     private readonly object _lock = new();
-    // Zero, not long.MinValue: TickCount64 minus that overflows and the cooldown never expires.
+
+    /// <summary>
+    /// <see cref="Environment.TickCount64"/> at the last preemption. Starts at zero, not
+    /// <see cref="long.MinValue"/>: the tick count minus that overflows and the cooldown never expires.
+    /// </summary>
     private long _lastPreemptionMs;
+
+    /// <summary>Waiters not yet running, unordered; <see cref="Finish"/> picks the best.</summary>
     private readonly List<Waiter> _queue = new();
+
+    /// <summary>The waiter holding the device, or null.</summary>
     private Waiter _running;
+
+    /// <summary>Backing field of <see cref="PreemptionCount"/>.</summary>
     private long _preemptionCount;
+
+    /// <summary>This thread's <see cref="Enter"/> waiter, released by <see cref="Exit"/>.</summary>
+    [ThreadStatic] private static Waiter _entered;
+
+    /// <summary>
+    /// How deep this thread is inside the scheduler. Guards against a nested acquire, which would
+    /// wait for a turn this same thread is already holding.
+    /// </summary>
+    [ThreadStatic] private static int _held;
 
     /// <summary>How many times a tile has been dropped part way through, for diagnostics.</summary>
     public long PreemptionCount => Interlocked.Read(ref _preemptionCount);
@@ -114,6 +142,7 @@ public sealed class InferenceScheduler : IDisposable
         waiter.Ready.Wait();
     }
 
+    /// <summary>Gives back the device taken by <see cref="Enter"/>, once the outermost call exits.</summary>
     public void Exit()
     {
         if (--_held > 0) return;
@@ -123,14 +152,10 @@ public sealed class InferenceScheduler : IDisposable
         if (waiter != null) Finish(waiter);
     }
 
-    [ThreadStatic] private static Waiter _entered;
-
     /// <summary>
-    /// How deep this thread is inside the scheduler. Guards against a nested acquire, which would
-    /// wait for a turn this same thread is already holding.
+    /// Starts the waiter at once if the device is free; otherwise queues it, preempting the running work if
+    /// this is far enough closer and the cooldown allows.
     /// </summary>
-    [ThreadStatic] private static int _held;
-
     private void Enqueue(Waiter waiter)
     {
         lock (_lock)
@@ -156,6 +181,10 @@ public sealed class InferenceScheduler : IDisposable
         }
     }
 
+    /// <summary>
+    /// Releases the device if <paramref name="waiter"/> holds it, and hands it to the best-ranked queued
+    /// waiter.
+    /// </summary>
     private void Finish(Waiter waiter)
     {
         lock (_lock)
@@ -181,9 +210,13 @@ public sealed class InferenceScheduler : IDisposable
         }
     }
 
+    /// <summary>
+    /// Queue order: distance, less a margin for each time the work was already dropped. Lower runs first.
+    /// </summary>
     private static long Ranking(Waiter waiter) =>
         waiter.Priority - (long)waiter.Preemptions * PreemptionMarginBlocks;
 
+    /// <summary>Releases every queued waiter, so no thread waits on a world that is going away.</summary>
     public void Dispose()
     {
         lock (_lock)
