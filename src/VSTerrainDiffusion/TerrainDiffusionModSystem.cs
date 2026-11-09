@@ -13,6 +13,7 @@ using VSTerrainDiffusion.Debug;
 using VSTerrainDiffusion.Native;
 using VSTerrainDiffusion.Pipeline;
 using VSTerrainDiffusion.WorldGen;
+using TerrainDiffusion.Water;
 
 namespace VSTerrainDiffusion;
 
@@ -47,7 +48,7 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     private const string PregenSaveKey = "terraindiffusionPregen";
     private GenDiffusionTerra _generator;
-    private LakeWater _lakes;
+    private WorldWater _water;
     private DiffusionSurface _surface;
     private DebugMapServer _debugMap;
     private DiffusionForestMapLayer _forestLayer;
@@ -164,6 +165,8 @@ public class TerrainDiffusionModSystem : ModSystem
         }
 
         StopPregeneration(forget: false);
+        _water?.Dispose();
+        _water = null;
         _provider?.Dispose();
         // Before the provider, because the first coarse window is built during the spawn search and
         // a window generated without the rivers would be cached and then seam against every one
@@ -235,8 +238,8 @@ public class TerrainDiffusionModSystem : ModSystem
         // are standing on is generated only once all of that has drained.
         _provider.TileUrgency = DistanceToNearestPlayer;
 
-        _lakes = CreateLakes();
-        _generator = new GenDiffusionTerra(_api, _provider, _settings, _lakes);
+        _water = CreateWater();
+        _generator = new GenDiffusionTerra(_api, _provider, _settings, _water);
         _surface = new DiffusionSurface(_api, _provider);
 
         InstallTerrain();
@@ -482,10 +485,40 @@ public class TerrainDiffusionModSystem : ModSystem
     private const string CoastFillCode = "terraindiffusionCoastFill";
     private const string DryShallowsFillCode = "terraindiffusionDryShallowsFill";
     private const string WaterFillCode = "terraindiffusionWaterFill";
-    private const string WaterRegionCode = "terraindiffusionWaterRegion";
+    private const string RiverModeCode = "terraindiffusionRiverMode";
+    private const string WetlandDepthCode = "terraindiffusionWetlandDepth";
+    private const string RiverTrimCode = "terraindiffusionRiverTrim";
+    private const string WaterVersionCode = "terraindiffusionWaterVersion";
 
-    /// <summary>World settings that decide what is built on the tiles, never what a tile holds.</summary>
-    private static readonly string[] TileNeutralWorldCodes = { WaterFillCode, WaterRegionCode };
+    /// <summary>The water library version new worlds are made with; bump it when the library changes the water.</summary>
+    private const int CurrentWaterVersion = 1;
+
+    /// <summary>
+    /// Water settings with their defaults (the same as worldconfig.json's), pinned so that a later
+    /// default never changes the water of a world's ungenerated chunks.
+    /// </summary>
+    private static readonly (string Code, string Default)[] PinnedWaterDefaults =
+    {
+        ("terraindiffusionRiverWidth", "2000"),
+        ("terraindiffusionMeanderSinuosity", "190"),
+        ("terraindiffusionMeanderWavelength", "600"),
+        ("terraindiffusionMeanderSlope", "150"),
+        ("terraindiffusionMeanderRelief", "40"),
+        ("terraindiffusionMeanderConfinement", "240"),
+        ("terraindiffusionMeanderFreeRelief", "20")
+    };
+
+    /// <summary>
+    /// World settings that decide what is built on the tiles, never what a tile holds. The region
+    /// size of the earlier lakes stays listed: worlds made with them still carry it.
+    /// </summary>
+    private static readonly string[] TileNeutralWorldCodes =
+    {
+        WaterFillCode, "terraindiffusionWaterRegion", WetlandDepthCode, RiverTrimCode, RiverModeCode, WaterVersionCode, "terraindiffusionWaterThreads",
+        "terraindiffusionRiverWidth", "terraindiffusionMeanderSinuosity", "terraindiffusionMeanderWavelength",
+        "terraindiffusionMeanderSlope", "terraindiffusionMeanderRelief", "terraindiffusionMeanderConfinement",
+        "terraindiffusionMeanderFreeRelief"
+    };
 
     /// <summary>Where these lived before they were world settings: save game mod data.</summary>
     private const string LegacyShoreDetailKey = "vsterraindiffusion:shoredetail";
@@ -558,9 +591,39 @@ public class TerrainDiffusionModSystem : ModSystem
                 world.SetString(WaterFillCode, save.IsNew ? "true" : "false");
             }
 
-            if (!world.HasAttribute(WaterRegionCode))
+            // Rivers are newer still. A world that already has lakes keeps its explored ground free of
+            // rivers that would start at its edge; its lakes carry on with the new water.
+            if (!world.HasAttribute(RiverModeCode))
             {
-                world.SetString(WaterRegionCode, "1024");
+                world.SetString(RiverModeCode, save.IsNew ? "trunk" : "off");
+                if (!save.IsNew && DiffusionWorldSettings.ReadWorldConfig(world, WaterFillCode, "false").ToBool(false))
+                {
+                    api.Logger.Notification(
+                        "[{0}] This world was made before rivers, so it gets none; its lakes are worked out by the " +
+                        "new water from here on.", DiffusionPaths.ModId);
+                }
+            }
+
+            // Wetlands came after the first lakes; a world explored without them keeps brim-full lakes.
+            if (!world.HasAttribute(WetlandDepthCode))
+            {
+                world.SetString(WetlandDepthCode, save.IsNew ? "1" : "0");
+            }
+
+            // As is the trim: a world explored without it keeps its small tributaries.
+            if (!world.HasAttribute(RiverTrimCode))
+            {
+                world.SetString(RiverTrimCode, save.IsNew ? "30" : "0");
+            }
+
+            foreach ((string code, string value) in PinnedWaterDefaults)
+            {
+                if (!world.HasAttribute(code)) world.SetString(code, value);
+            }
+
+            if (!world.HasAttribute(WaterVersionCode))
+            {
+                world.SetString(WaterVersionCode, CurrentWaterVersion.ToString(CultureInfo.InvariantCulture));
             }
 
             if (!world.HasAttribute(CoastFillCode))
@@ -1130,12 +1193,12 @@ public class TerrainDiffusionModSystem : ModSystem
         try
         {
             int blockX = land.Value.BlockX, blockZ = land.Value.BlockZ;
-            if (_lakes != null && _lakes.IsLake(blockX, blockZ))
+            if (_water != null && _water.IsWater(blockX, blockZ))
             {
                 (int x, int z)? shore = NearestDryLand(blockX, blockZ);
                 if (shore != null)
                 {
-                    _api.Logger.Notification("[{0}] The spawn search's column ({1}, {2}) is under a lake; moved to " +
+                    _api.Logger.Notification("[{0}] The spawn search's column ({1}, {2}) is in a lake or river; moved to " +
                         "dry land at ({3}, {4}).", DiffusionPaths.ModId, blockX, blockZ, shore.Value.x, shore.Value.z);
                     (blockX, blockZ) = shore.Value;
                 }
@@ -1158,7 +1221,7 @@ public class TerrainDiffusionModSystem : ModSystem
     private (int X, int Y, int Z)? _pendingSpawn;
 
     /// <summary>
-    /// The nearest column to a spawn under a lake that is land above the sea and not under a lake,
+    /// The nearest column to a spawn in a lake or river that is land above the sea and dry,
     /// searching outward square by square up to <see cref="SpawnShoreSearchBlocks"/>; null if none.
     /// </summary>
     private (int x, int z)? NearestDryLand(int blockX, int blockZ)
@@ -1180,7 +1243,7 @@ public class TerrainDiffusionModSystem : ModSystem
                 _provider.GetTileAt(x, z, ref tile);
                 int index = tile.Index(x - tile.BlockX, z - tile.BlockZ);
                 if (tile.ElevationMeters[index] <= 0f || tile.SurfaceY[index] < _settings.SeaLevel) continue;
-                if (_lakes.IsLake(x, z)) continue;
+                if (_water.IsWater(x, z)) continue;
 
                 best = (x, z);
                 bestDistance = distance;
@@ -1193,30 +1256,75 @@ public class TerrainDiffusionModSystem : ModSystem
     private const int SpawnShoreSearchBlocks = 256;
 
     /// <summary>
-    /// Lake water for this world, or null when it has lakes off or another mod fills the terrain.
+    /// Lakes and rivers for this world, or null when it has them off or another mod fills the terrain.
     /// </summary>
-    private LakeWater CreateLakes()
+    private WorldWater CreateWater()
     {
         if (!_settings.WaterFill)
         {
-            _api.Logger.Notification("[{0}] Lakes are off for this world: depressions above sea level stay dry.",
+            _api.Logger.Notification("[{0}] Lakes and rivers are off for this world: depressions above sea level stay dry.",
                 DiffusionPaths.ModId);
             return null;
         }
 
         if (WatershedsCompat.IsPresent(_api))
         {
-            _api.Logger.Notification("[{0}] Lakes are left to Algernon's Watersheds, which fills this world's terrain.",
+            _api.Logger.Notification("[{0}] Lakes and rivers are left to Algernon's Watersheds, which fills this world's terrain.",
                 DiffusionPaths.ModId);
             return null;
         }
 
-        var lakes = new LakeWater(_provider, _settings, _api.Logger);
+        if (_settings.WaterVersion != CurrentWaterVersion)
+        {
+            _api.Logger.Warning(
+                "[{0}] This world's water was made with water version {1}, and this version of the mod makes version {2}: " +
+                "lakes and rivers may not meet at the edge of the explored ground.",
+                DiffusionPaths.ModId, _settings.WaterVersion, CurrentWaterVersion);
+        }
+
+        // Two river networks would cross each other: with Rivers installed it keeps its own.
+        bool rivers = !RiversCompat.IsPresent(_api);
+        if (!rivers && _settings.RiverMode != RiverMode.Off)
+        {
+            _api.Logger.Notification("[{0}] Rivers is installed, so this mod adds lakes but no rivers of its own.",
+                DiffusionPaths.ModId);
+        }
+
+        var water = new WorldWater(_provider, _settings, (uint)_api.WorldManager.Seed, rivers, WaterDistance, _api.Logger);
+        RiverGraphSettings graph = water.Settings;
+        MeanderSettings meander = graph.Meander;
         _api.Logger.Notification(
-            "[{0}] Lakes: closed depressions fill with fresh water, in regions of {1} blocks ({2}x{2} tiles of {3}); " +
-            "up to {4} MB of lake state in memory.",
-            DiffusionPaths.ModId, lakes.RegionBlocks, lakes.RegionTiles, _provider.TileSize, lakes.BudgetBytes / 1048576);
-        return lakes;
+            "[{0}] Lakes and rivers: lakes {8} block(s) below their spill, wetland above; rivers {1} from {9:0}% of peak discharge, width x{2:0.#}; meanders {3}; " +
+            "{4} m per cell, discharge cap {5}, fill up to {6}x{6} tiles, {7} thread(s).",
+            DiffusionPaths.ModId, water.RiverMode.ToString().ToLowerInvariant(), _settings.RiverWidth,
+            meander == null
+                ? "off"
+                : string.Format(CultureInfo.InvariantCulture,
+                    "sinuosity {0:0.##}, wavelength {1:0} m, slope {2:0.####}, relief {3:0.#} m, confinement {4:0} m, free relief x{5:0.#}",
+                    meander.MaxSinuosity, meander.WavelengthMetres, meander.SlopeScale, meander.ReliefScaleMetres,
+                    meander.ConfinementMetres, meander.FreeReliefRatio),
+            graph.CellSizeMetres, graph.DischargeCap, 2 * graph.MaxFillRadius + 1, graph.MaxDegreeOfParallelism,
+            _settings.WetlandDepth, _settings.RiverTrim * 100f);
+        return water;
+    }
+
+    /// <summary>
+    /// How far a block is from the nearest player, for what the water may forget: nobody online
+    /// means nobody needs anything kept.
+    /// </summary>
+    private long WaterDistance(int blockX, int blockZ)
+    {
+        IPlayer[] players = _api?.World?.AllOnlinePlayers;
+        long best = long.MaxValue;
+        if (players == null) return best;
+        foreach (IPlayer player in players)
+        {
+            Entity entity = player?.Entity;
+            if (entity == null) continue;
+            long dx = Math.Abs((long)entity.Pos.X - blockX), dz = Math.Abs((long)entity.Pos.Z - blockZ);
+            best = Math.Min(best, Math.Max(dx, dz));
+        }
+        return best;
     }
 
     private void ApplyPendingSpawn()
@@ -1367,7 +1475,7 @@ public class TerrainDiffusionModSystem : ModSystem
             $"Settings screen: {(ConfigLibCompat.IsPresent(_api) ? "ConfigLib" : "not installed")}",
             $"Debug map: {(_debugMap?.IsRunning == true ? _debugMap.Url : "off")}",
             $"Tiles generated: {_provider.TilesGenerated}",
-            $"Lakes: {(_lakes == null ? "off" : _lakes.Describe())}",
+            $"Water: {(_water == null ? "off" : _water.Describe())}",
             $"Tile database: {DescribeTileStore(_provider.Store)}",
             $"Pregeneration: {(_pregen == null ? "none" : _pregen.Describe())}",
             $"Tile size: {_provider.TileSize}x{_provider.TileSize} blocks",
@@ -1521,6 +1629,8 @@ public class TerrainDiffusionModSystem : ModSystem
     private TilePregenerator StartPregeneration(int x, int z, int radius, string playerUid)
     {
         var job = new TilePregenerator(_provider, _api.Logger, x, z, radius, _api.WorldManager.RegionSize);
+        // A fast GPU would otherwise queue tiles for the water without bound.
+        job.Hold = () => _water is { } water && water.Backlog > WorldWater.PregenBacklogLimit;
         job.Progress += j =>
         {
             string line = "Pregen: " + j.Describe();
@@ -1957,6 +2067,7 @@ public class TerrainDiffusionModSystem : ModSystem
         TranslocatorSearchCompat.Uninstall();
         ConfigLibCompat.Uninstall();
         StopPregeneration(forget: false);
+        _water?.StopBackground();
 
         // Let the last column finish at full speed rather than at the /tdiff gpulimit share.
         InferenceThrottle.UtilizationPercent = 100;
@@ -1980,10 +2091,13 @@ public class TerrainDiffusionModSystem : ModSystem
         _api?.ObjectCache.Remove(ContinuityHeightSourceKey);
 
         TerrainDiffusionProvider provider = _provider;
+        WorldWater water = _water;
         _provider = null;
+        _water = null;
         _climate = null;
         void Release()
         {
+            water?.Dispose();
             WatershedsCompat.Uninstall();
             RiversCompat.Uninstall();
             TerrainSamplerCompat.Uninstall();

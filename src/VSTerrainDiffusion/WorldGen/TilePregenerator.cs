@@ -156,6 +156,9 @@ public sealed class TilePregenerator : IDisposable
         return points.ConvertAll(p => (p.X, p.Z)).ToArray();
     }
 
+    /// <summary>While this returns true the job waits before its next tile (the water catching up).</summary>
+    public Func<bool> Hold { get; set; }
+
     public void Start() => _thread.Start();
 
     /// <summary>Asks the job to stop after the tile it is on.</summary>
@@ -172,6 +175,7 @@ public sealed class TilePregenerator : IDisposable
         {
             for (int i = 0; i < _tiles.Length && !_stop.IsCancellationRequested; i++)
             {
+                while (Hold?.Invoke() == true && !_stop.IsCancellationRequested) Thread.Sleep(50);
                 long start = Stopwatch.GetTimestamp();
                 if (_provider.Pregenerate(_tiles[i].X, _tiles[i].Z))
                 {

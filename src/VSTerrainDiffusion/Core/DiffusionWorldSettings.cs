@@ -8,6 +8,18 @@ using VSTerrainDiffusion.Pipeline;
 namespace VSTerrainDiffusion.Core;
 
 /// <summary>
+/// Which rivers are cut into the land: a column is river once this many cells drain through it
+/// (the conditioning lab's thresholds at the default discharge cap). Off leaves only lakes.
+/// </summary>
+public enum RiverMode
+{
+    Off,
+    Creek,
+    River,
+    Trunk
+}
+
+/// <summary>
 /// Per-world settings plus the metre-to-block mapping that follows from them.
 ///
 /// The model works in real-world units: one native pixel is 30 m across and elevations run from
@@ -82,19 +94,69 @@ public sealed class DiffusionWorldSettings
     public bool DryShallowsFill { get; private set; }
 
     /// <summary>
-    /// Whether closed depressions fill with fresh water up to where they would spill (see
-    /// <c>WorldGen.LakeWater</c>). World setting <c>terraindiffusionWaterFill</c>, pinned when a world
-    /// is created: on for new worlds, off for worlds made before it. Not part of the tiles.
+    /// Whether the world gets lakes and rivers (see <c>WorldGen.WorldWater</c>). World setting
+    /// <c>terraindiffusionWaterFill</c>, pinned when a world is created: on for new worlds, off for
+    /// worlds made before lakes. Not part of the tiles, like every water setting below.
     /// </summary>
     [Newtonsoft.Json.JsonIgnore]
     public bool WaterFill { get; private set; }
 
     /// <summary>
-    /// Edge of the squares lakes are computed in, in blocks; a lake cannot cross one's edge. Rounded
-    /// down to whole terrain tiles. World setting <c>terraindiffusionWaterRegion</c>. Not part of the tiles.
+    /// Blocks lakes stand below where they would spill; the ground they leave is wetland, marsh at
+    /// the waterline with pools. 0 fills lakes to the brim (<c>terraindiffusionWetlandDepth</c>).
     /// </summary>
     [Newtonsoft.Json.JsonIgnore]
-    public int WaterRegionBlocks { get; private set; } = 1024;
+    public int WetlandDepth { get; private set; } = 1;
+
+    /// <summary>
+    /// Share of the peak discharge (the discharge cap) a river section must carry to be cut, on top
+    /// of the river mode's threshold: trims the small tributaries (<c>terraindiffusionRiverTrim</c>, percent).
+    /// </summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public float RiverTrim { get; private set; } = 0.3f;
+
+    /// <summary>Which rivers are cut into the land (<c>terraindiffusionRiverMode</c>).</summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public RiverMode RiverMode { get; private set; } = RiverMode.Trunk;
+
+    /// <summary>
+    /// Multiplies every river's physical width and depth; 1 is true to scale
+    /// (<c>terraindiffusionRiverWidth</c>, in percent).
+    /// </summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public float RiverWidth { get; private set; } = 20f;
+
+    /// <summary>Path length over straight distance of a river on a wide plain; 1 is straight.</summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public float MeanderSinuosity { get; private set; } = 1.9f;
+
+    /// <summary>About the distance between successive bends, metres.</summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public float MeanderWavelengthMeters { get; private set; } = 600f;
+
+    /// <summary>Gradient at which the meander strength halves.</summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public float MeanderSlope { get; private set; } = 0.015f;
+
+    /// <summary>Local relief, metres, at which the meander strength halves.</summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public float MeanderReliefMeters { get; private set; } = 4f;
+
+    /// <summary>Distance, metres, over which relief holds a river in.</summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public float MeanderConfinementMeters { get; private set; } = 240f;
+
+    /// <summary>Relief, as a multiple of <see cref="MeanderReliefMeters"/>, above which rivers run straight downhill.</summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public float MeanderFreeRelief { get; private set; } = 2f;
+
+    /// <summary>Threads working out the water; 0 is automatic. Never changes the world.</summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public int WaterThreads { get; private set; }
+
+    /// <summary>The water library version this world's water is made with (<c>terraindiffusionWaterVersion</c>).</summary>
+    [Newtonsoft.Json.JsonIgnore]
+    public int WaterVersion { get; private set; } = 1;
 
     /// <summary>
     /// Scales the forest cover the model's moisture implies. Trees on the ground go as its square:
@@ -326,8 +388,26 @@ public sealed class DiffusionWorldSettings
             // Pinned when the world was created (TerrainDiffusionModSystem.PinWorldValues); a world from
             // before lakes reads off, as it was generated.
             WaterFill = ReadWorldConfig(worldConfig, "terraindiffusionWaterFill", "false").ToBool(false),
-            WaterRegionBlocks = Math.Clamp(
-                ReadWorldConfig(worldConfig, "terraindiffusionWaterRegion", "1024").ToInt(1024), 128, 8192),
+            // Pinned like WaterFill; the defaults equal worldconfig.json's. Integer sliders in fixed units.
+            WetlandDepth = Math.Clamp(ReadWorldConfig(worldConfig, "terraindiffusionWetlandDepth", "1").ToInt(1), 0, 4),
+            RiverTrim = Math.Clamp(ReadWorldConfig(worldConfig, "terraindiffusionRiverTrim", "30").ToInt(30), 0, 100) / 100f,
+            RiverMode = ParseRiverMode(ReadWorldConfig(worldConfig, "terraindiffusionRiverMode", "trunk")),
+            RiverWidth = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionRiverWidth", "2000").ToInt(2000), 100, 4000) / 100f,
+            MeanderSinuosity = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionMeanderSinuosity", "190").ToInt(190), 100, 300) / 100f,
+            MeanderWavelengthMeters = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionMeanderWavelength", "600").ToInt(600), 100, 3000),
+            MeanderSlope = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionMeanderSlope", "150").ToInt(150), 10, 1000) / 10000f,
+            MeanderReliefMeters = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionMeanderRelief", "40").ToInt(40), 5, 500) / 10f,
+            MeanderConfinementMeters = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionMeanderConfinement", "240").ToInt(240), 30, 1500),
+            MeanderFreeRelief = Math.Clamp(
+                ReadWorldConfig(worldConfig, "terraindiffusionMeanderFreeRelief", "20").ToInt(20), 5, 100) / 10f,
+            WaterThreads = Math.Clamp(ReadWorldConfig(worldConfig, "terraindiffusionWaterThreads", "0").ToInt(0), 0, 64),
+            WaterVersion = ReadWorldConfig(worldConfig, "terraindiffusionWaterVersion", "1").ToInt(1),
             AltitudeCooling = Math.Clamp(
                 ReadWorldConfig(worldConfig, "terraindiffusionAltitudeCooling", "100").ToInt(100) / 100f, 0.1f, 5f),
             ForestDensity = Math.Clamp(
@@ -439,6 +519,14 @@ public sealed class DiffusionWorldSettings
     {
         "off" or "false" or "vanilla" => WorldGen.DiffusionClimateMode.Off,
         _ => WorldGen.DiffusionClimateMode.Full
+    };
+
+    private static RiverMode ParseRiverMode(string value) => value switch
+    {
+        "off" => RiverMode.Off,
+        "creek" => RiverMode.Creek,
+        "river" => RiverMode.River,
+        _ => RiverMode.Trunk
     };
 
     /// <summary>True when the world wants its terrain height measured before generating anything.</summary>

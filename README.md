@@ -57,6 +57,18 @@ and `/worldconfig <code> <value>` changes one later.
 | Forest density           | `terraindiffusionForestDensity`        | 100%    | Scales the forest cover the climate implies. Trees on the ground go as its square — see below. |
 | Shrub density            | `terraindiffusionShrubDensity`         | 100%    | Scales shrub cover the same way. |
 | River valley depth       | `terraindiffusionRiverValleyDepth`     | 20%     | With the Rivers mod, how far the land is lowered along rivers so the model draws valleys for them. 100% drowns a fifth of each corridor into inlets. |
+| Lakes and rivers         | `terraindiffusionWaterFill`            | on      | Fills closed basins with fresh water and cuts rivers. See [Lakes and rivers](#lakes-and-rivers). |
+| Wetland depth            | `terraindiffusionWetlandDepth`         | 1       | Blocks lakes stand below their spill; the shallow ground they leave is wetland. 0 fills lakes to the brim. |
+| Rivers                   | `terraindiffusionRiverMode`            | trunk   | `off`, `creek`, `river`, `trunk`: drainage from which a column is river. |
+| River trim               | `terraindiffusionRiverTrim`            | 30%     | A river is cut only where it carries this share of the peak discharge (2^19 columns); trims small tributaries. The stricter of this and Rivers applies. |
+| River width              | `terraindiffusionRiverWidth`           | x20     | In percent. Multiplies physical width and depth; x1 is true to scale. |
+| Meander strength         | `terraindiffusionMeanderSinuosity`     | 1.9     | In hundredths. Path length over straight distance on open plains; 1 is straight. |
+| Meander wavelength       | `terraindiffusionMeanderWavelength`    | 600 m   | Distance between bends. |
+| Meander slope            | `terraindiffusionMeanderSlope`         | 0.015   | In ten-thousandths. Gradient that halves the meander. |
+| Meander relief           | `terraindiffusionMeanderRelief`        | 4 m     | In tenths of a metre. Local relief that halves the meander. |
+| Meander confinement      | `terraindiffusionMeanderConfinement`   | 240 m   | Distance over which relief holds a river in. |
+| Meander free relief      | `terraindiffusionMeanderFreeRelief`    | x2      | In tenths. Relief above this multiple of the meander relief runs straight downhill. |
+| Water threads            | `terraindiffusionWaterThreads`         | auto    | CPU threads for lakes and rivers; auto is half the logical processors, at most 8. Can change any time. |
 
 With sea level at 128 the terrain, climate, soil bands, trees and weather keep their height above
 the sea: a 512-block world is laid out like a vanilla world 675 blocks tall, with 128 blocks of rock
@@ -212,7 +224,8 @@ Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whate
   with glacier ice.
 - **Seasons** — the year swings on the model's seasonality rather than on latitude alone, opposite
   sides of the equator included.
-- **Spawn** — moved to solid ground in the world's chosen starting climate.
+- **Lakes and rivers** — baked into the terrain pass; see [Lakes and rivers](#lakes-and-rivers).
+- **Spawn** — moved to solid ground in the world's chosen starting climate, off lakes and rivers.
 - **Surface block layer altitudes** — only when terrain is vertically exaggerated; at true scale
   vanilla's bands already line up.
 - **Nothing else.** The landform and upheaval maps are still generated and still ignored, because
@@ -220,12 +233,42 @@ Set `worldGen.startingClimateSearch` to false to spawn on the nearest land whate
   [Two settings the mod cannot honour](#two-settings-the-mod-cannot-honour). Rock strata, ores,
   caves, rivers, ponds, ruins, traders and temporal stability are vanilla, running unchanged on top.
 
+### Lakes and rivers
+
+Water is solved from the model's heights in metres by `TerrainDiffusion.Water` (the conditioning
+lab's meandering river graph), on 256-block tiles whatever the terrain tile size. It depends only on
+the terrain and the world's water settings, never on the order chunks are explored in, so chunks
+generated at any time meet without seams.
+
+- **Lakes**: every closed basin above sea level fills to its spill. A basin of 65 536 columns (one
+  tile's area) or more keeps a terminal lake of about that size instead.
+- **Wetlands**: lakes stand Wetland depth blocks below their spill. Ground they leave dry, at most that
+  deep before, becomes wetland at the new waterline: patches of one-block pools flush with the ground
+  (20-60% of it, more where the water was deeper), only where no neighbouring ground is lower, and
+  vanilla's waterside plants around them. Rivers cross wetlands at the lake's level and end in its open water.
+- **Rivers**: a column is river once enough land drains through it (`trunk` 41 943 columns, `river`
+  20 972, `creek` 10 486), and at least River trim of the 524 288-column peak (30%: 157 286). Discharge comes from Turc runoff of the local climate; width (5 Q^0.5 m) and
+  depth (0.4 Q^0.4 m) from downstream hydraulic geometry, times River width, so a river only widens and
+  deepens downstream. At least one block wide and deep, at most 57 wide and 8 deep; the cross-section is
+  rounded, deepest on the centreline. The centreline is the flow path averaged over 6 steps either way,
+  carved as segments between the averaged points. Too dry for 0.01 m³/s, the channel is a dry bed.
+- **Blocks**: still fresh water, lake ice on top below −15 °C; vanilla lays its lake bed layers on
+  lake and river floors. Each river column's current (heading, m/s) is saved in map chunk mod data
+  `vsterraindiffusion:riverflow` for a flowing-water block to use later.
+- **Waiting**: a chunk is generated once its water is final, which can mean generating the tiles
+  around and upstream of it first (up to a 7x7 window around lakes, about 8 tiles of upstream
+  drainage). `/tdiff status` shows the time waited.
+- **Memory**: about 1.75 MB per 256-block tile held, up to 512 MB; tiles more than 4 tiles from every
+  player are forgotten first, and added back from the tile database when needed.
+- **Older worlds**: a world from before lakes stays dry; one made with the earlier lakes gets the new
+  lakes but no rivers or wetlands. Every water setting is pinned when a world is created.
+
 ## Other terrain mods
 
 Mods that only supply a map — Continental World's ocean map, for instance — need nothing special:
 the mod reads whatever map is installed and conditions the model on it.
 
-**sneeze's Rivers** routes its rivers from the coast the model actually draws, not the ocean map,
+**sneeze's Rivers** keeps its own rivers: the mod adds its lakes only. Rivers routes its rivers from the coast the model actually draws, not the ocean map,
 and starts each river in open sea, so rivers reach the water (95% within their first three nodes,
 against 75% from the map). Rivers caches each world's zones under `RiverCache/`, so a world keeps
 the coast its rivers were first routed from.
@@ -247,7 +290,7 @@ A mod that *replaces terrain generation itself* cannot layer with this one: two 
 the same column give the union of both landscapes. So whoever generates terrain gets handed the
 model's heights and does the filling.
 
-**Algernon's Watersheds** is supported this way. It disables vanilla `GenTerra` and fills every
+**Algernon's Watersheds** is supported this way, and has the mod's lakes and rivers off. It disables vanilla `GenTerra` and fills every
 column itself, so this mod stops generating terrain and instead answers every height question
 Watersheds asks: the height its analysis is built on, the height a stream's profile is laid against,
 the height after a stream has cut in, and which blocks are solid. Answering *all* of them matters —
@@ -694,6 +737,10 @@ build.bat           :: Windows
 
 Both take an optional configuration (`Release` by default) and produce
 `dist/vsterraindiffusion_<version>.zip`.
+
+`src/TerrainDiffusion.Water` is a copy of terrain-diffusion's `csharp/TerrainDiffusion.Water`;
+`scripts/sync-water.sh` refreshes it. Changing it can change the water, so bump
+`CurrentWaterVersion` when it does.
 
 Needs the .NET 10 SDK and a Vintage Story install: `/opt/vintagestory` or `~/Vintagestory` on Linux
 and macOS, `%APPDATA%\Vintagestory` on Windows. Override either with `VINTAGE_STORY`.

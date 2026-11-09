@@ -81,6 +81,14 @@
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
 
+  <!--
+    Lakes, rivers and meanders: a copy of terrain-diffusion's csharp/TerrainDiffusion.Water, kept
+    identical by scripts/sync-water.sh. Shipped next to the mod's own assembly (build.sh, build.bat).
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\TerrainDiffusion.Water\TerrainDiffusion.Water.csproj" />
+  </ItemGroup>
+
   <ItemGroup>
     <EmbeddedResource Include="..\VSTerrainDiffusion.Worker\bin\$(Configuration)\net10.0\VSTerrainDiffusion.Worker.dll"
                       LogicalName="VSTerrainDiffusion.Worker.dll" />

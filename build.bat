@@ -50,6 +50,8 @@ if errorlevel 1 goto :fail
 
 copy /y "%output%\VSTerrainDiffusion.dll" "%staging%\" >nul
 if errorlevel 1 goto :fail
+copy /y "%output%\TerrainDiffusion.Water.dll" "%staging%\" >nul
+if errorlevel 1 goto :fail
 copy /y "%project%\modinfo.json" "%staging%\" >nul
 if errorlevel 1 goto :fail
 copy /y "%project%\worldconfig.json" "%staging%\" >nul

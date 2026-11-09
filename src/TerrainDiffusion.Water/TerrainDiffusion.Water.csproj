@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Lakes, rivers and meandering for an unbounded world generated tile by tile (the conditioning lab's
+    "river graph, meandering" water). Plain managed code with no dependencies and no unsafe blocks, so the
+    mod can reference it directly; TerrainDiffusion.Water.Native wraps it for Python.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsAotCompatible>true</IsAotCompatible>
+    <RootNamespace>TerrainDiffusion.Water</RootNamespace>
+    <AssemblyName>TerrainDiffusion.Water</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="TerrainDiffusion.Water.Native" />
+    <InternalsVisibleTo Include="TerrainDiffusion.Water.Benchmarks" />
+  </ItemGroup>
+
+</Project>

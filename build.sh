@@ -24,6 +24,7 @@ staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
 
 cp "$output/VSTerrainDiffusion.dll" "$staging/"
+cp "$output/TerrainDiffusion.Water.dll" "$staging/"
 cp "$project/modinfo.json" "$staging/"
 cp "$project/worldconfig.json" "$staging/"
 [ -f "$project/modicon.png" ] && cp "$project/modicon.png" "$staging/"
