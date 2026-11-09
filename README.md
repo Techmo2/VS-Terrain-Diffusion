@@ -23,7 +23,7 @@ ROCm, OpenVINO and TensorRT RTX are opt-in. See [Performance](docs/performance.m
 
 ## Quick start
 
-1. In Customize, set **World height** to 1024. Shorter worlds compress the highest mountains.
+1. In Customize, set **World height** to 512. Shorter worlds compress the highest mountains.
 2. Set **Landcover** to 40–60% for real coastlines. Vanilla's 97.5% gives one unbroken continent.
 3. Create the world. The **Terrain Diffusion** tab's defaults work as they are.
 
@@ -65,9 +65,6 @@ Both take an optional configuration (default `Release`) and write
 `dist/vsterraindiffusion_<version>.zip`. They need the .NET 10 SDK and a Vintage Story install, found
 at `/opt/vintagestory`, `~/Vintagestory` or `%APPDATA%\Vintagestory`. Set `VINTAGE_STORY` to use
 another.
-
-`src/TerrainDiffusion.Water` is a copy of terrain-diffusion's `csharp/TerrainDiffusion.Water`, refreshed
-by `scripts/sync-water.sh`. Bump `CurrentWaterVersion` when a refresh changes the water.
 
 `doxygen` from the repository root builds the code documentation into `docs/api/html`.
 

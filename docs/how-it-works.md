@@ -7,11 +7,12 @@ Model land reaches ~3 000 m at the 95th percentile and ~5 000 m at the extreme.
 
 | World height | Blocks above sea | True scale up to (15 m) |
 | ------------ | ---------------- | ----------------------- |
-| 256          | 145              | ~1 900 m                |
-| 512          | 289              | ~3 700 m                |
-| 1024         | 578              | ~7 400 m                |
+| 256          | 128              | ~1 550 m                |
+| **512**      | 384              | ~4 800 m                |
+| 1024         | 896              | ~11 300 m               |
 
-Above that, heights bend towards the ceiling (`u / (1 + u)`) instead of clipping.
+512 is recommended. The table assumes the default sea level of Y 128. Above the true-scale limit,
+heights bend towards the ceiling (`u / (1 + u)`) instead of clipping.
 `worldGen.heightMode: "auto"` instead stretches the terrain once per world so the peaks around spawn
 fill the world height.
 
