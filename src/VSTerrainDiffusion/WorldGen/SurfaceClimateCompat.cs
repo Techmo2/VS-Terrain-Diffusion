@@ -54,12 +54,26 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class SurfaceClimateCompat
 {
+    /// <summary>Owns the patches, so <see cref="Uninstall"/> removes only these.</summary>
     private const string HarmonyId = "vsterraindiffusion.surfaceclimate";
 
+    /// <summary>The patcher, while installed.</summary>
     private static Harmony _harmony;
+
+    /// <summary>The server, while installed.</summary>
     private static ICoreServerAPI _api;
+
+    /// <summary>The world's sea level.</summary>
     private static int _seaLevel;
+
+    /// <summary>The world's height.</summary>
     private static int _mapSizeY;
+
+    /// <summary>The vegetation generator's height map field, read for the chunk centre's surface.</summary>
+    private static FieldInfo _treeHeightMap;
+
+    /// <summary>The spawner's scratch position field, which holds the spawn position.</summary>
+    private static FieldInfo _spawnerTmpPos;
 
     /// <summary>True while the patches are in place.</summary>
     public static bool Installed { get; private set; }
@@ -78,6 +92,11 @@ public static class SurfaceClimateCompat
     /// </summary>
     private static readonly ThreadLocal<int> PendingChunkDistance = new(() => int.MinValue);
 
+    /// <summary>
+    /// Patches every vanilla climate reader that assumes sea level, or stops the game if one has moved.
+    /// </summary>
+    /// <param name="api">The server.</param>
+    /// <param name="heights">The world's sea level and height.</param>
     public static void Install(ICoreServerAPI api, HeightFrame heights)
     {
         Uninstall();
@@ -176,6 +195,7 @@ public static class SurfaceClimateCompat
                                 "(spawning, fertility, ponds, rivulets, tree density).", DiffusionPaths.ModId);
     }
 
+    /// <summary>A patch method of this class by name.</summary>
     private static HarmonyMethod Method(string name) =>
         new(AccessTools.Method(typeof(SurfaceClimateCompat), name));
 
@@ -197,9 +217,6 @@ public static class SurfaceClimateCompat
         Installed = false;
         PendingChunkDistance.Value = int.MinValue;
     }
-
-    private static FieldInfo _treeHeightMap;
-    private static FieldInfo _spawnerTmpPos;
 
     // ------------------------------------------------------------------ spawning
 
@@ -285,6 +302,10 @@ public static class SurfaceClimateCompat
         distToSealevel = pending;
     }
 
+    /// <summary>
+    /// Arms <see cref="PendingChunkDistance"/> with the chunk centre's height above sea, for a per-chunk
+    /// generator.
+    /// </summary>
     private static void BeforeChunkColumn(IChunkColumnGenerateRequest request)
     {
         ushort[] heights = request?.Chunks?[0]?.MapChunk?.WorldGenTerrainHeightMap;
@@ -294,6 +315,9 @@ public static class SurfaceClimateCompat
         PendingChunkDistance.Value = ClimateSurfaceY(heights[16 * 32 + 16]) - _seaLevel;
     }
 
+    /// <summary>
+    /// Arms <see cref="PendingChunkDistance"/> for the tree generator, from its own height map.
+    /// </summary>
     private static void BeforeTrees(object __instance)
     {
         var heights = (ushort[])_treeHeightMap.GetValue(__instance);
@@ -340,6 +364,7 @@ public static class SurfaceClimateCompat
         return codes;
     }
 
+    /// <summary>Whether an instruction loads the int constant <paramref name="value"/>.</summary>
     private static bool IsLoadConstant(CodeInstruction code, int value)
     {
         if (code.opcode == OpCodes.Ldc_I4) return code.operand is int i && i == value;

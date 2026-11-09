@@ -167,8 +167,8 @@ public sealed class DiffusionSurface
     }
 
     /// <summary>
-    /// Replaces the top <paramref name="depth"/> non-air blocks of a column with <paramref name="blockId"/>,
-    /// clearing any fluid there.
+    /// Replaces every block that is not air in the top <paramref name="depth"/> of a column with
+    /// <paramref name="blockId"/>, clearing any fluid there.
     /// </summary>
     /// <param name="chunks">The chunk column.</param>
     /// <param name="lx">Column X within the chunk.</param>

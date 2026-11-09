@@ -22,6 +22,7 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class SeasonalCycleMap
 {
+    /// <summary>The map region mod data key the grid is saved under.</summary>
     public const string ModDataKey = "vsterraindiffusion:cycle";
 
     /// <summary>
@@ -30,23 +31,36 @@ public static class SeasonalCycleMap
     /// </summary>
     public const int Channels = 8;
 
+    /// <summary>One region's points, as saved.</summary>
     [ProtoContract]
     public sealed class Grid
     {
+        /// <summary>Points per edge.</summary>
         [ProtoMember(1)] public int Size;
+
+        /// <summary><see cref="Channels"/> floats per point, row-major.</summary>
         [ProtoMember(2)] public float[] Values;
     }
 
     /// <summary>The seasonal cycle at one position.</summary>
     public readonly struct Sample
     {
+        /// <summary>Second harmonic of the temperature cycle, cosine and sine, °C.</summary>
         public readonly float TemperatureShapeCos, TemperatureShapeSin;
+
+        /// <summary>
+        /// Rain harmonics relative to the monthly mean: when the wet season falls, then a second rainy
+        /// season.
+        /// </summary>
         public readonly float WetSeasonCos, WetSeasonSin, SecondRainyCos, SecondRainySin;
+
+        /// <summary>Mean diurnal temperature range, °C.</summary>
         public readonly float DiurnalRangeC;
 
         /// <summary>1 + 5 mm / monthly mean rain: how strongly the rain harmonics act here.</summary>
         public readonly float RainHarmonicScale;
 
+        /// <summary>Reads one point's <see cref="Channels"/> values, in the map's order.</summary>
         public Sample(ReadOnlySpan<float> v)
         {
             TemperatureShapeCos = v[0];
@@ -83,12 +97,16 @@ public static class SeasonalCycleMap
             return sum > 1e-9 ? here * 12.0 / sum : 1.0;
         }
 
+        /// <summary>Both rain harmonics summed at angle <paramref name="th"/>, before scaling.</summary>
         private double RainHarmonics(double th) =>
             WetSeasonCos * Math.Cos(th) + WetSeasonSin * Math.Sin(th)
             + SecondRainyCos * Math.Cos(2.0 * th) + SecondRainySin * Math.Sin(2.0 * th);
     }
 
+    /// <summary>Each region's grid once deserialised, dropped with the region.</summary>
     private static readonly ConditionalWeakTable<IMapRegion, Grid> Decoded = new();
+
+    /// <summary>Stands in for a region with no grid, so the lookup is cached too.</summary>
     private static readonly Grid Missing = new() { Size = 0, Values = Array.Empty<float>() };
 
     /// <summary>Builds the map for one region from the coarse model's channels. Nothing for an annual-model world.</summary>
@@ -148,8 +166,14 @@ public static class SeasonalCycleMap
         return new Sample(v);
     }
 
+    /// <summary>
+    /// The cycle at a block's centre; see <see cref="At(IBlockAccessor, double, double)"/>.
+    /// </summary>
     public static Sample? At(IBlockAccessor blockAccessor, BlockPos pos) => At(blockAccessor, pos.X + 0.5, pos.Z + 0.5);
 
+    /// <summary>
+    /// A region's grid, decoded once; <see cref="Missing"/> when it has none or it is malformed.
+    /// </summary>
     private static Grid GridFor(IMapRegion region)
     {
         if (Decoded.TryGetValue(region, out Grid cached)) return cached;
