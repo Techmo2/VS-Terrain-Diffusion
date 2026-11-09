@@ -29,8 +29,8 @@ internal static class InferenceWorkerProtocol
     internal const int Initialise = 1;
 
     /// <summary>
-    /// Request: create a session from a <see cref="ModelSpec"/> (JSON). Answered with a <see
-    /// cref="ModelInfo"/> (JSON).
+    /// Request: create a session from a <see cref="ModelSpec"/> (JSON). Answered with a
+    /// <see cref="ModelInfo"/> (JSON).
     /// </summary>
     internal const int LoadModel = 2;
 
