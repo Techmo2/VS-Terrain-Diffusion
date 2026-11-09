@@ -6,125 +6,6 @@ using VSTerrainDiffusion.Pipeline;
 namespace VSTerrainDiffusion.Core;
 
 /// <summary>
-/// Zonal mean climate: the temperature and rainfall a place has for no other reason than how far
-/// it sits from the equator.
-///
-/// Version 1's curves are smooth fits; version 2 (<see cref="CurrentVersion"/>, new worlds) is a table
-/// of Earth's land medians by latitude. Either way they are deliberately smooth: everything that makes one place in a belt different from another - the
-/// coast, the mountain, the rain shadow, the continental interior - is the model's job, and comes
-/// out of it far larger than the error in these.
-/// </summary>
-public static class LatitudeProfile
-{
-    /// <summary>Mean annual temperature at the equator, in Celsius.</summary>
-    public const float EquatorC = 26f;
-
-    /// <summary>Mean annual temperature at the pole, in Celsius.</summary>
-    public const float PoleC = -25f;
-
-    /// <summary>
-    /// Version 1: curvature of the temperature profile. The observed one is flat across the tropics and then
-    /// nearly straight from the subtropics to the ice, which a plain square is too gentle to
-    /// follow; 1.8 splits the difference, landing within about 4 C of the zonal means everywhere
-    /// (26 at the equator, 22 at 20 deg, 19 at 30, 14 at 40, 8 at 50, 1 at 60, -6 at 70, -15 at 80).
-    /// </summary>
-    private const float TemperatureCurve = 1.8f;
-
-    /// <summary>The profile new worlds get; see <see cref="TemperatureC(float, int)"/>.</summary>
-    public const int CurrentVersion = 2;
-
-    /// <summary>
-    /// Version 2: Earth's land by latitude, from the coarse model's own training data (the coarse
-    /// catalogue, 1.68 M land cells, 60 S - 60 N): the median of each 5-degree belt, relief included,
-    /// at the belt's middle, then on to the pole by way of the Arctic's land. Version 1's curves were
-    /// 4-5 C warmer than this from 35 to 60 degrees and nearly twice as wet, because their figures
-    /// were zonal means over land and sea together, where the oceans' storm tracks dominate; a
-    /// "temperate" place then sat at storm-track latitudes with ~900 mm where Earth's land at that
-    /// temperature has ~500.
-    /// </summary>
-    private static readonly float[] LandDegrees = { 0f, 2.5f, 7.5f, 12.5f, 17.5f, 22.5f, 27.5f, 32.5f, 37.5f, 42.5f, 47.5f, 52.5f, 57.5f, 65f, 75f, 90f };
-    private static readonly float[] LandTemperatureC = { 25.6f, 25.6f, 25.6f, 25.7f, 25.8f, 24.0f, 21.1f, 17.2f, 12.2f, 8.5f, 4.9f, 1.4f, -1.0f, -8f, -17f, -25f };
-    private static readonly float[] LandPrecipitationMm = { 2013f, 2013f, 1442f, 1033f, 649f, 358f, 252f, 347f, 450f, 457f, 494f, 549f, 515f, 420f, 280f, 180f };
-
-    /// <summary>Mean annual temperature for a place this far from the equator, 0 to 1.</summary>
-    public static float TemperatureC(float pole01, int version = CurrentVersion)
-    {
-        float a = Math.Clamp(pole01, 0f, 1f);
-        if (version >= 2) return Table(LandTemperatureC, a * 90f);
-        return EquatorC - (EquatorC - PoleC) * (float)Math.Pow(a, TemperatureCurve);
-    }
-
-    private static float Table(float[] values, float degrees)
-    {
-        for (int i = 1; i < LandDegrees.Length; i++)
-        {
-            if (degrees > LandDegrees[i]) continue;
-            float t = (degrees - LandDegrees[i - 1]) / (LandDegrees[i] - LandDegrees[i - 1]);
-            return values[i - 1] + t * (values[i] - values[i - 1]);
-        }
-        return values[^1];
-    }
-
-    /// <summary>
-    /// Annual precipitation for a place this far from the equator, in millimetres.
-    ///
-    /// Version 1: three terms, one per cell of the general circulation. Air rises at the equator and rains
-    /// itself out there, which is the tall narrow peak; it comes back down dry at about 25 deg,
-    /// which is where every desert on Earth is and which shows up here as the trough between the
-    /// two humps; and the polar front throws it up again along the mid-latitude storm track near
-    /// 50 deg, which is the second, broader peak. The baseline underneath is the plain fact that
-    /// cold air holds less water, so even a wet pole is a dry one by tropical standards.
-    /// </summary>
-    public static float PrecipitationMm(float pole01, int version = CurrentVersion)
-    {
-        float degrees = Math.Clamp(pole01, 0f, 1f) * 90f;
-        if (version >= 2) return Table(LandPrecipitationMm, degrees);
-
-        float itcz = 1700f * Gaussian(degrees, 0f, 13f);
-        float stormTrack = 550f * Gaussian(degrees, 50f, 20f);
-        float capacity = 150f + 300f * (float)Math.Sqrt(Math.Max(0.0, Math.Cos(degrees * Math.PI / 180.0)));
-
-        return itcz + stormTrack + capacity;
-    }
-
-    private static float Gaussian(float x, float centre, float width)
-    {
-        float t = (x - centre) / width;
-        return (float)Math.Exp(-t * t);
-    }
-}
-
-/// <summary>How one latitude's climate is divided between the model and its output.</summary>
-public readonly struct LatitudeBandPlan
-{
-    /// <summary>Mean annual temperature to condition the model on, in Celsius.</summary>
-    public readonly float ConditioningTemperatureC;
-
-    /// <summary>Annual rainfall to condition the model on, in millimetres.</summary>
-    public readonly float ConditioningPrecipitationMm;
-
-    /// <summary>
-    /// Degrees the band asked for that the conditioning could not reach, added to the model's
-    /// output. Additive rather than multiplicative because what runs out at the cold end is the
-    /// climate distribution itself - the model has never seen a place colder than about -7 C mean
-    /// annual - and an offset moves a belt without flattening the variation inside it.
-    /// </summary>
-    public readonly float TemperatureOffsetC;
-
-    /// <summary>The same for rainfall, as a multiplier.</summary>
-    public readonly float RainfallFactor;
-
-    public LatitudeBandPlan(float conditioningTemperatureC, float conditioningPrecipitationMm,
-                            float temperatureOffsetC, float rainfallFactor)
-    {
-        ConditioningTemperatureC = conditioningTemperatureC;
-        ConditioningPrecipitationMm = conditioningPrecipitationMm;
-        TemperatureOffsetC = temperatureOffsetC;
-        RainfallFactor = rainfallFactor;
-    }
-}
-
-/// <summary>
 /// Puts the model's climate on a north-south axis, so that <c>polarEquatorDistance</c> means
 /// something: the tropics are where the game says the equator is, the ice is at the poles, and the
 /// deserts are in the subtropical belt between them.
@@ -163,29 +44,54 @@ public sealed class LatitudeBands : ILatitudeSource
     /// <summary>Block Z to latitude in -1..1, or null when there is no banding to do.</summary>
     private readonly System.Func<double, double> _latitude;
 
+    /// <summary>Block Z per coarse map row.</summary>
     private readonly double _blocksPerCoarsePixel;
+
+    /// <summary>Block Z of coarse row 0's top edge.</summary>
     private readonly double _originBlockZ;
 
+    /// <summary>Conditioning temperature, °C, at <see cref="Samples"/> steps from equator to pole.</summary>
     private readonly float[] _conditioningC;
+
+    /// <summary>Conditioning rainfall, mm, at the same steps.</summary>
     private readonly float[] _conditioningMm;
+
+    /// <summary>Temperature offset on the model's output, °C, at the same steps.</summary>
     private readonly float[] _offsetC;
+
+    /// <summary>Rainfall factor on the model's output, at the same steps.</summary>
     private readonly float[] _rainfall;
 
     /// <summary>What each band is aiming for, kept only so the diagnostic commands can say so.</summary>
     private readonly float[] _wantedC;
 
+    /// <summary>See <see cref="_wantedC"/>.</summary>
     private readonly float[] _wantedMm;
 
     /// <summary>Why the bands are or are not in play, for the log and the /terraindiffusion command.</summary>
     public string Status { get; }
 
+    /// <inheritdoc/>
     public bool IsNeutral => _latitude == null;
 
+    /// <summary>Bands that are off, saying why.</summary>
+    /// <param name="status">See <see cref="Status"/>.</param>
     private LatitudeBands(string status)
     {
         Status = status;
     }
 
+    /// <summary>Bands from tables planned by <see cref="Over"/>.</summary>
+    /// <param name="latitude">See <see cref="_latitude"/>.</param>
+    /// <param name="blocksPerCoarsePixel">See <see cref="_blocksPerCoarsePixel"/>.</param>
+    /// <param name="originBlockZ">See <see cref="_originBlockZ"/>.</param>
+    /// <param name="conditioningC">See <see cref="_conditioningC"/>.</param>
+    /// <param name="conditioningMm">See <see cref="_conditioningMm"/>.</param>
+    /// <param name="offsetC">See <see cref="_offsetC"/>.</param>
+    /// <param name="rainfall">See <see cref="_rainfall"/>.</param>
+    /// <param name="wantedC">See <see cref="_wantedC"/>.</param>
+    /// <param name="wantedMm">See <see cref="_wantedMm"/>.</param>
+    /// <param name="status">See <see cref="Status"/>.</param>
     private LatitudeBands(System.Func<double, double> latitude, double blocksPerCoarsePixel, double originBlockZ,
                           float[] conditioningC, float[] conditioningMm, float[] offsetC, float[] rainfall,
                           float[] wantedC, float[] wantedMm, string status)
@@ -214,7 +120,14 @@ public sealed class LatitudeBands : ILatitudeSource
     /// <c>InitWorldGenerator</c> handler, which is registered after <c>GenMaps</c>' - the mod
     /// depends on <c>game</c> - so by now the calendar has its real function.
     /// </summary>
+    /// <param name="api">The server, whose calendar says which block is at which latitude.</param>
+    /// <param name="settings">The world's settings, for the conditioning grid.</param>
+    /// <param name="worldClimate">The world's <c>worldClimate</c>; only "realistic" is banded.</param>
+    /// <param name="polarEquatorDistance">Blocks from the equator to a pole.</param>
     /// <param name="strength">How much of the band to apply, 0 to 1.</param>
+    /// <param name="climate">The world's global temperature and precipitation settings; see <see cref="Over"/>.</param>
+    /// <param name="profileVersion">Which <see cref="LatitudeProfile"/> the world was created with.</param>
+    /// <param name="bandedRainfallBias">Whether to plan rainfall with the banded-world bias.</param>
     public static LatitudeBands ForWorld(ICoreServerAPI api, DiffusionWorldSettings settings,
                                          string worldClimate, int polarEquatorDistance, float strength,
                                          ClimateShift climate, int profileVersion, bool bandedRainfallBias = true)
@@ -251,12 +164,18 @@ public sealed class LatitudeBands : ILatitudeSource
     /// Bands over an arbitrary latitude function: block Z in, -1 to 1 out, zero at the equator.
     /// The seam <see cref="ForWorld"/> is built on, and the one the offline checks use.
     /// </summary>
+    /// <param name="latitude">Block Z to latitude, -1 to 1, zero at the equator.</param>
+    /// <param name="blocksPerCoarsePixel">Block Z per coarse map row.</param>
+    /// <param name="originBlockZ">Block Z of coarse row 0.</param>
+    /// <param name="strength">How much of the band to apply, 0 to 1.</param>
     /// <param name="climate">
     /// The world's global temperature and precipitation settings, applied to the band rather than
     /// to the model's output: a "snowball earth" world is one whose every band is a quarter of the
     /// way up the scale, ice caps and tropics alike.
     /// </param>
+    /// <param name="status">What <see cref="Status"/> reports.</param>
     /// <param name="profileVersion">Which <see cref="LatitudeProfile"/> the world was created with.</param>
+    /// <param name="bandedRainfallBias">Whether to plan rainfall with the banded-world bias.</param>
     public static LatitudeBands Over(System.Func<double, double> latitude, double blocksPerCoarsePixel,
                                      double originBlockZ, float strength, ClimateShift climate, string status,
                                      int profileVersion = LatitudeProfile.CurrentVersion, bool bandedRainfallBias = true)
@@ -332,6 +251,7 @@ public sealed class LatitudeBands : ILatitudeSource
     public float Pole01(double blockZ)
         => _latitude == null ? 0f : (float)Math.Clamp(Math.Abs(_latitude(blockZ)), 0.0, 1.0);
 
+    /// <inheritdoc/>
     public void BandAt(int coarseRow, out float temperatureC, out float precipitationMm)
     {
         if (_latitude == null)
@@ -369,6 +289,11 @@ public sealed class LatitudeBands : ILatitudeSource
     public float RainfallFactor(double blockZ)
         => _latitude == null ? 1f : Lookup(_rainfall, Pole01(blockZ));
 
+    /// <summary>
+    /// Interpolates a table of <see cref="Samples"/> entries at a distance from the equator.
+    /// </summary>
+    /// <param name="table">One of the per-latitude tables.</param>
+    /// <param name="pole01">0 at the equator, 1 at the pole.</param>
     private static float Lookup(float[] table, float pole01)
     {
         float position = Math.Clamp(pole01, 0f, 1f) * (Samples - 1);

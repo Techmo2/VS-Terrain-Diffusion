@@ -22,26 +22,35 @@ public sealed class InferenceCompatibility
     public static readonly string[] AllDevices =
         { "auto", "cpu", "openvino", "cuda", "tensorrt-rtx", "rocm", "directml", "coreml" };
 
+    /// <summary>Every base-model precision the world settings understand.</summary>
     public static readonly string[] AllBasePrecisions = { "fp32", "fp16" };
+
+    /// <summary>Every decoder precision the world settings understand.</summary>
     public static readonly string[] AllDecoderPrecisions = { "fp32", "fp16", "int8" };
 
     /// <summary>The providers that run on a GPU, and so the only ones FP16 models are worth running on.</summary>
     private static readonly string[] GpuDevices = { "cuda", "tensorrt-rtx", "rocm", "directml", "coreml" };
 
+    /// <summary>Backing field of <see cref="Current"/>.</summary>
     private static readonly Lazy<InferenceCompatibility> _current = new(() => new InferenceCompatibility(GpuInfo.Current));
 
     /// <summary>This machine, checked on first use.</summary>
     public static InferenceCompatibility Current => _current.Value;
 
+    /// <summary>The GPU and driver the answers were worked out from.</summary>
     public GpuInfo Gpu { get; }
 
     /// <summary>Why each device that cannot run here cannot; a device with no entry is compatible.</summary>
     private readonly Dictionary<string, string> _deviceProblems = new(StringComparer.Ordinal);
 
+    /// <summary>Why FP16 cannot run here, or null when it can.</summary>
     private readonly string _halfPrecisionProblem;
 
+    /// <summary>Set once <see cref="Log"/> has written its report.</summary>
     private int _logged;
 
+    /// <summary>Works out every device's problem, if any, for this GPU.</summary>
+    /// <param name="gpu">This machine's GPU and driver.</param>
     private InferenceCompatibility(GpuInfo gpu)
     {
         Gpu = gpu;
@@ -57,6 +66,7 @@ public sealed class InferenceCompatibility
                                     "and none can run on this machine";
     }
 
+    /// <summary>Whether <paramref name="device"/> is a known device and can run here.</summary>
     public bool IsDeviceCompatible(string device) =>
         Array.IndexOf(AllDevices, device) >= 0 && !_deviceProblems.ContainsKey(device);
 
@@ -96,6 +106,9 @@ public sealed class InferenceCompatibility
         RequirePrecision(nameof(InferenceSettings.DecoderPrecision), settings.DecoderPrecision, AllDecoderPrecisions, logger);
     }
 
+    /// <summary>Stops the game if this machine cannot run <paramref name="device"/>.</summary>
+    /// <param name="device">The world's <see cref="InferenceSettings.InferenceDevice"/>.</param>
+    /// <param name="logger">Where the reason is written.</param>
     public void RequireDevice(string device, ILogger logger)
     {
         if (IsDeviceCompatible(device)) return;
@@ -106,6 +119,13 @@ public sealed class InferenceCompatibility
         throw Refuse(nameof(InferenceSettings.InferenceDevice), device, reason, CompatibleDevices(), logger);
     }
 
+    /// <summary>
+    /// Stops the game if this machine cannot run <paramref name="precision"/> for one model.
+    /// </summary>
+    /// <param name="setting">The setting's property name, for the message.</param>
+    /// <param name="precision">Its value.</param>
+    /// <param name="all">Every value the setting accepts.</param>
+    /// <param name="logger">Where the reason is written.</param>
     public void RequirePrecision(string setting, string precision, string[] all, ILogger logger)
     {
         string reason = Array.IndexOf(all, precision) < 0
@@ -116,6 +136,15 @@ public sealed class InferenceCompatibility
         throw Refuse(setting, precision, reason, CompatiblePrecisions(all), logger);
     }
 
+    /// <summary>
+    /// Stops the game with a message naming the setting, why its value cannot run, and what can.
+    /// </summary>
+    /// <param name="setting">The setting's property name.</param>
+    /// <param name="value">Its value.</param>
+    /// <param name="reason">Why it cannot run here.</param>
+    /// <param name="usable">The values that can.</param>
+    /// <param name="logger">Where the reason is written.</param>
+    /// <returns>Never returns; typed so callers can <c>throw</c> it.</returns>
     private static Exception Refuse(string setting, string value, string reason, List<string> usable, ILogger logger)
     {
         string code = InferenceSettings.Code(setting);
@@ -149,6 +178,7 @@ public sealed class InferenceCompatibility
                 logger.Debug("[{0}] {1} unavailable: {2}", DiffusionPaths.ModId, device, problem);
     }
 
+    /// <summary>Why <paramref name="precision"/> cannot run here, or null when it can.</summary>
     private string PrecisionProblem(string precision) => precision switch
     {
         "fp32" => null,
