@@ -1,3 +1,5 @@
+using static VSTerrainDiffusion.Core.IntMath;
+
 namespace VSTerrainDiffusion.WorldGen;
 
 /// <summary>
@@ -40,6 +42,4 @@ public static class TerrainFootprint
         toX = (FloorDiv(maxX - 1, regionSize) + 2) * regionSize + MapLayerMarginBlocks;
         toZ = (FloorDiv(maxZ - 1, regionSize) + 2) * regionSize + MapLayerMarginBlocks;
     }
-
-    private static int FloorDiv(int a, int b) => a >= 0 ? a / b : (a - b + 1) / b;
 }

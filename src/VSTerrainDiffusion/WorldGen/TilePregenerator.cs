@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Threading;
 using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
+using static VSTerrainDiffusion.Core.IntMath;
 
 namespace VSTerrainDiffusion.WorldGen;
 
@@ -277,6 +278,4 @@ public sealed class TilePregenerator : IDisposable
                 DiffusionPaths.ModId);
         }
     }
-
-    private static int FloorDiv(int a, int b) => a >= 0 ? a / b : (a - b + 1) / b;
 }

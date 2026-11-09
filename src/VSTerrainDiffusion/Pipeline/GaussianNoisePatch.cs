@@ -1,4 +1,5 @@
 using System;
+using static VSTerrainDiffusion.Core.IntMath;
 
 namespace VSTerrainDiffusion.Pipeline;
 
@@ -56,12 +57,5 @@ public static class GaussianNoisePatch
             }
         }
         return output;
-    }
-
-    private static int FloorDiv(int a, int b)
-    {
-        int q = a / b;
-        if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
-        return q;
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using static VSTerrainDiffusion.Core.IntMath;
 
 namespace VSTerrainDiffusion.Tensors;
 
@@ -82,12 +83,5 @@ public sealed class TensorWindow
             result[i] = FloorDiv(p - Offset[i], Stride[i]);
         }
         return result;
-    }
-
-    internal static int FloorDiv(int a, int b)
-    {
-        int q = a / b;
-        if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
-        return q;
     }
 }

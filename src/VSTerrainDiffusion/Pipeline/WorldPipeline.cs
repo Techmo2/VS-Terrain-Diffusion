@@ -4,6 +4,7 @@ using System.Threading;
 using VSTerrainDiffusion.Core;
 using VSTerrainDiffusion.Native;
 using VSTerrainDiffusion.Tensors;
+using static VSTerrainDiffusion.Core.IntMath;
 
 namespace VSTerrainDiffusion.Pipeline;
 
@@ -1035,12 +1036,5 @@ public sealed class WorldPipeline
         float wy = y - y0, wx = x - x0;
         return (1 - wy) * (1 - wx) * source[y0][x0] + (1 - wy) * wx * source[y0][x1]
              + wy * (1 - wx) * source[y1][x0] + wy * wx * source[y1][x1];
-    }
-
-    internal static int FloorDiv(int a, int b)
-    {
-        int q = a / b;
-        if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
-        return q;
     }
 }

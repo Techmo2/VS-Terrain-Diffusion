@@ -7,6 +7,7 @@ using TerrainDiffusion.Water;
 using Vintagestory.API.Common;
 using PlayerDistance = System.Func<int, int, long>;
 using VSTerrainDiffusion.Core;
+using static VSTerrainDiffusion.Core.IntMath;
 
 namespace VSTerrainDiffusion.WorldGen;
 
@@ -663,8 +664,6 @@ public sealed class WorldWater : IDisposable
         Math.Pow(tile.Row + 0.5 - row, 2) + Math.Pow(tile.Column + 0.5 - column, 2);
 
     private static long ChunkKey(int chunkX, int chunkZ) => ((long)chunkX << 32) | (uint)chunkZ;
-
-    private static int FloorDiv(int a, int b) => TerrainDiffusionProvider.FloorDiv(a, b);
 }
 
 /// <summary>A chunk's final water: its lake tops, and the river cells within reach of it.</summary>

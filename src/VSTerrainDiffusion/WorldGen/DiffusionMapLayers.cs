@@ -5,6 +5,7 @@ using Vintagestory.API.MathTools;
 using Vintagestory.ServerMods;
 using VSTerrainDiffusion.Core;
 using VSTerrainDiffusion.Pipeline;
+using static VSTerrainDiffusion.Core.IntMath;
 
 namespace VSTerrainDiffusion.WorldGen;
 
@@ -281,8 +282,6 @@ public sealed class DiffusionForestMapLayer : DiffusionMapLayer
         }
         return cover;
     }
-
-    private static int FloorDiv(int a, int b) => a >= 0 ? a / b : (a - b + 1) / b;
 
     /// <summary>
     /// Vanilla's forest map over the same pixels. It subtracts <c>128 - rain * temp / 65025</c>
