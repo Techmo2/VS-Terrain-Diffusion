@@ -25,11 +25,18 @@ namespace VSTerrainDiffusion.WorldGen;
 ///
 /// Every call into the graph holds <see cref="_graphLock"/>; nothing that may run the model does.
 /// </summary>
-public sealed class WorldWater : IDisposable
+public sealed partial class WorldWater : IDisposable
 {
+    /// <summary>Edge of a water tile, in blocks, whatever size the terrain tiles are.</summary>
     public const int TileBlocks = 256;
+
+    /// <summary>Edge of a chunk, in blocks.</summary>
     private const int ChunkBlocks = 32;
+
+    /// <summary>Chunks along a water tile's edge.</summary>
     private const int ChunksPerTile = TileBlocks / ChunkBlocks;
+
+    /// <summary>Cells (columns) in a water tile.</summary>
     private const int Cells = TileBlocks * TileBlocks;
 
     /// <summary>Most tiles the background thread adds in one call (the lock is held that long).</summary>
@@ -52,44 +59,94 @@ public sealed class WorldWater : IDisposable
 
     /// <summary>Released chunks kept before those far from every player are dropped (they can be copied out again).</summary>
     private const int MaxStoredChunks = 65_536;
+
+    /// <summary>Stored chunks within this many blocks of a player are never dropped.</summary>
     private const long KeepChunksNearPlayersBlocks = 2048;
 
     /// <summary>Tiles waiting for the water above which pregeneration pauses.</summary>
     public const int PregenBacklogLimit = 24;
 
+    /// <summary>The world's terrain.</summary>
     private readonly TerrainDiffusionProvider _provider;
+
+    /// <summary>The world's settings, for heights and the water settings.</summary>
     private readonly DiffusionWorldSettings _settings;
+
+    /// <summary>The server log.</summary>
     private readonly ILogger _logger;
+
+    /// <summary>Distance in blocks from a position to the nearest player.</summary>
     private readonly PlayerDistance _distanceToPlayers;
+
+    /// <summary>Edge of a terrain tile, in blocks.</summary>
     private readonly int _terrainTile;
+
+    /// <summary>The world's sea level, as a block Y.</summary>
     private readonly int _seaLevel;
+
+    /// <summary>Discharge, in cells, from which a cell carries a river; 0 for no rivers.</summary>
     private readonly double _riverThreshold;
+
+    /// <summary>The world's river width multiplier.</summary>
     private readonly float _riverWidth;
 
     /// <summary>Lakes stand this many blocks below their spill; what they leave dry is wetland.</summary>
     private readonly int _wetlandDepth;
 
+    /// <summary>
+    /// The lake and river solver, over every held water tile. Only touched under <see cref="_graphLock"/>.
+    /// </summary>
     private readonly RiverGraph _graph;
+
+    /// <summary>Guards <see cref="_graph"/> and <see cref="_runoff"/>.</summary>
     private readonly object _graphLock = new();
 
     /// <summary>Runoff (mm/yr) per cell of every held tile, for river geometry. Under the lock.</summary>
     private readonly Dictionary<TileCoord, float[]> _runoff = new();
 
+    /// <summary>Released chunks' water, by <see cref="ChunkKey"/>.</summary>
     private readonly ConcurrentDictionary<long, ChunkWater> _chunks = new();
+
+    /// <summary>How many chunks <see cref="_chunks"/> holds.</summary>
     private int _storedChunks;
 
+    /// <summary>Terrain tiles queued for the water thread.</summary>
     private readonly BlockingCollection<TerrainTile> _arrivals = new();
+
+    /// <summary>The water thread.</summary>
     private readonly Thread _thread;
+
+    /// <summary>Set once background feeding stops.</summary>
     private volatile bool _stopping;
+
+    /// <summary>Tiles the water thread has taken but not finished.</summary>
     private int _inFlight;
 
+    /// <summary>Water tiles added for waiting chunks, for <see cref="Describe"/>.</summary>
     private long _tilesForChunks;
+
+    /// <summary>Stopwatch ticks chunks spent waiting, for <see cref="Describe"/>.</summary>
     private long _chunkWaitTicks;
+
+    /// <summary>Water tiles forgotten to stay within budget.</summary>
     private long _tilesForgotten;
+
+    /// <summary>Chunks released a second time.</summary>
     private long _releasedTwice;
+
+    /// <summary>Chunks released a second time with different water; should stay 0.</summary>
     private long _mismatches;
+
+    /// <summary>Batches the water thread failed to add.</summary>
     private long _backgroundFailures;
 
+    /// <summary>Creates the world's water and starts feeding it from generated terrain.</summary>
+    /// <param name="provider">The world's terrain.</param>
+    /// <param name="settings">The world's settings.</param>
+    /// <param name="seed">The world seed, for meanders.</param>
+    /// <param name="rivers">False when another mod supplies the rivers.</param>
+    /// <param name="distanceToPlayers">Distance in blocks from a position to the nearest player.</param>
+    /// <param name="logger">The server log.</param>
     public WorldWater(TerrainDiffusionProvider provider, DiffusionWorldSettings settings, uint seed,
                       bool rivers, PlayerDistance distanceToPlayers, ILogger logger)
     {
@@ -139,11 +196,13 @@ public sealed class WorldWater : IDisposable
         _thread.Start();
     }
 
+    /// <summary>The river graph's settings, derived from the world's.</summary>
     public RiverGraphSettings Settings { get; }
 
     /// <summary>The rivers cut into the land: the world's setting, or off when another mod has rivers.</summary>
     public RiverMode RiverMode { get; }
 
+    /// <summary>Whether rivers are cut at all.</summary>
     private bool HasRivers => _riverThreshold > 0.0;
 
     /// <summary>Terrain tiles waiting to be added in the background.</summary>
@@ -254,6 +313,8 @@ public sealed class WorldWater : IDisposable
         return false;
     }
 
+    /// <summary>One line on the water's state, for <c>/tdiff status</c>.</summary>
+    /// <returns>The line.</returns>
     public string Describe()
     {
         RiverGraphStatistics stats;
@@ -289,6 +350,7 @@ public sealed class WorldWater : IDisposable
         _arrivals.CompleteAdding();
     }
 
+    /// <summary>Stops the background thread and cancels any solve in progress.</summary>
     public void Dispose()
     {
         StopBackground();
@@ -297,393 +359,17 @@ public sealed class WorldWater : IDisposable
             _logger.Warning("[{0}] The water thread did not stop within 10 s.", DiffusionPaths.ModId);
     }
 
-    // ---- Background feeding ----
-
-    /// <summary>On the generating thread: only queue it.</summary>
-    private void OnTileGenerated(TerrainTile tile)
-    {
-        // A peek's terrain reaches thousands of blocks out, where no chunk needs water yet.
-        if (_stopping || ChunkPeekScope.Active) return;
-        try
-        {
-            _arrivals.TryAdd(tile);
-        }
-        catch (InvalidOperationException)
-        {
-            // Completed while stopping.
-        }
-    }
-
-    private void Run()
-    {
-        try
-        {
-            foreach (TerrainTile first in _arrivals.GetConsumingEnumerable())
-            {
-                var batch = new List<TerrainTile> { first };
-                while (batch.Count < 64 && _arrivals.TryTake(out TerrainTile more)) batch.Add(more);
-                Interlocked.Add(ref _inFlight, batch.Count);
-                try
-                {
-                    Feed(batch);
-                }
-                catch (OperationCanceledException)
-                {
-                    return;
-                }
-                catch (Exception e)
-                {
-                    Interlocked.Increment(ref _backgroundFailures);
-                    _logger.Error("[{0}] Adding terrain to the water failed: {1}", DiffusionPaths.ModId, e);
-                }
-                finally
-                {
-                    Interlocked.Add(ref _inFlight, -batch.Count);
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
-
-    /// <summary>Adds the water tiles a batch of terrain tiles completes, from those tiles and the ones already stored.</summary>
-    private void Feed(List<TerrainTile> arrived)
-    {
-        var parts = new Dictionary<(int, int), TerrainTile>();
-        var tiles = new SortedSet<TileCoord>();
-        foreach (TerrainTile terrain in arrived)
-        {
-            if (terrain.Size != _terrainTile) continue;
-            parts[(FloorDiv(terrain.BlockX, _terrainTile), FloorDiv(terrain.BlockZ, _terrainTile))] = terrain;
-            for (int z = FloorDiv(terrain.BlockZ, TileBlocks); z <= FloorDiv(terrain.BlockZ + terrain.Size - 1, TileBlocks); z++)
-            for (int x = FloorDiv(terrain.BlockX, TileBlocks); x <= FloorDiv(terrain.BlockX + terrain.Size - 1, TileBlocks); x++)
-                tiles.Add(new TileCoord(z, x));
-        }
-
-        lock (_graphLock)
-        {
-            tiles.RemoveWhere(_graph.Contains);
-        }
-
-        var built = new List<(TileCoord, float[], float[])>();
-        foreach (TileCoord tile in tiles)
-        {
-            if (_stopping) return;
-            if (TryBuild(tile, (x, z) => parts.TryGetValue((x, z), out TerrainTile t)
-                    ? t
-                    : _provider.TryGetStoredTileAt(x * _terrainTile, z * _terrainTile),
-                out float[] heights, out float[] runoff))
-            {
-                built.Add((tile, heights, runoff));
-            }
-            if (built.Count == BackgroundBatch)
-            {
-                Add(built);
-                built.Clear();
-            }
-        }
-        Add(built);
-    }
-
-    // ---- The graph ----
-
-    /// <summary>
-    /// The heights and runoff of a water tile from the terrain tiles covering it, or false if
-    /// <paramref name="terrain"/> has one of them missing (returns null).
-    /// </summary>
-    private bool TryBuild(TileCoord tile, System.Func<int, int, TerrainTile> terrain, out float[] heights, out float[] runoff)
-    {
-        heights = null;
-        runoff = null;
-        int x0 = tile.Column * TileBlocks, z0 = tile.Row * TileBlocks;
-        var h = new float[Cells];
-        var r = new float[Cells];
-
-        for (int tz = FloorDiv(z0, _terrainTile); tz <= FloorDiv(z0 + TileBlocks - 1, _terrainTile); tz++)
-        for (int tx = FloorDiv(x0, _terrainTile); tx <= FloorDiv(x0 + TileBlocks - 1, _terrainTile); tx++)
-        {
-            TerrainTile part = terrain(tx, tz);
-            if (part == null) return false;
-
-            int fromX = Math.Max(x0, part.BlockX), toX = Math.Min(x0 + TileBlocks, part.BlockX + part.Size);
-            int fromZ = Math.Max(z0, part.BlockZ), toZ = Math.Min(z0 + TileBlocks, part.BlockZ + part.Size);
-            for (int z = fromZ; z < toZ; z++)
-            {
-                int target = (z - z0) * TileBlocks + fromX - x0;
-                int source = part.Index(fromX - part.BlockX, z - part.BlockZ);
-                for (int x = fromX; x < toX; x++, target++, source++)
-                {
-                    h[target] = part.ElevationMeters[source];
-                    r[target] = RiverGeometry.Runoff(part.PrecipitationMm[source], part.TemperatureC[source]);
-                }
-            }
-        }
-
-        heights = h;
-        runoff = r;
-        return true;
-    }
-
-    /// <summary>Whether every terrain tile under a water tile can be had without the model.</summary>
-    private bool PartsAvailable(TileCoord tile)
-    {
-        int x0 = tile.Column * TileBlocks, z0 = tile.Row * TileBlocks;
-        return _provider.HasTilesCovering(x0, z0, x0 + TileBlocks, z0 + TileBlocks);
-    }
-
-    /// <summary>Adds the tiles not held yet and copies out every chunk they release. Returns how many went in.</summary>
-    private int Add(List<(TileCoord Tile, float[] Heights, float[] Runoff)> built)
-    {
-        if (built.Count == 0) return 0;
-        lock (_graphLock)
-        {
-            var coords = new List<TileCoord>(built.Count);
-            var fresh = new List<(TileCoord Tile, float[] Heights, float[] Runoff)>(built.Count);
-            var seen = new HashSet<TileCoord>();
-            foreach (var entry in built)
-            {
-                if (_graph.Contains(entry.Tile) || !seen.Add(entry.Tile)) continue;
-                coords.Add(entry.Tile);
-                fresh.Add(entry);
-            }
-            if (fresh.Count == 0) return 0;
-
-            var heights = new float[fresh.Count * Cells];
-            for (int i = 0; i < fresh.Count; i++)
-            {
-                Array.Copy(fresh[i].Heights, 0, heights, i * Cells, Cells);
-                _runoff[fresh[i].Tile] = fresh[i].Runoff;
-            }
-
-            TileUpdate update = _graph.AddTiles(coords.ToArray(), heights);
-            foreach (ReleasedChunk released in update.ReleasedChunks)
-            {
-                Store(released.Chunk.Column, released.Chunk.Row, Extract(released.Chunk.Column, released.Chunk.Row));
-            }
-
-            ForgetFarTiles();
-            DropFarChunks();
-            return fresh.Count;
-        }
-    }
-
-    /// <summary>
-    /// The chunk and, with rivers, its 8 neighbours, if all are released. Copies released chunks out
-    /// of the graph when <paramref name="fromGraph"/> (under the lock).
-    /// </summary>
-    private bool TryAssemble(int chunkX, int chunkZ, int halo, bool fromGraph, out SettledWater water)
-    {
-        water = null;
-        ChunkWater centre = null;
-        List<RiverCell> rivers = null;
-        for (int dz = -halo; dz <= halo; dz++)
-        for (int dx = -halo; dx <= halo; dx++)
-        {
-            ChunkWater chunk = Stored(chunkX + dx, chunkZ + dz, fromGraph);
-            if (chunk == null) return false;
-            if (dx == 0 && dz == 0) centre = chunk;
-            if (chunk.Rivers.Length > 0) (rivers ??= new List<RiverCell>()).AddRange(chunk.Rivers);
-        }
-
-        water = new SettledWater(centre.LakeTop, centre.Wetland, rivers?.ToArray() ?? Array.Empty<RiverCell>());
-        return true;
-    }
-
-    private ChunkWater Stored(int chunkX, int chunkZ, bool fromGraph)
-    {
-        if (_chunks.TryGetValue(ChunkKey(chunkX, chunkZ), out ChunkWater water)) return water;
-        if (!fromGraph) return null;
-
-        // Dropped from the store while its tile is still held: released chunks never change, so it
-        // can be copied out again.
-        var tile = new TileCoord(FloorDiv(chunkZ, ChunksPerTile), FloorDiv(chunkX, ChunksPerTile));
-        if (!_graph.TryGetTile(tile, out TileWater held)) return null;
-        int local = (chunkZ - tile.Row * ChunksPerTile) * ChunksPerTile + chunkX - tile.Column * ChunksPerTile;
-        if (held.ChunkReleaseSteps[local] < 0) return null;
-
-        water = Extract(chunkX, chunkZ);
-        Store(chunkX, chunkZ, water);
-        return water;
-    }
-
-    private void Store(int chunkX, int chunkZ, ChunkWater water)
-    {
-        long key = ChunkKey(chunkX, chunkZ);
-        if (_chunks.TryAdd(key, water))
-        {
-            Interlocked.Increment(ref _storedChunks);
-            return;
-        }
-
-        // A forgotten tile added back releases its chunks again, with the same water.
-        Interlocked.Increment(ref _releasedTwice);
-        if (_chunks.TryGetValue(key, out ChunkWater before) && !before.SameAs(water))
-        {
-            Interlocked.Increment(ref _mismatches);
-            _logger.Warning("[{0}] Chunk ({1}, {2}) was released again with different water. Please report this.",
-                DiffusionPaths.ModId, chunkX, chunkZ);
-        }
-    }
-
-    /// <summary>Copies a released chunk's lakes and rivers out of the graph (under the lock).</summary>
-    private ChunkWater Extract(int chunkX, int chunkZ)
-    {
-        var tile = new TileCoord(FloorDiv(chunkZ, ChunksPerTile), FloorDiv(chunkX, ChunksPerTile));
-        _graph.TryGetTile(tile, out TileWater water);
-        float[] runoff = _runoff[tile];
-        int localX = chunkX - tile.Column * ChunksPerTile, localZ = chunkZ - tile.Row * ChunksPerTile;
-
-        ReadOnlySpan<float> level = water.Level, elevation = water.Elevation, discharge = water.Discharge;
-        short[] lakeTop = null;
-        byte[] wetland = null;
-        List<RiverCell> rivers = null;
-
-        for (int lz = 0; lz < ChunkBlocks; lz++)
-        for (int lx = 0; lx < ChunkBlocks; lx++)
-        {
-            int row = localZ * ChunkBlocks + lz, column = localX * ChunkBlocks + lx;
-            int cell = row * TileBlocks + column;
-            int index = lz * ChunkBlocks + lx;
-            float e = elevation[cell];
-            int ground = _settings.ElevationToBlockY(e);
-            int top = ground;
-
-            if (level[cell] > e)
-            {
-                (top, bool lake, byte wetness) = LakeColumn(level[cell], e, ground);
-                if (lake)
-                {
-                    (lakeTop ??= new short[ChunkBlocks * ChunkBlocks])[index] = (short)top;
-                    continue;
-                }
-                if (wetness > 0) (wetland ??= new byte[ChunkBlocks * ChunkBlocks])[index] = wetness;
-            }
-
-            // Ground at or above the water, wetland included, may carry a river; its surface is no higher than the lake's.
-            if (!HasRivers || !(e > 0f) || !(discharge[cell] >= _riverThreshold)) continue;
-
-            (rivers ??= new List<RiverCell>()).Add(RiverGeometry.Cell(water, runoff, cell, tile.Column * TileBlocks,
-                tile.Row * TileBlocks, Math.Min(top, ground), _settings, Settings.DischargeCap, _riverWidth));
-        }
-
-        if (lakeTop == null && wetland == null && rivers == null) return ChunkWater.Dry;
-        return new ChunkWater(lakeTop, wetland, rivers?.ToArray() ?? Array.Empty<RiverCell>());
-    }
-
-    /// <summary>
-    /// A column under a filled level: the lake stands <see cref="_wetlandDepth"/> blocks below its
-    /// spill block, so columns that deep or shallower are wetland, saturated ground at the lake's
-    /// waterline. Returns the water surface block, whether the column holds lake water, and its
-    /// wetness (1 to 255, how much of the dropped water stood over it; 0 if neither).
-    /// </summary>
-    private (int Top, bool Lake, byte Wetness) LakeColumn(float level, float elevation, int ground)
-    {
-        int spill = _settings.ElevationToBlockY(level);
-        if (spill <= ground || spill < _seaLevel) return (ground, false, 0);
-
-        int top = spill - _wetlandDepth;
-        if (top > ground && top >= _seaLevel) return (top, true, 0);
-
-        double vertical = _settings.MetersPerBlockVertical;
-        double share = vertical > 0.0 ? (level - elevation) / (vertical * Math.Max(1, _wetlandDepth)) : 1.0;
-        return (Math.Max(top, _seaLevel - 1), false, (byte)Math.Clamp((int)Math.Round(share * 255.0), 1, 255));
-    }
-
-    /// <summary>Lake tops of a chunk from a filled tile's current levels (for peeks; may not be final).</summary>
-    private short[] LakeTops(in TileWater water, int localX, int localZ)
-    {
-        ReadOnlySpan<float> level = water.Level, elevation = water.Elevation;
-        short[] lakeTop = null;
-        for (int lz = 0; lz < ChunkBlocks; lz++)
-        for (int lx = 0; lx < ChunkBlocks; lx++)
-        {
-            int cell = (localZ * ChunkBlocks + lz) * TileBlocks + localX * ChunkBlocks + lx;
-            if (!(level[cell] > elevation[cell])) continue;
-            (int top, bool lake, _) = LakeColumn(level[cell], elevation[cell], _settings.ElevationToBlockY(elevation[cell]));
-            if (lake) (lakeTop ??= new short[ChunkBlocks * ChunkBlocks])[lz * ChunkBlocks + lx] = (short)top;
-        }
-        return lakeTop;
-    }
-
-    /// <summary>
-    /// Over budget, forgets the farthest tiles that no player is near, that weren't just added, and
-    /// whose water and their 8 neighbours' is all released (under the lock).
-    /// </summary>
-    private void ForgetFarTiles()
-    {
-        RiverGraphStatistics stats = _graph.GetStatistics();
-        long perTile = Cells * sizeof(float);
-        long bytes = stats.Bytes + _runoff.Count * perTile;
-        if (bytes <= BudgetBytes || _runoff.Count == 0) return;
-
-        long average = bytes / _runoff.Count;
-        int recent = _graph.Step - KeepRecentArrivals;
-        var candidates = new List<(TileCoord Tile, long Distance)>();
-        foreach (TileCoord tile in _runoff.Keys)
-        {
-            long distance = _distanceToPlayers(tile.Column * TileBlocks + TileBlocks / 2, tile.Row * TileBlocks + TileBlocks / 2);
-            if (distance <= (long)KeepTilesNearPlayers * TileBlocks) continue;
-            if (!_graph.TryGetTile(tile, out TileWater water) || water.ArrivalStep >= recent) continue;
-
-            bool released = true;
-            for (int dz = -1; dz <= 1 && released; dz++)
-            for (int dx = -1; dx <= 1 && released; dx++)
-                released = _graph.TryGetTile(tile.Offset(dz, dx), out TileWater around) && around.IsFullyReleased;
-            if (released) candidates.Add((tile, distance));
-        }
-
-        candidates.Sort((a, b) => b.Distance != a.Distance ? b.Distance.CompareTo(a.Distance) : a.Tile.CompareTo(b.Tile));
-        foreach ((TileCoord tile, _) in candidates)
-        {
-            if (bytes <= BudgetBytes * 9 / 10) break;
-            if (!_graph.ForgetTile(tile)) continue;
-            _runoff.Remove(tile);
-            bytes -= average;
-            Interlocked.Increment(ref _tilesForgotten);
-        }
-    }
-
-    /// <summary>Drops stored chunks far from every player once there are too many.</summary>
-    private void DropFarChunks()
-    {
-        if (Volatile.Read(ref _storedChunks) <= MaxStoredChunks) return;
-        foreach (KeyValuePair<long, ChunkWater> entry in _chunks)
-        {
-            int chunkX = (int)(entry.Key >> 32), chunkZ = (int)entry.Key;
-            long distance = _distanceToPlayers(chunkX * ChunkBlocks + ChunkBlocks / 2, chunkZ * ChunkBlocks + ChunkBlocks / 2);
-            if (distance <= KeepChunksNearPlayersBlocks) continue;
-            // A held tile's chunks stay: they would need its neighbours to be copied out again.
-            if (_graph.Contains(new TileCoord(FloorDiv(chunkZ, ChunksPerTile), FloorDiv(chunkX, ChunksPerTile)))) continue;
-            if (_chunks.TryRemove(entry.Key, out _))
-                Interlocked.Decrement(ref _storedChunks);
-        }
-    }
-
+    /// <summary>Squared distance from a tile's centre to a point, in tiles.</summary>
+    /// <param name="tile">The tile.</param>
+    /// <param name="row">The point's row, in tiles.</param>
+    /// <param name="column">The point's column, in tiles.</param>
+    /// <returns>The squared distance.</returns>
     private static double TileDistance(TileCoord tile, double row, double column) =>
         Math.Pow(tile.Row + 0.5 - row, 2) + Math.Pow(tile.Column + 0.5 - column, 2);
 
+    /// <summary>A chunk's key in <see cref="_chunks"/>: X in the high half, Z in the low.</summary>
+    /// <param name="chunkX">Chunk column.</param>
+    /// <param name="chunkZ">Chunk row.</param>
+    /// <returns>The key.</returns>
     private static long ChunkKey(int chunkX, int chunkZ) => ((long)chunkX << 32) | (uint)chunkZ;
-}
-
-/// <summary>A chunk's final water: its lake tops, and the river cells within reach of it.</summary>
-public sealed class SettledWater
-{
-    public static readonly SettledWater Dry = new(null, null, Array.Empty<RiverCell>());
-
-    /// <summary>Top lake water block per column (lz * 32 + lx), 0 where none; null without lakes.</summary>
-    public readonly short[] LakeTop;
-
-    /// <summary>Wetness of wetland columns (1 to 255), 0 elsewhere; null without wetland.</summary>
-    public readonly byte[] Wetland;
-
-    /// <summary>River cells of the chunk and its neighbours, world coordinates.</summary>
-    public readonly RiverCell[] Rivers;
-
-    public SettledWater(short[] lakeTop, byte[] wetland, RiverCell[] rivers)
-    {
-        LakeTop = lakeTop;
-        Wetland = wetland;
-        Rivers = rivers;
-    }
 }
