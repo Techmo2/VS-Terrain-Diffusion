@@ -86,17 +86,35 @@ public static class Koppen
     /// <summary>The figures every criterion is made of, from one place's twelve months.</summary>
     private readonly struct Facts
     {
-        /// <summary>
-        /// Annual mean, hottest and coldest month temperatures (°C); annual and driest-month precipitation
-        /// (mm).
-        /// </summary>
-        public readonly double MeanC, AnnualMm, HottestC, ColdestC, DriestMm;
+        /// <summary>Annual mean temperature, °C.</summary>
+        public readonly double MeanC;
 
-        /// <summary>
-        /// Driest and wettest month of the summer and winter halves (mm), and summer's share of the annual
-        /// total.
-        /// </summary>
-        public readonly double SummerMinMm, SummerMaxMm, WinterMinMm, WinterMaxMm, SummerFraction;
+        /// <summary>Annual precipitation, mm.</summary>
+        public readonly double AnnualMm;
+
+        /// <summary>Mean temperature of the hottest month, °C.</summary>
+        public readonly double HottestC;
+
+        /// <summary>Mean temperature of the coldest month, °C.</summary>
+        public readonly double ColdestC;
+
+        /// <summary>Precipitation of the driest month, mm.</summary>
+        public readonly double DriestMm;
+
+        /// <summary>Precipitation of the driest month of the summer half, mm.</summary>
+        public readonly double SummerMinMm;
+
+        /// <summary>Precipitation of the wettest month of the summer half, mm.</summary>
+        public readonly double SummerMaxMm;
+
+        /// <summary>Precipitation of the driest month of the winter half, mm.</summary>
+        public readonly double WinterMinMm;
+
+        /// <summary>Precipitation of the wettest month of the winter half, mm.</summary>
+        public readonly double WinterMaxMm;
+
+        /// <summary>The summer half's share of the annual precipitation, 0 to 1.</summary>
+        public readonly double SummerFraction;
 
         /// <summary>How many months average above 10 °C.</summary>
         public readonly int MonthsAbove10;

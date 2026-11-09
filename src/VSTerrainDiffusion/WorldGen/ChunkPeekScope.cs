@@ -44,8 +44,17 @@ public static class ChunkPeekScope
     /// <summary>A block rectangle, maximum exclusive.</summary>
     private readonly struct Bounds
     {
-        /// <summary>The rectangle's edges, in blocks; the maxima exclusive.</summary>
-        public readonly int MinX, MinZ, MaxX, MaxZ;
+        /// <summary>Least X, in blocks.</summary>
+        public readonly int MinX;
+
+        /// <summary>Least Z, in blocks.</summary>
+        public readonly int MinZ;
+
+        /// <summary>X past the last, in blocks.</summary>
+        public readonly int MaxX;
+
+        /// <summary>Z past the last, in blocks.</summary>
+        public readonly int MaxZ;
 
         /// <summary>A rectangle from its edges.</summary>
         /// <param name="minX">Least X.</param>

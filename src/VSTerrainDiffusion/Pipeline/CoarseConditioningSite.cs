@@ -19,14 +19,29 @@ namespace VSTerrainDiffusion.Pipeline;
 /// </summary>
 public sealed class CoarseConditioningSite
 {
-    /// <summary>Centre, in coarse model pixels: I along Z (rows), J along X (columns).</summary>
-    public float I, J;
+    /// <summary>Centre row, in coarse model pixels, along Z.</summary>
+    public float I;
 
-    /// <summary>Full-strength radius and the blend beyond it, in coarse model pixels.</summary>
-    public float Radius, Fade;
+    /// <summary>Centre column, in coarse model pixels, along X.</summary>
+    public float J;
 
-    /// <summary>Climate targets in real units; null leaves that channel to the model.</summary>
-    public float? TemperatureC, Seasonality, PrecipitationMm, PrecipitationCv;
+    /// <summary>Full-strength radius, in coarse model pixels.</summary>
+    public float Radius;
+
+    /// <summary>Width of the blend beyond <see cref="Radius"/>, in coarse model pixels.</summary>
+    public float Fade;
+
+    /// <summary>Mean annual temperature target, °C; null leaves it to the model.</summary>
+    public float? TemperatureC;
+
+    /// <summary>Temperature seasonality target (BIO4); null leaves it to the model.</summary>
+    public float? Seasonality;
+
+    /// <summary>Annual precipitation target, mm; null leaves it to the model.</summary>
+    public float? PrecipitationMm;
+
+    /// <summary>Precipitation seasonality target, % CV; null leaves it to the model.</summary>
+    public float? PrecipitationCv;
 
     /// <summary>
     /// Flatten the coarse relief output (mean minus fifth percentile) inside the site, which is what

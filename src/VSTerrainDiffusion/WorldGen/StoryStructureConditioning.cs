@@ -26,10 +26,15 @@ public static class StoryStructureConditioning
     private const float VanillaTransitionBlocks = 300f;
 
     /// <summary>
-    /// The coldest and warmest annual means the coarse model saw on land in any number (60°S–60°N).
-    /// The base model reads the edited climate, so targets stay inside what it was trained on.
+    /// The coldest annual mean the coarse model saw on land (60°S–60°N). The base model reads the edited
+    /// climate, so targets stay inside what it was trained on.
     /// </summary>
-    private const float ColdestTrainedC = -10f, WarmestTrainedC = 30f;
+    private const float ColdestTrainedC = -10f;
+
+    /// <summary>
+    /// The warmest annual mean the coarse model saw on land; see <see cref="ColdestTrainedC"/>.
+    /// </summary>
+    private const float WarmestTrainedC = 30f;
 
     /// <summary>
     /// Median temperature seasonality (BIO4) and precipitation CV of the training set's land cells at

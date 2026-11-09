@@ -45,14 +45,25 @@ public static class SeasonalCycleMap
     /// <summary>The seasonal cycle at one position.</summary>
     public readonly struct Sample
     {
-        /// <summary>Second harmonic of the temperature cycle, cosine and sine, °C.</summary>
-        public readonly float TemperatureShapeCos, TemperatureShapeSin;
+        /// <summary>Second harmonic of the temperature cycle, cosine term, °C.</summary>
+        public readonly float TemperatureShapeCos;
+
+        /// <summary>Second harmonic of the temperature cycle, sine term, °C.</summary>
+        public readonly float TemperatureShapeSin;
 
         /// <summary>
-        /// Rain harmonics relative to the monthly mean: when the wet season falls, then a second rainy
-        /// season.
+        /// First rain harmonic relative to the monthly mean, cosine term: when the wet season falls.
         /// </summary>
-        public readonly float WetSeasonCos, WetSeasonSin, SecondRainyCos, SecondRainySin;
+        public readonly float WetSeasonCos;
+
+        /// <summary>First rain harmonic, sine term.</summary>
+        public readonly float WetSeasonSin;
+
+        /// <summary>Second rain harmonic, cosine term: a second rainy season.</summary>
+        public readonly float SecondRainyCos;
+
+        /// <summary>Second rain harmonic, sine term.</summary>
+        public readonly float SecondRainySin;
 
         /// <summary>Mean diurnal temperature range, °C.</summary>
         public readonly float DiurnalRangeC;

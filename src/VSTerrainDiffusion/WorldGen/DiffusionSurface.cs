@@ -199,10 +199,20 @@ public sealed class DiffusionSurface
     /// </summary>
     private sealed class Heights
     {
-        /// <summary>
-        /// Height maps: this chunk's and its four neighbours'; a neighbour's is null when unknown.
-        /// </summary>
-        private readonly ushort[] _self, _west, _east, _north, _south;
+        /// <summary>This chunk's terrain height map.</summary>
+        private readonly ushort[] _self;
+
+        /// <summary>The west neighbour's, or null when unknown.</summary>
+        private readonly ushort[] _west;
+
+        /// <summary>The east neighbour's, or null when unknown.</summary>
+        private readonly ushort[] _east;
+
+        /// <summary>The north neighbour's, or null when unknown.</summary>
+        private readonly ushort[] _north;
+
+        /// <summary>The south neighbour's, or null when unknown.</summary>
+        private readonly ushort[] _south;
 
         /// <summary>Reads the height maps around a chunk.</summary>
         /// <param name="api">The server.</param>

@@ -11,8 +11,17 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class MapLayerInstaller
 {
-    /// <summary>Seed offsets of the installed layers from the world seed, as vanilla's GenMaps uses.</summary>
-    private const int ClimateSeedOffset = 1, ForestSeedOffset = 2, ShrubSeedOffset = 3, OceanSeedOffset = 1873;
+    /// <summary>Seed offset of the climate layer from the world seed, as vanilla's GenMaps uses.</summary>
+    private const int ClimateSeedOffset = 1;
+
+    /// <summary>Seed offset of the forest layer.</summary>
+    private const int ForestSeedOffset = 2;
+
+    /// <summary>Seed offset of the shrub layer.</summary>
+    private const int ShrubSeedOffset = 3;
+
+    /// <summary>Seed offset of the ocean layer.</summary>
+    private const int OceanSeedOffset = 1873;
 
     /// <summary>Installs the layers the world's settings call for.</summary>
     /// <param name="api">The server API.</param>

@@ -49,8 +49,11 @@ public sealed partial class TerrainDiffusionProvider
         }
     }
 
-    /// <summary>Keys the two coarse pipelines' windows apart in the tile database.</summary>
-    private const int MainCoarseVariant = 0, RiverFreeCoarseVariant = 1;
+    /// <summary>Tile database key of the main coarse pipeline's windows.</summary>
+    private const int MainCoarseVariant = 0;
+
+    /// <summary>Tile database key of the river-free coarse pipeline's windows.</summary>
+    private const int RiverFreeCoarseVariant = 1;
 
     /// <summary>Coarse windows the coarse model was run for this session, in either coarse pipeline.</summary>
     public long CoarseWindowsComputed

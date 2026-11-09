@@ -32,14 +32,31 @@ public readonly struct ClimateRecord
     /// </summary>
     public readonly bool HasSeasonalCycle;
 
-    /// <summary>Second harmonic of the temperature year, °C: short sharp or long flat summers.</summary>
-    public readonly float TemperatureShapeCos, TemperatureShapeSin;
+    /// <summary>
+    /// Second harmonic of the temperature year, cosine term, °C: short sharp or long flat summers.
+    /// </summary>
+    public readonly float TemperatureShapeCos;
 
-    /// <summary>First harmonic of rain relative to the monthly mean: when the wet season falls (cos 1 = midsummer).</summary>
-    public readonly float WetSeasonCos, WetSeasonSin;
+    /// <summary>Second harmonic of the temperature year, sine term, °C.</summary>
+    public readonly float TemperatureShapeSin;
 
-    /// <summary>Second harmonic of rain relative to the monthly mean: a second rainy season, sharp monsoons.</summary>
-    public readonly float SecondRainyCos, SecondRainySin;
+    /// <summary>
+    /// First harmonic of rain relative to the monthly mean, cosine term: when the wet season falls (cos 1 =
+    /// midsummer).
+    /// </summary>
+    public readonly float WetSeasonCos;
+
+    /// <summary>First harmonic of rain relative to the monthly mean, sine term.</summary>
+    public readonly float WetSeasonSin;
+
+    /// <summary>
+    /// Second harmonic of rain relative to the monthly mean, cosine term: a second rainy season, sharp
+    /// monsoons.
+    /// </summary>
+    public readonly float SecondRainyCos;
+
+    /// <summary>Second harmonic of rain relative to the monthly mean, sine term.</summary>
+    public readonly float SecondRainySin;
 
     /// <summary>Mean diurnal temperature range, °C (BIO2): the usual day-night swing. NaN without the seasonal model.</summary>
     public readonly float DiurnalRangeC;

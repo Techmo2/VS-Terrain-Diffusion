@@ -91,8 +91,19 @@ public sealed partial class SyntheticMapFactory
     /// <summary>One fractal Perlin noise per channel.</summary>
     private readonly FastNoiseLite[] _noises = new FastNoiseLite[Channels];
 
-    /// <summary><see cref="PipelineData"/>'s temperature-seasonality baseline and percentiles.</summary>
-    private readonly float _aTempStd, _bTempStd, _tempStdP1, _tempStdP99;
+    /// <summary>
+    /// Slope of the temperature-seasonality baseline in temperature; see <see cref="PipelineData.ATempStd"/>.
+    /// </summary>
+    private readonly float _aTempStd;
+
+    /// <summary>Intercept of that baseline.</summary>
+    private readonly float _bTempStd;
+
+    /// <summary>First percentile of temperature seasonality.</summary>
+    private readonly float _tempStdP1;
+
+    /// <summary>99th percentile of temperature seasonality.</summary>
+    private readonly float _tempStdP99;
 
     /// <summary>Where the sea goes, or null when the noise decides.</summary>
     private readonly ILandmaskSource _landmask;

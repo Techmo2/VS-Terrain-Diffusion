@@ -21,14 +21,28 @@ public static class CoarseChannel
     /// <summary>Coefficient of variation of monthly precipitation, % (BIO15).</summary>
     public const int PrecipitationCv = 5;
 
-    /// <summary>Second harmonic of the temperature cycle, cosine and sine, °C.</summary>
-    public const int TemperatureShapeCos = 6, TemperatureShapeSin = 7;
+    /// <summary>Second harmonic of the temperature cycle, cosine term, °C.</summary>
+    public const int TemperatureShapeCos = 6;
 
-    /// <summary>First harmonic of precipitation relative to the monthly mean: when the wet season falls.</summary>
-    public const int WetSeasonCos = 8, WetSeasonSin = 9;
+    /// <summary>Second harmonic of the temperature cycle, sine term, °C.</summary>
+    public const int TemperatureShapeSin = 7;
 
-    /// <summary>Second harmonic of precipitation relative to the monthly mean: a second rainy season, sharp monsoons.</summary>
-    public const int SecondRainyCos = 10, SecondRainySin = 11;
+    /// <summary>
+    /// First harmonic of precipitation relative to the monthly mean, cosine term: when the wet season falls.
+    /// </summary>
+    public const int WetSeasonCos = 8;
+
+    /// <summary>First harmonic of precipitation relative to the monthly mean, sine term.</summary>
+    public const int WetSeasonSin = 9;
+
+    /// <summary>
+    /// Second harmonic of precipitation relative to the monthly mean, cosine term: a second rainy season,
+    /// sharp monsoons.
+    /// </summary>
+    public const int SecondRainyCos = 10;
+
+    /// <summary>Second harmonic of precipitation relative to the monthly mean, sine term.</summary>
+    public const int SecondRainySin = 11;
 
     /// <summary>Mean diurnal temperature range, °C (BIO2).</summary>
     public const int DiurnalRange = 12;

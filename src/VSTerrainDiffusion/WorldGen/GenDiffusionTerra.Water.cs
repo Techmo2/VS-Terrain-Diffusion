@@ -165,6 +165,11 @@ public sealed partial class GenDiffusionTerra
         }
     }
 
-    /// <summary>Share of wetland columns that are pools: this many at the driest, plus up to this many more at the wettest.</summary>
-    private const double WetlandPoolsMin = 0.2, WetlandPoolsWet = 0.4;
+    /// <summary>Share of wetland columns that are pools at the driest.</summary>
+    private const double WetlandPoolsMin = 0.2;
+
+    /// <summary>
+    /// Further share that are pools at the wettest, on top of <see cref="WetlandPoolsMin"/>.
+    /// </summary>
+    private const double WetlandPoolsWet = 0.4;
 }

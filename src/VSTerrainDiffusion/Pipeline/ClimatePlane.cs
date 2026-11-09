@@ -22,14 +22,25 @@ public static class ClimatePlane
     /// <summary>The local lapse rate β, °C per metre, including the world's altitude cooling.</summary>
     public const int LapseRate = 4;
 
-    /// <summary>Second harmonic of the temperature cycle, cosine and sine; see <see cref="CoarseChannel.TemperatureShapeCos"/>.</summary>
-    public const int TemperatureShapeCos = 5, TemperatureShapeSin = 6;
+    /// <summary>
+    /// Second harmonic of the temperature cycle, cosine; see <see cref="CoarseChannel.TemperatureShapeCos"/>.
+    /// </summary>
+    public const int TemperatureShapeCos = 5;
 
-    /// <summary>When the wet season falls; see <see cref="CoarseChannel.WetSeasonCos"/>.</summary>
-    public const int WetSeasonCos = 7, WetSeasonSin = 8;
+    /// <summary>Second harmonic of the temperature cycle, sine.</summary>
+    public const int TemperatureShapeSin = 6;
 
-    /// <summary>A second rainy season; see <see cref="CoarseChannel.SecondRainyCos"/>.</summary>
-    public const int SecondRainyCos = 9, SecondRainySin = 10;
+    /// <summary>When the wet season falls, cosine; see <see cref="CoarseChannel.WetSeasonCos"/>.</summary>
+    public const int WetSeasonCos = 7;
+
+    /// <summary>When the wet season falls, sine.</summary>
+    public const int WetSeasonSin = 8;
+
+    /// <summary>A second rainy season, cosine; see <see cref="CoarseChannel.SecondRainyCos"/>.</summary>
+    public const int SecondRainyCos = 9;
+
+    /// <summary>A second rainy season, sine.</summary>
+    public const int SecondRainySin = 10;
 
     /// <summary>Mean diurnal temperature range, °C.</summary>
     public const int DiurnalRange = 11;

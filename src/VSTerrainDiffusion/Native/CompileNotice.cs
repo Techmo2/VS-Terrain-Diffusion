@@ -23,8 +23,11 @@ internal sealed class CompileNotice
     /// <summary>How often the notice repeats during a compile.</summary>
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
 
-    /// <summary>The lines MIGraphX's ONNX Runtime provider prints around a compile.</summary>
-    private const string MigraphxBegin = "Model Compile: Begin", MigraphxComplete = "Model Compile: Complete";
+    /// <summary>The line MIGraphX's ONNX Runtime provider prints as a compile begins.</summary>
+    private const string MigraphxBegin = "Model Compile: Begin";
+
+    /// <summary>The line it prints as the compile completes.</summary>
+    private const string MigraphxComplete = "Model Compile: Complete";
 
     /// <summary>The server log, which also feeds the loading screen.</summary>
     private readonly ILogger _logger;

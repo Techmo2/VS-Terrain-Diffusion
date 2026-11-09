@@ -36,12 +36,18 @@ public static class RiverGeometry
     /// <summary>
     /// Width = <see cref="WidthCoefficient"/> Q^<see cref="WidthExponent"/>, metres from m³/s.
     /// </summary>
-    private const double WidthCoefficient = 5.0, WidthExponent = 0.5;
+    private const double WidthCoefficient = 5.0;
+
+    /// <summary>Exponent of discharge in the width rule; see <see cref="WidthCoefficient"/>.</summary>
+    private const double WidthExponent = 0.5;
 
     /// <summary>
     /// Depth = <see cref="DepthCoefficient"/> Q^<see cref="DepthExponent"/>, metres from m³/s.
     /// </summary>
-    private const double DepthCoefficient = 0.4, DepthExponent = 0.4;
+    private const double DepthCoefficient = 0.4;
+
+    /// <summary>Exponent of discharge in the depth rule; see <see cref="DepthCoefficient"/>.</summary>
+    private const double DepthExponent = 0.4;
 
     /// <summary>Discharge, m³/s, below which a channel is a dry bed.</summary>
     private const double DryDischarge = 0.01;

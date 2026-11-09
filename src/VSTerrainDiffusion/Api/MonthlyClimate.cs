@@ -34,10 +34,17 @@ public readonly struct MonthlyClimate
     /// <summary>Angle of month m's midpoint: θ_m = 2π(m + 0.5) / 12.</summary>
     public static double MonthTheta(int month) => 2.0 * Math.PI * (month + 0.5) / 12.0;
 
+    /// <summary>
+    /// Rebuilds the twelve months from the annual statistics and the cycle channels, as the
+    /// reference pipeline does: temperature from two harmonics whose variance matches the
+    /// seasonality, and rain from two harmonics around the monthly mean, clipped at zero and
+    /// rescaled to the annual total.
+    /// </summary>
     /// <param name="meanC">Annual mean temperature, °C.</param>
-    /// <param name="seasonality">Temperature seasonality as the model gives it: SD of monthly means × 100 (BIO4).</param>
+    /// <param name="seasonality">Temperature seasonality as the model gives it: SD of monthly means times 100 (BIO4).</param>
     /// <param name="annualMm">Annual precipitation, mm.</param>
     /// <param name="cycle">The six cycle channels: t2c, t2s, p1c, p1s, p2c, p2s.</param>
+    /// <returns>The months, from month 0: the first month after midsummer.</returns>
     public static MonthlyClimate Reconstruct(double meanC, double seasonality, double annualMm, ReadOnlySpan<double> cycle)
     {
         double sd = Math.Max(seasonality, 0.0) / 100.0;

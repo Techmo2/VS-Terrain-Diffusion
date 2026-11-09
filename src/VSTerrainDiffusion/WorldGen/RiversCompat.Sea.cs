@@ -21,8 +21,11 @@ public static partial class RiversCompat
     /// <summary>Reads a <c>RiverZone.oceanZone</c>.</summary>
     private static System.Func<object, bool> _zoneIsSea;
 
-    /// <summary>Rivers' zone size and zones per region side.</summary>
-    private static int _zoneSize, _zonesInRegion;
+    /// <summary>Rivers' zone size.</summary>
+    private static int _zoneSize;
+
+    /// <summary>Rivers' zones per region side.</summary>
+    private static int _zonesInRegion;
 
     /// <summary>The margin <c>GenerateRiver</c> keeps every node inside its region by.</summary>
     private static double _mouthPadding;
@@ -36,8 +39,14 @@ public static partial class RiversCompat
     /// <summary>1 once the model's coast could not be read; the warning is given once.</summary>
     private static int _modelSeaFailed;
 
-    /// <summary><c>RiverZone</c>'s sea flag, ocean distance and centre fields.</summary>
-    private static FieldInfo _zoneSea, _zoneOceanDistance, _zoneCenter;
+    /// <summary><c>RiverZone</c>'s sea flag field.</summary>
+    private static FieldInfo _zoneSea;
+
+    /// <summary><c>RiverZone</c>'s ocean distance field.</summary>
+    private static FieldInfo _zoneOceanDistance;
+
+    /// <summary><c>RiverZone</c>'s centre field.</summary>
+    private static FieldInfo _zoneCenter;
 
     /// <summary><c>RiverRegion.GlobalRegionStart</c>.</summary>
     private static PropertyInfo _regionStart;

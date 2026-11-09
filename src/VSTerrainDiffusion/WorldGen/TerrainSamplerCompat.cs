@@ -40,8 +40,11 @@ public static class TerrainSamplerCompat
     /// <summary>The world's terrain, which answers the heights.</summary>
     private static TerrainDiffusionProvider _provider;
 
-    /// <summary>The coordinate type's X and Z properties.</summary>
-    private static PropertyInfo _x, _z;
+    /// <summary>The coordinate type's X property.</summary>
+    private static PropertyInfo _x;
+
+    /// <summary>The coordinate type's Z property.</summary>
+    private static PropertyInfo _z;
 
     /// <summary>Whether the sampler's heights are coming from the model.</summary>
     public static bool Installed => _harmony != null && _provider != null;
