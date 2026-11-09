@@ -8,10 +8,17 @@ namespace VSTerrainDiffusion.Tensors;
 /// </summary>
 public sealed class FloatTensor
 {
+    /// <summary>Length of each dimension.</summary>
     public readonly int[] Shape;
+
+    /// <summary>The values, row-major; shared, not copied, when passed in.</summary>
     public readonly float[] Data;
+
+    /// <summary>Elements between neighbours along each dimension.</summary>
     internal readonly int[] Strides;
 
+    /// <summary>A zero-filled tensor.</summary>
+    /// <param name="shape">Length of each dimension; copied.</param>
     public FloatTensor(int[] shape)
     {
         Shape = (int[])shape.Clone();
@@ -21,6 +28,9 @@ public sealed class FloatTensor
         Strides = ComputeStrides(shape);
     }
 
+    /// <summary>A tensor over existing data, without copying it.</summary>
+    /// <param name="shape">Length of each dimension; copied.</param>
+    /// <param name="data">The values, row-major; their count must match the shape.</param>
     public FloatTensor(int[] shape, float[] data)
     {
         Shape = (int[])shape.Clone();
@@ -28,6 +38,9 @@ public sealed class FloatTensor
         Strides = ComputeStrides(shape);
     }
 
+    /// <summary>Row-major strides for a shape.</summary>
+    /// <param name="shape">The shape.</param>
+    /// <returns>Elements between neighbours along each dimension.</returns>
     private static int[] ComputeStrides(int[] shape)
     {
         int n = shape.Length;
@@ -41,8 +54,10 @@ public sealed class FloatTensor
         return s;
     }
 
+    /// <summary>Number of dimensions.</summary>
     public int Ndim => Shape.Length;
 
+    /// <summary>Size of <see cref="Data"/> in bytes, for the cache's budget.</summary>
     public long ByteSize => (long)Data.Length * sizeof(float);
 
     /// <summary>
@@ -116,5 +131,7 @@ public sealed class FloatTensor
         return result;
     }
 
+    /// <summary>The shape, for messages.</summary>
+    /// <returns>e.g. "FloatTensor(shape=[7,64,64])".</returns>
     public override string ToString() => "FloatTensor(shape=[" + string.Join(",", Shape) + "])";
 }

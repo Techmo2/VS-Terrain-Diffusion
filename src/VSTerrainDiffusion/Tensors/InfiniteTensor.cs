@@ -10,19 +10,46 @@ namespace VSTerrainDiffusion.Tensors;
 /// </summary>
 public sealed class InfiniteTensor
 {
+    /// <summary>The name it is registered and cached under.</summary>
     private readonly string _id;
 
     /// <summary>Shape per dimension; null entries mean unbounded.</summary>
     private readonly int?[] _shape;
 
+    /// <summary>How its windows tile its pixels.</summary>
     private readonly TensorWindow _outputWindow;
+
+    /// <summary>Computes one window, or null for a batched tensor.</summary>
     private readonly TensorFunction _function;
+
+    /// <summary>Computes several windows at once, or null.</summary>
     private readonly BatchTensorFunction _batchFunction;
+
+    /// <summary>Most windows per <see cref="_batchFunction"/> call; 0 when not batched.</summary>
     private readonly int _batchSize;
+
+    /// <summary>Tensors each window is computed from.</summary>
     private readonly InfiniteTensor[] _deps;
+
+    /// <summary>For each dependency, the slice of it a window reads, by window index.</summary>
     private readonly TensorWindow[] _depWindows;
+
+    /// <summary>The store whose cache holds the windows.</summary>
     private readonly MemoryTileStore _store;
 
+    /// <summary>
+    /// Creates a tensor; use <see cref="MemoryTileStore.GetOrCreate"/> or
+    /// <see cref="MemoryTileStore.GetOrCreateBatched"/>.
+    /// </summary>
+    /// <param name="id">The registered name.</param>
+    /// <param name="shape">Length per dimension; null for unbounded.</param>
+    /// <param name="outputWindow">How windows tile the pixels.</param>
+    /// <param name="function">Computes one window, or null.</param>
+    /// <param name="batchFunction">Computes several, or null.</param>
+    /// <param name="batchSize">Most windows per batch call.</param>
+    /// <param name="deps">Tensors each window is computed from.</param>
+    /// <param name="depWindows">Which slice of each dependency a window reads.</param>
+    /// <param name="store">The owning store.</param>
     internal InfiniteTensor(
         string id,
         int?[] shape,
@@ -98,6 +125,8 @@ public sealed class InfiniteTensor
         }
     }
 
+    /// <summary>Ensures every window touching a pixel range is cached.</summary>
+    /// <param name="pixelRange">Per dimension, [start, end).</param>
     private void EnsureComputed(int[][] pixelRange)
         => EnsureComputedRanges(new List<int[][]> { pixelRange });
 
@@ -136,6 +165,8 @@ public sealed class InfiniteTensor
         else foreach (int[] windowIndex in pending) ComputeSingle(windowIndex);
     }
 
+    /// <summary>Computes one window from its dependencies' slices and caches it.</summary>
+    /// <param name="windowIndex">The window.</param>
     private void ComputeSingle(int[] windowIndex)
     {
         var args = new List<FloatTensor>(_deps.Length);
@@ -185,6 +216,10 @@ public sealed class InfiniteTensor
         }
     }
 
+    /// <summary>The slice of a dependency a window reads.</summary>
+    /// <param name="depIndex">Which dependency.</param>
+    /// <param name="windowIndex">The window.</param>
+    /// <returns>The slice.</returns>
     private FloatTensor SliceDep(int depIndex, int[] windowIndex)
     {
         int[][] bounds = _depWindows[depIndex].GetBounds(windowIndex);
@@ -198,6 +233,10 @@ public sealed class InfiniteTensor
         return _deps[depIndex].GetSlice(depStart, depEnd);
     }
 
+    /// <summary>Checks a computed window has the window's shape.</summary>
+    /// <param name="result">The computed window.</param>
+    /// <param name="windowIndex">Its index, for the message.</param>
+    /// <exception cref="InvalidOperationException">The shape differs.</exception>
     private void ValidateOutputShape(FloatTensor result, int[] windowIndex)
     {
         int n = _outputWindow.Size.Length;
@@ -216,6 +255,10 @@ public sealed class InfiniteTensor
         }
     }
 
+    /// <summary>Pairs start and end into per-dimension ranges.</summary>
+    /// <param name="start">Inclusive starts.</param>
+    /// <param name="end">Exclusive ends.</param>
+    /// <returns>Per dimension, [start, end).</returns>
     private static int[][] BuildRange(int[] start, int[] end)
     {
         int n = start.Length;

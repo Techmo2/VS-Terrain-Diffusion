@@ -13,10 +13,19 @@ namespace VSTerrainDiffusion.Tensors;
 /// </summary>
 public sealed class TensorWindow
 {
+    /// <summary>Window length per dimension.</summary>
     public readonly int[] Size;
+
+    /// <summary>Step between windows per dimension.</summary>
     public readonly int[] Stride;
+
+    /// <summary>Where window 0 starts per dimension.</summary>
     public readonly int[] Offset;
 
+    /// <summary>A window layout.</summary>
+    /// <param name="size">Window length per dimension.</param>
+    /// <param name="stride">Step between windows.</param>
+    /// <param name="offset">Where window 0 starts. Each is copied.</param>
     public TensorWindow(int[] size, int[] stride, int[] offset)
     {
         Size = (int[])size.Clone();
@@ -40,6 +49,7 @@ public sealed class TensorWindow
         Offset = new int[size.Length];
     }
 
+    /// <summary>Number of dimensions.</summary>
     public int Ndim => Size.Length;
 
     /// <summary>Pixel-space bounds [start, stop) for the given window index; result[d] = {start, stop}.</summary>
