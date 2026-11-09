@@ -105,18 +105,6 @@ public static class TileRaster
         return slope;
     }
 
-    /// <summary>Copies a flat h x w array into one array per row.</summary>
-    public static float[][] To2D(float[] flat, int h, int w)
-    {
-        var rows = new float[h][];
-        for (int r = 0; r < h; r++)
-        {
-            rows[r] = new float[w];
-            Array.Copy(flat, r * w, rows[r], 0, w);
-        }
-        return rows;
-    }
-
     /// <summary>
     /// Bilinearly upsamples each of the <see cref="ClimateChannels"/> native climate planes and crops
     /// the tile out of it, as <see cref="CropFlat"/> does for elevation.

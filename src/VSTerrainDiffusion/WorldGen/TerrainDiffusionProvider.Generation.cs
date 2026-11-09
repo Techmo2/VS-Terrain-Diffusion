@@ -188,7 +188,7 @@ public sealed partial class TerrainDiffusionProvider
 
             WorldPipeline.Sample sample = _pipeline.Get(i1p, j1p, i2p, j2p, true);
 
-            float[][] elevationNative = TileRaster.To2D(sample.Elevation, nh, nw);
+            float[][] elevationNative = Raster.To2D(sample.Elevation, nh, nw);
             float[][] elevationUp = LaplacianUtils.BilinearResize(elevationNative, nh * scale, nw * scale);
 
             int padUp = 2 * scale;

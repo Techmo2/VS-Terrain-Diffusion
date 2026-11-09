@@ -8,7 +8,6 @@ using System.Threading;
 using Microsoft.Data.Sqlite;
 using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
-using VSTerrainDiffusion.Pipeline;
 
 namespace VSTerrainDiffusion.WorldGen;
 

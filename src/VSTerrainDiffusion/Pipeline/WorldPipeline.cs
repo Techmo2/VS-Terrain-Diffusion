@@ -1,10 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Threading;
 using VSTerrainDiffusion.Core;
 using VSTerrainDiffusion.Native;
 using VSTerrainDiffusion.Tensors;
-using static VSTerrainDiffusion.Core.IntMath;
 
 namespace VSTerrainDiffusion.Pipeline;
 
@@ -16,47 +14,106 @@ namespace VSTerrainDiffusion.Pipeline;
 /// (1 flow-matching step). All pixel coordinates are in native model resolution
 /// (<see cref="WorldPipelineModelConfig.NativeResolution"/> metres per pixel).
 /// </summary>
-public sealed class WorldPipeline
+public sealed partial class WorldPipeline
 {
+    /// <summary>Edge of a coarse window, in coarse pixels.</summary>
     internal const int CoarseTileSize = 64;
+
+    /// <summary>Step between coarse windows; they overlap by a quarter and are blended.</summary>
     private const int CoarseTileStride = 48;
+
+    /// <summary>Edge of a latent window, in latent pixels.</summary>
     internal const int LatentTileSize = 64;
+
+    /// <summary>Step between latent windows; they overlap by half.</summary>
     private const int LatentTileStride = 32;
+
+    /// <summary>Edge of a decoder window, in native pixels.</summary>
     internal const int DecoderTileSize = 256;
+
+    /// <summary>Step between decoder windows; they overlap by a quarter.</summary>
     private const int DecoderTileStride = 192;
 
+    /// <summary>The EDM data standard deviation the models were trained with.</summary>
     private const float SigmaData = EdmScheduler.SigmaData;
 
+    /// <summary>
+    /// Means of the base model's seven conditioning inputs (elevation, p5, the climate channels, the land
+    /// mask), for normalising them.
+    /// </summary>
     private static readonly float[] CondMeans = { 14.99f, 11.65f, 15.87f, 619.26f, 833.12f, 69.40f, 0.66f };
+
+    /// <summary>Standard deviations matching <see cref="CondMeans"/>.</summary>
     private static readonly float[] CondStds = { 21.72f, 21.78f, 10.40f, 452.29f, 738.09f, 34.59f, 0.47f };
 
+    /// <summary>Mean of the latents' low-frequency elevation channel, for denormalising it.</summary>
     private const float LowFreqMean = -31.4f;
+
+    /// <summary>Standard deviation of the low-frequency channel.</summary>
     private const float LowFreqStd = 38.6f;
 
     /// <summary>mp_concat component widths: means, p5, climate, mask, histogram, noise level.</summary>
     private static readonly int[] CondDims = { 16, 16, 4, 16, 5, 1 };
 
+    /// <summary>The model's constants, from <c>world_pipeline_config.json</c>.</summary>
     private readonly WorldPipelineModelConfig _config;
 
     /// <summary>The coarse model's channels; the coarse map adds the blend weight after them, at this index.</summary>
     private readonly CoarseModelSpec _coarseSpec;
+
+    /// <summary><see cref="_coarseSpec"/>'s channel count.</summary>
     private readonly int _coarseChannels;
+
+    /// <summary>Native pixels per latent pixel along each axis.</summary>
     private readonly int _latentCompression;
+
+    /// <summary>Means of the coarse model's channels, for normalising them.</summary>
     private readonly float[] _modelMeans;
+
+    /// <summary>Standard deviations of the coarse model's channels.</summary>
     private readonly float[] _modelStds;
+
+    /// <summary>
+    /// How loosely each conditioning channel binds the coarse model (smaller binds tighter); a copy of the
+    /// config's, adjusted for this world.
+    /// </summary>
     private readonly float[] _condSnr;
+
+    /// <summary><see cref="_condSnr"/> as the model takes it: log(snr / 8).</summary>
     private readonly float[] _condVals;
+
+    /// <summary>
+    /// Scale of each conditioning component in the base model's magnitude-preserving concatenation.
+    /// </summary>
     private readonly float[] _mpConcatScales;
+
+    /// <summary>The base model's terrain-type histogram input.</summary>
     private readonly float[] _histogramRaw;
+
+    /// <summary>Mean of the decoder's residual, for denormalising it.</summary>
     private readonly float _residualMean;
+
+    /// <summary>Standard deviation of the decoder's residual.</summary>
     private readonly float _residualStd;
 
+    /// <summary>The coarse model.</summary>
     private readonly IModelRunner _coarseModel;
+
+    /// <summary>The base (latent) model.</summary>
     private readonly IModelRunner _baseModel;
+
+    /// <summary>The decoder.</summary>
     private readonly IModelRunner _decoderModel;
 
+    /// <summary>The cache every stage's windows are kept in.</summary>
     private readonly MemoryTileStore _tileStore;
+
+    /// <summary>Latent windows per base-model call.</summary>
     private readonly int _latentBatchSize;
+
+    /// <summary>
+    /// How the coarse map is pooled; <see cref="CoarsePooling.None"/> unless the world asked.
+    /// </summary>
     private readonly CoarsePooling _pooling;
 
     /// <summary>The second latent step's re-noise angle; see <see cref="DiffusionWorldSettings.BaseRenoiseSigma"/>.</summary>
@@ -67,6 +124,11 @@ public sealed class WorldPipeline
 
     /// <summary>Extra cooling with height, in reference lapse rates; see <see cref="DiffusionWorldSettings.AltitudeCooling"/>.</summary>
     private readonly float _altitudeCooling;
+
+    /// <summary>
+    /// Whether the synthetic map fills sea cells next to land with the land's climate; see
+    /// <see cref="CoastFill"/>.
+    /// </summary>
     private readonly bool _coastFill;
 
     /// <summary>Square-root metres of elevation over which <see cref="_coarseHeightNoise"/> fades in from sea level.</summary>
@@ -74,21 +136,40 @@ public sealed class WorldPipeline
 
 
 
+    /// <summary>The coarse map.</summary>
     private readonly InfiniteTensor _coarse;
+
+    /// <summary>The final latent map.</summary>
     private readonly InfiniteTensor _latents;
+
+    /// <summary>The decoder's residual map.</summary>
     private readonly InfiniteTensor _residual;
 
+    /// <summary>Where the sea goes, or null to let the model decide.</summary>
     private readonly ILandmaskSource _landmask;
+
+    /// <summary>River basins to carve into the coarse conditioning, or null.</summary>
     private readonly IRiverBasinSource _riverBasins;
+
+    /// <summary>How deep the basins are carved, metres.</summary>
     private readonly float _riverBasinDepth;
+
+    /// <summary>How hard the land mask binds; zero without one.</summary>
     private readonly float _landmaskStrength;
+
+    /// <summary>The world's climate bias.</summary>
     private readonly ClimateShift _climate;
+
+    /// <summary>The world's latitude bands, or null for none.</summary>
     private readonly ILatitudeSource _latitude;
 
     /// <summary>Places that ask the coarse model for a climate or landform of their own; see <see cref="CoarseConditioningSite"/>.</summary>
     private readonly IReadOnlyList<CoarseConditioningSite> _sites;
 
+    /// <summary>Builds the coarse model's conditioning map; rebuilt when the seed changes.</summary>
     private SyntheticMapFactory _syntheticMapFactory;
+
+    /// <summary>The world seed.</summary>
     private ulong _seed;
 
     /// <param name="landmask">
@@ -208,24 +289,31 @@ public sealed class WorldPipeline
             : OnnxModel.ActiveProvider is InferenceProvider.Cpu or InferenceProvider.OpenVino ? 1 : 4;
     }
 
+    /// <summary>The world seed.</summary>
     public ulong Seed => _seed;
 
     /// <summary>The coarse model this pipeline runs, and so which channels its coarse map holds.</summary>
     public CoarseModelSpec CoarseSpec => _coarseSpec;
 
+    /// <summary>Metres per native pixel.</summary>
     public float NativeResolution => _config.NativeResolution;
 
+    /// <summary>Windows computed by every stage so far.</summary>
     public long TotalComputedWindowCount => _tileStore.TotalComputedWindowCount;
 
+    /// <summary>Bytes of windows held in the cache.</summary>
     public long CachedBytes => _tileStore.CachedBytes;
 
+    /// <summary>Latent windows per base-model call.</summary>
     public int LatentBatchSize => _latentBatchSize;
 
+    /// <summary>Calls, items and time per model, for the log and <c>/tdiff status</c>.</summary>
     public string ModelTimingSummary =>
         $"coarse [{_coarseModel.Backend}] {_coarseModel.RunCount} calls/{_coarseModel.RunItems} items/{_coarseModel.RunMilliseconds} ms, " +
         $"base [{_baseModel.Backend}] {_baseModel.RunCount} calls/{_baseModel.RunItems} items/{_baseModel.RunMilliseconds} ms, " +
         $"decoder [{_decoderModel.Backend}] {_decoderModel.RunCount} calls/{_decoderModel.RunItems} items/{_decoderModel.RunMilliseconds} ms";
 
+    /// <summary>Time spent in the three models so far.</summary>
     public long TotalModelInferenceMilliseconds =>
         _coarseModel.RunMilliseconds + _baseModel.RunMilliseconds + _decoderModel.RunMilliseconds;
 
@@ -243,6 +331,11 @@ public sealed class WorldPipeline
         _tileStore.ClearAllCaches();
     }
 
+    /// <summary>
+    /// The scales of the magnitude-preserving concatenation: each of the k components is scaled by sqrt(N k)
+    /// / sqrt(n) / k, where n is its width and N the total.
+    /// </summary>
+    /// <returns>One scale per <see cref="CondDims"/> entry.</returns>
     private static float[] BuildMpConcatScales()
     {
         int sumN = 0;
@@ -252,789 +345,5 @@ public sealed class WorldPipeline
         var scales = new float[k];
         for (int i = 0; i < k; i++) scales[i] = c / (float)Math.Sqrt(CondDims[i]) / k;
         return scales;
-    }
-
-    // =====================================================================
-    // Coarse stage
-    // =====================================================================
-
-    /// <summary>
-    /// Where finished coarse windows are kept between sessions, or null. Checked before the coarse
-    /// model runs for a window, and handed every window it does run for. A window is a pure
-    /// function of the world's seed and settings, which the store's own fingerprint covers.
-    /// </summary>
-    public ICoarseWindowStore CoarseWindowStore { get; set; }
-
-    private long _coarseWindowsComputed;
-
-    /// <summary>Coarse windows this pipeline ran the coarse model for, rather than read back.</summary>
-    public long CoarseWindowsComputed => Interlocked.Read(ref _coarseWindowsComputed);
-
-    private InfiniteTensor BuildCoarseStage()
-    {
-        // Pooled tiles are generated on the usual grid and written to a map n times smaller, so
-        // window k covers model pixels from k * stride and map pixels from k * stride / n.
-        int n = _pooling.Factor;
-        int s = CoarseTileSize / n, st = CoarseTileStride / n;
-        float[] weights = LinearWeightWindow(s);
-        int mapChannels = _coarseChannels + 1;
-        var outWindow = new TensorWindow(new[] { mapChannels, s, s }, new[] { mapChannels, st, st });
-
-        return _tileStore.GetOrCreate("base_coarse_map", new int?[] { mapChannels, null, null },
-            (windowIndex, _) => StoredCoarseTile(windowIndex, weights, s), outWindow,
-            Array.Empty<InfiniteTensor>(), Array.Empty<TensorWindow>());
-    }
-
-    private FloatTensor StoredCoarseTile(int[] windowIndex, float[] weights, int size)
-    {
-        ICoarseWindowStore store = CoarseWindowStore;
-        int mapChannels = _coarseChannels + 1;
-        int length = mapChannels * size * size;
-        float[] stored = store?.TryLoad(windowIndex[1], windowIndex[2], length);
-        if (stored != null) return new FloatTensor(new[] { mapChannels, size, size }, stored);
-
-        FloatTensor computed = CoarseTile(windowIndex, weights);
-        Interlocked.Increment(ref _coarseWindowsComputed);
-        store?.Save(windowIndex[1], windowIndex[2], computed.Data, mapChannels);
-        return computed;
-    }
-
-    private FloatTensor CoarseTile(int[] windowIndex, float[] weights)
-    {
-        const int s = CoarseTileSize, st = CoarseTileStride;
-        int plane = s * s;
-        int i1 = windowIndex[1] * st, j1 = windowIndex[2] * st;
-        int channels = _coarseChannels;
-
-        // Synthetic conditioning: [elevSqrt, temp, tempStd, precip, precipStd].
-        // Python samples with the coordinates intentionally swapped.
-        float[] synthetic = _syntheticMapFactory.Sample(j1, i1, j1 + s, i1 + s);
-
-        // Stretch the cold tail of the temperature channel, matching the Python pipeline.
-        for (int px = 0; px < plane; px++)
-        {
-            float v = synthetic[plane + px];
-            if (v <= 20f) synthetic[plane + px] = (v - 20f) * 1.25f + 20f;
-        }
-
-        // Normalise using coarse means/stds at channel indices [0, 2, 3, 4, 5].
-        int[] meanIndex = { 0, 2, 3, 4, 5 };
-        var condImg = new float[5 * plane];
-        for (int ch = 0; ch < 5; ch++)
-        {
-            float mean = _modelMeans[meanIndex[ch]], std = _modelStds[meanIndex[ch]];
-            for (int px = 0; px < plane; px++)
-                condImg[ch * plane + px] = (synthetic[ch * plane + px] - mean) / std;
-        }
-
-        // Rotate each conditioning channel against noise by its own cond_snr. Note the direction:
-        // cos falls and sin rises with the angle, so a *larger* cond_snr leaves *less* of the
-        // conditioning behind, and the value is really a noise level however it is named upstream.
-        float[] condNoise = GaussianNoisePatch.Generate(_seed, i1, j1, s, s, 5, s, s);
-        var condMixed = new float[5 * plane];
-        // Structure sites may bind the elevation conditioning tighter where they stand.
-        float[] elevationLevels = CoarseConditioningSite.ElevationNoiseLevels(_sites, _condSnr[0], i1, j1, s);
-        for (int ch = 0; ch < 5; ch++)
-        {
-            float t = (float)Math.Atan(_condSnr[ch]);
-            float cosT = (float)Math.Cos(t), sinT = (float)Math.Sin(t);
-            for (int px = 0; px < plane; px++)
-            {
-                int k = ch * plane + px;
-                if (ch == 0 && elevationLevels != null)
-                {
-                    float tp = (float)Math.Atan(elevationLevels[px]);
-                    condMixed[k] = (float)Math.Cos(tp) * condImg[k] + (float)Math.Sin(tp) * condNoise[k];
-                    continue;
-                }
-                condMixed[k] = cosT * condImg[k] + sinT * condNoise[k];
-            }
-        }
-
-        var scheduler = new EdmScheduler(20);
-        float[] sample = GaussianNoisePatch.Generate(_seed + 1, i1, j1, s, s, channels, s, s);
-        for (int k = 0; k < sample.Length; k++) sample[k] *= scheduler.Sigmas[0];
-
-        var condInputs = new float[5][];
-        var condShapes = new long[5][];
-        for (int ci = 0; ci < 5; ci++)
-        {
-            condInputs[ci] = new[] { _condVals[ci] };
-            condShapes[ci] = new long[] { 1 };
-        }
-
-        var xIn = new float[(channels + 5) * plane];
-        Array.Copy(condMixed, 0, xIn, channels * plane, 5 * plane);
-
-        for (int step = 0; step < 20; step++)
-        {
-            float sigma = scheduler.Sigmas[step];
-            float cNoise = EdmScheduler.TrigflowPreconditionNoise(sigma);
-            float[] scaledIn = EdmScheduler.PreconditionInputs(sample, sigma);
-            Array.Copy(scaledIn, 0, xIn, 0, channels * plane);
-
-            InferencePreemption.ThrowIfPreempted();
-            float[] modelOut = _coarseModel.RunModel(
-                xIn, new long[] { 1, channels + 5, s, s }, new[] { cNoise }, condInputs, condShapes);
-            sample = scheduler.Step(modelOut, sample);
-        }
-
-        // Denormalise, then turn channel 1 into the p5 difference.
-        var output = new float[channels * plane];
-        for (int ch = 0; ch < channels; ch++)
-        {
-            float mean = _modelMeans[ch], std = _modelStds[ch];
-            for (int px = 0; px < plane; px++)
-                output[ch * plane + px] = (sample[ch * plane + px] / SigmaData) * std + mean;
-        }
-        if (_coarseHeightNoise > 0f) AddCoarseHeightNoise(output, i1, j1, s);
-        for (int px = 0; px < plane; px++) output[plane + px] = output[px] - output[plane + px];
-        CoarseConditioningSite.ApplyRelief(_sites, output, i1, j1, s);
-
-        int size = s;
-        if (!_pooling.IsNone)
-        {
-            output = Pool(output, channels, s, _pooling);
-            size = s / _pooling.Factor;
-            plane = size * size;
-        }
-
-        var result = new FloatTensor(new[] { channels + 1, size, size });
-        for (int ch = 0; ch < channels; ch++)
-            for (int px = 0; px < plane; px++)
-                result.Data[ch * plane + px] = output[ch * plane + px] * weights[px];
-        Array.Copy(weights, 0, result.Data, channels * plane, plane);
-        return result;
-    }
-
-    /// <summary>
-    /// Adds <see cref="_coarseHeightNoise"/> to the elevation channel of a denormalised coarse
-    /// output, before the fifth percentile is taken from it so the relief moves with it. The draw
-    /// is keyed to world position, so overlapping tiles agree and blend without seams. Land only,
-    /// faded in over the first <see cref="CoarseNoiseShoreRamp"/> above sea level, so it never
-    /// raises or sinks a coastline.
-    /// </summary>
-    private void AddCoarseHeightNoise(float[] output, int i1, int j1, int s)
-    {
-        float[] noise = GaussianNoisePatch.Generate(_seed + 7331, i1, j1, s, s, 1, s, s);
-        for (int px = 0; px < s * s; px++)
-        {
-            float elevation = output[px];
-            if (elevation <= 0f) continue;
-            float fade = Math.Min(1f, elevation / CoarseNoiseShoreRamp);
-            output[px] = Math.Max(0f, elevation + noise[px] * _coarseHeightNoise * fade);
-        }
-    }
-
-    /// <summary>
-    /// Pools a (channels, s, s) coarse output to (channels, s/n, s/n), as the reference's
-    /// <c>_pool_coarse_conditioning</c>: averages everywhere, or, for an extreme pool, the highest
-    /// elevation and the lowest fifth percentile in each block.
-    /// </summary>
-    private static float[] Pool(float[] input, int channels, int s, CoarsePooling pooling)
-    {
-        int n = pooling.Factor, size = s / n, plane = s * s, pooledPlane = size * size;
-        var output = new float[channels * pooledPlane];
-        for (int ch = 0; ch < channels; ch++)
-        {
-            bool max = pooling.Extreme && ch == 0, min = pooling.Extreme && ch == 1;
-            for (int pi = 0; pi < size; pi++)
-            for (int pj = 0; pj < size; pj++)
-            {
-                float acc = max ? float.MinValue : min ? float.MaxValue : 0f;
-                for (int di = 0; di < n; di++)
-                for (int dj = 0; dj < n; dj++)
-                {
-                    float v = input[ch * plane + (pi * n + di) * s + pj * n + dj];
-                    acc = max ? Math.Max(acc, v) : min ? Math.Min(acc, v) : acc + v;
-                }
-                output[ch * pooledPlane + pi * size + pj] = max || min ? acc : acc / (n * n);
-            }
-        }
-        return output;
-    }
-
-    // =====================================================================
-    // Latent stage
-    // =====================================================================
-
-    private InfiniteTensor BuildLatentStage()
-    {
-        const int s = LatentTileSize, st = LatentTileStride;
-        var outWindow = new TensorWindow(new[] { 6, s, s }, new[] { 6, st, st });
-        int mapChannels = _coarseChannels + 1;
-        var coarseWindow = new TensorWindow(new[] { mapChannels, 4, 4 }, new[] { mapChannels, 1, 1 }, new[] { 0, -1, -1 });
-        float[] weights = LinearWeightWindow(s);
-
-        float initialT = (float)Math.Atan(EdmScheduler.SigmaMax / SigmaData);
-        InfiniteTensor initialLatent = _tileStore.GetOrCreateBatched(
-            "init_latent_map", new int?[] { 6, null, null },
-            (windowIndices, args) => LatentBatch(windowIndices, null, args[0], initialT, 5819, weights),
-            outWindow, new[] { _coarse }, new[] { coarseWindow }, _latentBatchSize);
-
-        float intermediateT = _renoiseT;
-        return _tileStore.GetOrCreateBatched(
-            "step_latent_map_0", new int?[] { 6, null, null },
-            (windowIndices, args) => LatentBatch(windowIndices, args[0], args[1], intermediateT, 5820, weights),
-            outWindow, new[] { initialLatent, _coarse }, new[] { outWindow, coarseWindow }, _latentBatchSize);
-    }
-
-    private IReadOnlyList<FloatTensor> LatentBatch(IReadOnlyList<int[]> windowIndices,
-                                                   IReadOnlyList<FloatTensor> previousSamples,
-                                                   IReadOnlyList<FloatTensor> coarseSlices,
-                                                   float t, int seedOffset, float[] weights)
-    {
-        const int s = LatentTileSize, st = LatentTileStride;
-        int plane = s * s;
-        int batch = windowIndices.Count;
-        float cosT = (float)Math.Cos(t), sinT = (float)Math.Sin(t);
-
-        var xTPerItem = new float[batch][];
-        var modelInBatch = new float[batch * 5 * plane];
-        var condInputBatch = new float[batch * 58];
-
-        for (int b = 0; b < batch; b++)
-        {
-            int[] windowIndex = windowIndices[b];
-            int i1 = windowIndex[1] * st, j1 = windowIndex[2] * st;
-
-            // The coarse slice starts one map cell before the window (coarseWindow's offset).
-            CoarseConditioningSite.ApplyClimateToSlice(_sites, coarseSlices[b].Data, _coarseChannels,
-                windowIndex[1] - 1, windowIndex[2] - 1, 4, 4, _pooling.Factor);
-            float[] cond58 = BuildLatentConditioning(coarseSlices[b]);
-            Array.Copy(cond58, 0, condInputBatch, b * 58, 58);
-
-            var sample = new float[5 * plane];
-            if (previousSamples != null)
-            {
-                FloatTensor previous = previousSamples[b];
-                for (int ch = 0; ch < 5; ch++)
-                {
-                    for (int px = 0; px < plane; px++)
-                    {
-                        float w = previous.Data[5 * plane + px];
-                        sample[ch * plane + px] = w > 1e-6f ? previous.Data[ch * plane + px] / w * SigmaData : 0f;
-                    }
-                }
-            }
-
-            float[] noise = GaussianNoisePatch.Generate(_seed + (ulong)seedOffset, i1, j1, s, s, 5, s, s);
-            var xT = new float[5 * plane];
-            for (int k = 0; k < 5 * plane; k++)
-            {
-                xT[k] = cosT * sample[k] + sinT * (noise[k] * SigmaData);
-                modelInBatch[b * 5 * plane + k] = xT[k] / SigmaData;
-            }
-            xTPerItem[b] = xT;
-        }
-
-        var noiseLabels = new float[batch];
-        for (int b = 0; b < batch; b++) noiseLabels[b] = t;
-
-        InferencePreemption.ThrowIfPreempted();
-        float[] predictionBatch = _baseModel.RunModel(
-            modelInBatch, new long[] { batch, 5, s, s },
-            noiseLabels, new[] { condInputBatch }, new[] { new long[] { batch, 58 } });
-
-        var results = new List<FloatTensor>(batch);
-        for (int b = 0; b < batch; b++)
-        {
-            float[] xT = xTPerItem[b];
-            var output = new FloatTensor(new[] { 6, s, s });
-            for (int k = 0; k < 5 * plane; k++)
-            {
-                // The base model emits the negated prediction.
-                float prediction = -predictionBatch[b * 5 * plane + k];
-                float newSample = (cosT * xT[k] - sinT * SigmaData * prediction) / SigmaData;
-                output.Data[k] = newSample * weights[k % plane];
-            }
-            Array.Copy(weights, 0, output.Data, 5 * plane, plane);
-            results.Add(output);
-        }
-        return results;
-    }
-
-    /// <summary>
-    /// Builds the 58-value conditioning vector from a (channels + 1, 4, 4) coarse slice. Only the
-    /// annual channels reach the base model, whatever else the coarse model produced.
-    /// </summary>
-    private float[] BuildLatentConditioning(FloatTensor coarseSlice)
-    {
-        const int n = 16;
-
-        var condFlat = new float[6 * n];
-        for (int ch = 0; ch < 6; ch++)
-        {
-            for (int px = 0; px < n; px++)
-            {
-                float w = coarseSlice.Data[_coarseChannels * n + px];
-                condFlat[ch * n + px] = w > 1e-6f ? coarseSlice.Data[ch * n + px] / w : 0f;
-            }
-        }
-
-        var condImg7 = new float[7 * n];
-        for (int ch = 0; ch < 6; ch++)
-        {
-            for (int px = 0; px < n; px++)
-            {
-                float v = (condFlat[ch * n + px] - CondMeans[ch]) / CondStds[ch];
-                condImg7[ch * n + px] = float.IsNaN(v) ? 0f : v;
-            }
-        }
-        float maskNorm = (1.0f - CondMeans[6]) / CondStds[6];
-        for (int px = 0; px < n; px++) condImg7[6 * n + px] = maskNorm;
-
-        var meansCrop = new float[16];
-        Array.Copy(condImg7, 0, meansCrop, 0, 16);
-        var p5Crop = new float[16];
-        Array.Copy(condImg7, 16, p5Crop, 0, 16);
-        var maskCrop = new float[16];
-        Array.Copy(condImg7, 6 * 16, maskCrop, 0, 16);
-
-        var climateMeans = new float[4];
-        for (int ch = 0; ch < 4; ch++)
-        {
-            float sum = 0;
-            for (int r = 1; r < 3; r++)
-                for (int c = 1; c < 3; c++)
-                    sum += condImg7[(2 + ch) * 16 + r * 4 + c];
-            float mean = sum / 4f;
-            climateMeans[ch] = float.IsNaN(mean) ? 0f : mean;
-        }
-
-        // The conditioning is exact, so noise level 0. The model was trained to accept noisier
-        // conditioning at higher levels, but only up to 0.1 in these units - 0.005 of a standard
-        // deviation - so raising it changes the terrain by about 3 m (measured) and buys nothing.
-        float noiseLevelNorm = (0f - 0.5f) * (float)Math.Sqrt(12.0);
-
-        var output = new float[58];
-        int offset = 0;
-        offset = AppendScaled(output, offset, meansCrop, _mpConcatScales[0]);
-        offset = AppendScaled(output, offset, p5Crop, _mpConcatScales[1]);
-        offset = AppendScaled(output, offset, climateMeans, _mpConcatScales[2]);
-        offset = AppendScaled(output, offset, maskCrop, _mpConcatScales[3]);
-        offset = AppendScaled(output, offset, _histogramRaw, _mpConcatScales[4]);
-        output[offset] = noiseLevelNorm * _mpConcatScales[5];
-        return output;
-    }
-
-    // =====================================================================
-    // Decoder stage
-    // =====================================================================
-
-    private InfiniteTensor BuildDecoderStage()
-    {
-        const int s = DecoderTileSize, st = DecoderTileStride;
-        int lc = _latentCompression;
-        var outWindow = new TensorWindow(new[] { 2, s, s }, new[] { 2, st, st });
-        var inputWindow = new TensorWindow(new[] { 6, s / lc, s / lc }, new[] { 6, st / lc, st / lc });
-        float[] weights = LinearWeightWindow(s);
-        float t = (float)Math.Atan(EdmScheduler.SigmaMax / SigmaData);
-
-        // Deliberately not batched. The decoder is the widest graph in the pipeline and already
-        // saturates the GPU with one 256x256 window: batching four of them measured 5% slower for
-        // the same work, because there is no launch overhead left to hide.
-        return _tileStore.GetOrCreate("init_residual_map", new int?[] { 2, null, null },
-            (windowIndex, args) => DecoderTile(windowIndex, args[0], t, weights),
-            outWindow, new[] { _latents }, new[] { inputWindow });
-    }
-
-    private FloatTensor DecoderTile(int[] windowIndex, FloatTensor latentSlice, float t, float[] weights)
-    {
-        const int s = DecoderTileSize, st = DecoderTileStride;
-        int lc = _latentCompression;
-        int sl = s / lc;
-        int latentPlane = sl * sl;
-        int plane = s * s;
-        int i1 = windowIndex[1] * st, j1 = windowIndex[2] * st;
-        float cosT = (float)Math.Cos(t), sinT = (float)Math.Sin(t);
-
-        var latents = new float[4 * latentPlane];
-        for (int ch = 0; ch < 4; ch++)
-        {
-            for (int px = 0; px < latentPlane; px++)
-            {
-                float w = latentSlice.Data[5 * latentPlane + px];
-                latents[ch * latentPlane + px] = w > 1e-6f ? latentSlice.Data[ch * latentPlane + px] / w : 0f;
-            }
-        }
-
-        float[] noise = GaussianNoisePatch.Generate(_seed + 5819, i1, j1, s, s, 1, s, s);
-        var xT = new float[plane];
-        var modelIn = new float[5 * plane];
-        for (int k = 0; k < plane; k++)
-        {
-            xT[k] = sinT * noise[k] * SigmaData; // the sample starts at zero
-            modelIn[k] = xT[k] / SigmaData;
-        }
-
-        // Straight into the model input rather than through a 4 x 256 x 256 staging buffer: that is
-        // a megabyte of copying for every window the decoder produces.
-        NearestUpsampleInto(latents, 4, sl, sl, s, s, modelIn, plane);
-
-        InferencePreemption.ThrowIfPreempted();
-        float[] rawPrediction = _decoderModel.RunModel(modelIn, new long[] { 1, 5, s, s }, new[] { t }, null, null);
-
-        var result = new FloatTensor(new[] { 2, s, s });
-        for (int k = 0; k < plane; k++)
-        {
-            // The decoder also emits the negated prediction.
-            float prediction = -rawPrediction[k];
-            float newSample = (cosT * xT[k] - sinT * SigmaData * prediction) / SigmaData;
-            result.Data[k] = newSample * weights[k];
-        }
-        Array.Copy(weights, 0, result.Data, plane, plane);
-        return result;
-    }
-
-    // =====================================================================
-    // Public sampling API
-    // =====================================================================
-
-    /// <summary>Structure sites' basin depth over a factory window (x along J, y along I).</summary>
-    private float[] SiteBasins(int x1, int y1, int x2, int y2) => CoarseConditioningSite.BasinDepths(_sites, x1, y1, x2, y2);
-
-    /// <summary>
-    /// The conditioning the coarse stage is handed at one cell, in real units and before it is
-    /// normalised and stirred into noise: [elevation m, temperature C, BIO4, precipitation mm,
-    /// BIO15]. For the debug map, so what the model was asked for can be read against what it
-    /// produced.
-    ///
-    /// Coordinates are swapped on the way in, the same way <see cref="CoarseTile"/> swaps them.
-    /// </summary>
-    public float[] CoarseConditioningAt(int i, int j)
-    {
-        // The conditioning is in the coarse model's own grid, n times finer than the world's coarse
-        // cells under pooling; read the pixel at the middle of this cell.
-        int n = _pooling.Factor;
-        int ci = i * n + n / 2, cj = j * n + n / 2;
-        float[] synthetic = _syntheticMapFactory.Sample(cj, ci, cj + 1, ci + 1);
-
-        // Channel 0 arrives in signed square-root space, which is not a number anyone can read.
-        float e = synthetic[0];
-        synthetic[0] = Math.Sign(e) * e * e;
-        return synthetic;
-    }
-
-    /// <summary>How much of one coarse cell the world's ocean map calls sea, or null without one.</summary>
-    public float? SeaFractionAt(int i, int j)
-    {
-        int n = _pooling.Factor;
-        float[] sea = _landmask?.SeaFraction(j * n, i * n, (j + 1) * n, (i + 1) * n);
-        if (sea is not { Length: > 0 }) return null;
-
-        float sum = 0f;
-        foreach (float v in sea) sum += v;
-        return sum / sea.Length;
-    }
-
-    /// <summary>
-    /// The coarse map over [ci0, ci1) x [cj0, cj1): <see cref="CoarseSpec"/>'s channels, each
-    /// multiplied by the blend weight, then the weight itself at <see cref="CoarseModelSpec.WeightChannel"/>.
-    /// </summary>
-    public FloatTensor GetCoarseSlice(int ci0, int cj0, int ci1, int cj1)
-    {
-        FloatTensor slice = _coarse.GetSlice(new[] { 0, ci0, cj0 }, new[] { _coarseChannels + 1, ci1, cj1 });
-        CoarseConditioningSite.ApplyClimateToSlice(_sites, slice.Data, _coarseChannels, ci0, cj0, ci1 - ci0, cj1 - cj0, _pooling.Factor);
-        return slice;
-    }
-
-    /// <summary>Result of sampling the pipeline over a native-pixel window.</summary>
-    public readonly struct Sample
-    {
-        /// <summary>Elevation in metres, row-major (H * W).</summary>
-        public readonly float[] Elevation;
-
-        /// <summary>
-        /// Climate channels, row-major (planes * H * W), indexed by <see cref="ClimatePlane"/>: mean
-        /// temperature (C), temperature seasonality, annual precipitation (mm), precipitation
-        /// seasonality, the local lapse rate (K/m), and for a seasonal coarse model the six cycle
-        /// channels and the diurnal range. Null when climate was not requested.
-        /// </summary>
-        public readonly float[] Climate;
-
-        public Sample(float[] elevation, float[] climate)
-        {
-            Elevation = elevation;
-            Climate = climate;
-        }
-    }
-
-    /// <summary>Samples elevation (and optionally climate) over the half-open window [i1,i2) x [j1,j2).</summary>
-    public Sample Get(int i1, int j1, int i2, int j2, bool withClimate)
-    {
-        float[] elevation = ComputeElevation(i1, j1, i2, j2);
-        int h = i2 - i1, w = j2 - j1;
-        float[] climate = withClimate ? ComputeClimate(i1, j1, i2, j2, elevation, h, w) : null;
-        return new Sample(elevation, climate);
-    }
-
-    private float[] ComputeElevation(int i1, int j1, int i2, int j2)
-    {
-        int lc = _latentCompression;
-        const float sigma = 5.0f;
-        int kernelSize = ((int)(sigma * 2) / 2) * 2 + 1;
-        int padLowRes = kernelSize / 2 + 1;
-        int padHighRes = padLowRes * lc;
-
-        int pi1 = FloorDiv(i1 - padHighRes, lc) * lc;
-        int pj1 = FloorDiv(j1 - padHighRes, lc) * lc;
-        int pi2 = -FloorDiv(-(i2 + padHighRes), lc) * lc;
-        int pj2 = -FloorDiv(-(j2 + padHighRes), lc) * lc;
-        int ph = pi2 - pi1, pw = pj2 - pj1;
-
-        FloatTensor residualSlice = _residual.GetSlice(new[] { 0, pi1, pj1 }, new[] { 2, pi2, pj2 });
-        var residual = new float[ph][];
-        for (int r = 0; r < ph; r++)
-        {
-            residual[r] = new float[pw];
-            for (int c = 0; c < pw; c++)
-            {
-                int idx = r * pw + c;
-                float w = residualSlice.Data[ph * pw + idx];
-                float v = w > 1e-6f ? residualSlice.Data[idx] / w : 0f;
-                residual[r][c] = v * _residualStd + _residualMean;
-            }
-        }
-
-        int lh = ph / lc, lw = pw / lc;
-        FloatTensor latentSlice = _latents.GetSlice(
-            new[] { 0, pi1 / lc, pj1 / lc }, new[] { 6, pi2 / lc, pj2 / lc });
-        var lowFrequency = new float[lh][];
-        for (int r = 0; r < lh; r++)
-        {
-            lowFrequency[r] = new float[lw];
-            for (int c = 0; c < lw; c++)
-            {
-                int idx = r * lw + c;
-                float w = latentSlice.Data[5 * lh * lw + idx];
-                float v = w > 1e-6f ? latentSlice.Data[4 * lh * lw + idx] / w : 0f;
-                lowFrequency[r][c] = v * LowFreqStd + LowFreqMean;
-            }
-        }
-
-        float[][] newLowRes = LaplacianUtils.LaplacianDenoise(residual, lowFrequency, sigma);
-        float[][] elevationPadded = LaplacianUtils.LaplacianDecode(residual, newLowRes);
-
-        int oi = i1 - pi1, oj = j1 - pj1, h = i2 - i1, w2 = j2 - j1;
-        var flat = new float[h * w2];
-        for (int r = 0; r < h; r++)
-        {
-            float[] row = elevationPadded[oi + r];
-            for (int c = 0; c < w2; c++)
-            {
-                // Elevation is modelled as a signed square root; undo it here.
-                float es = row[oj + c];
-                flat[r * w2 + c] = Math.Sign(es) * es * es;
-            }
-        }
-        return flat;
-    }
-
-    private float[] ComputeClimate(int i1, int j1, int i2, int j2, float[] elevation, int h, int w)
-    {
-        int s = 32 * _latentCompression; // native pixels covered by one coarse pixel
-
-        int ci1 = FloorDiv(i1, s);
-        int cj1 = FloorDiv(j1, s);
-        int ci2 = -FloorDiv(-i2, s);
-        int cj2 = -FloorDiv(-j2, s);
-
-        const int window = 15;
-        const int pad = (window - 1) / 2 + 1;
-
-        int channels = _coarseChannels;
-
-        // Fetched wider by the coast fill's reach, so every cell kept below sees all the land the
-        // fill looks at whichever tile asks, and then cropped back.
-        const int margin = CoastFill.Radius;
-        FloatTensor coarseSlice = _coarse.GetSlice(
-            new[] { 0, ci1 - pad - margin, cj1 - pad - margin },
-            new[] { channels + 1, ci2 + pad + margin, cj2 + pad + margin });
-        int fh = ci2 - ci1 + 2 * (pad + margin), fw = cj2 - cj1 + 2 * (pad + margin);
-        int fetchedPlane = fh * fw;
-        var fetched = new float[channels][];
-        for (int ch = 0; ch < channels; ch++)
-        {
-            fetched[ch] = new float[fetchedPlane];
-            for (int px = 0; px < fetchedPlane; px++)
-            {
-                float weight = coarseSlice.Data[channels * fetchedPlane + px];
-                fetched[ch][px] = weight > 1e-6f ? coarseSlice.Data[ch * fetchedPlane + px] / weight : 0f;
-            }
-        }
-
-        // The model's climate over the sea is filler; give the sea its shore's climate before any
-        // of it is spread onto land (see CoastFill).
-        if (_coastFill) CoastFill.Apply(fetched, fh, fw);
-
-        int ch2 = ci2 + pad - (ci1 - pad);
-        int cw = cj2 + pad - (cj1 - pad);
-        int coarsePlane = ch2 * cw;
-        var coarseMap = new float[channels][];
-        for (int ch = 0; ch < channels; ch++)
-        {
-            coarseMap[ch] = new float[coarsePlane];
-            for (int r = 0; r < ch2; r++)
-                Array.Copy(fetched[ch], (r + margin) * fw + margin, coarseMap[ch], r * cw, cw);
-        }
-
-        // Coarse elevation with the sqrt undone; ocean pixels clamp to zero as in Python.
-        var coarseElevation = new float[coarsePlane];
-        for (int px = 0; px < coarsePlane; px++)
-        {
-            float v = Math.Max(0f, coarseMap[0][px]);
-            coarseElevation[px] = v * v;
-        }
-
-        float[][][] lapse = LaplacianUtils.LocalBaselineTemperature(
-            To2D(coarseMap[2], ch2, cw), To2D(coarseElevation, ch2, cw), window, 0.02f);
-        int lh = lapse[0].Length, lw = lapse[0][0].Length;
-
-        const int centralPad = window / 2;
-        int cenH = ch2 - 2 * centralPad, cenW = cw - 2 * centralPad;
-        var centralCoarse = new float[channels][][];
-        for (int ch = 0; ch < channels; ch++)
-        {
-            centralCoarse[ch] = CropArray(To2D(coarseMap[ch], ch2, cw), centralPad, centralPad, cenH, cenW);
-        }
-
-        int planes = ClimatePlane.CountFor(_coarseSpec);
-        var climate = new float[planes * h * w];
-
-        // Story structure climates, per column; in coarse model pixels, a native pixel is n / s.
-        float toModel = (float)_pooling.Factor / s;
-        List<CoarseConditioningSite> sites = CoarseConditioningSite.ClimateSitesNear(
-            _sites, i1 * toModel, j1 * toModel, (i1 + h) * toModel, (j1 + w) * toModel);
-        int plane = h * w;
-        for (int r = 0; r < h; r++)
-        {
-            float gridY = (i1 + r + 0.5f) / s - ci1 + 0.5f;
-            for (int c = 0; c < w; c++)
-            {
-                float gridX = (j1 + c + 0.5f) / s - cj1 + 0.5f;
-                int idx = r * w + c;
-
-                float tBase = BilinearSample2D(lapse[0], lh, lw, gridY, gridX);
-                // Altitude cooling adds to the model's own fitted rate rather than scaling it: that
-                // rate is often shallow, a few degrees a kilometre, and tripling it barely showed,
-                // while the air above the ground cooled at the game-side reference rate times the
-                // setting. Extra cooling at the reference rate keeps the two the same.
-                float beta = BilinearSample2D(lapse[1], lh, lw, gridY, gridX)
-                             - (_altitudeCooling - 1f) * ClimateScale.ReferenceLapseCPerKm / 1000f;
-
-                climate[idx] = tBase + beta * Math.Max(0f, elevation[idx]);
-                climate[plane + idx] = BilinearSample2D(centralCoarse[3], cenH, cenW, gridY, gridX);
-                climate[2 * plane + idx] = BilinearSample2D(centralCoarse[4], cenH, cenW, gridY, gridX);
-                climate[3 * plane + idx] = BilinearSample2D(centralCoarse[5], cenH, cenW, gridY, gridX);
-                climate[4 * plane + idx] = beta;
-                if (sites != null)
-                {
-                    float coarseTemperature = BilinearSample2D(centralCoarse[2], cenH, cenW, gridY, gridX);
-                    CoarseConditioningSite.BlendColumn(sites, (i1 + r + 0.5f) * toModel, (j1 + c + 0.5f) * toModel,
-                        coarseTemperature, climate, plane, idx);
-                }
-
-                // The cycle channels and the diurnal range are as smooth as the coarse map; only
-                // temperature has detail at this resolution.
-                for (int k = ClimatePlane.TemperatureShapeCos; k < planes; k++)
-                {
-                    int coarseChannel = k - ClimatePlane.TemperatureShapeCos + CoarseChannel.TemperatureShapeCos;
-                    climate[k * plane + idx] = BilinearSample2D(centralCoarse[coarseChannel], cenH, cenW, gridY, gridX);
-                }
-            }
-        }
-        return climate;
-    }
-
-    // =====================================================================
-    // Helpers
-    // =====================================================================
-
-    internal static float[] LinearWeightWindow(int size)
-    {
-        var weights = new float[size * size];
-        float mid = (size - 1) / 2.0f;
-        const float eps = 1e-3f;
-        for (int r = 0; r < size; r++)
-        {
-            float wy = 1f - (1f - eps) * Math.Min(1f, Math.Abs(r - mid) / mid);
-            for (int c = 0; c < size; c++)
-            {
-                float wx = 1f - (1f - eps) * Math.Min(1f, Math.Abs(c - mid) / mid);
-                weights[r * size + c] = wy * wx;
-            }
-        }
-        return weights;
-    }
-
-    private static int AppendScaled(float[] output, int offset, float[] values, float scale)
-    {
-        foreach (float v in values) output[offset++] = v * scale;
-        return offset;
-    }
-
-    internal static float[] NearestUpsample(float[] source, int channels, int sh, int sw, int dh, int dw)
-    {
-        var destination = new float[channels * dh * dw];
-        NearestUpsampleInto(source, channels, sh, sw, dh, dw, destination, 0);
-        return destination;
-    }
-
-    /// <summary>
-    /// Nearest-neighbour upsample written straight into <paramref name="destination"/> at
-    /// <paramref name="offset"/>. The column mapping repeats for every row, so it is computed once
-    /// and reused rather than divided per pixel.
-    /// </summary>
-    internal static void NearestUpsampleInto(float[] source, int channels, int sh, int sw,
-                                             int dh, int dw, float[] destination, int offset)
-    {
-        var columnMap = new int[dw];
-        for (int col = 0; col < dw; col++) columnMap[col] = col * sw / dw;
-
-        for (int c = 0; c < channels; c++)
-        {
-            for (int r = 0; r < dh; r++)
-            {
-                int sr = r * sh / dh;
-                int dstRow = offset + c * dh * dw + r * dw;
-                int srcRow = c * sh * sw + sr * sw;
-                for (int col = 0; col < dw; col++)
-                    destination[dstRow + col] = source[srcRow + columnMap[col]];
-            }
-        }
-    }
-
-    internal static float[][] To2D(float[] flat, int h, int w)
-    {
-        var a = new float[h][];
-        for (int r = 0; r < h; r++)
-        {
-            a[r] = new float[w];
-            Array.Copy(flat, r * w, a[r], 0, w);
-        }
-        return a;
-    }
-
-    private static float[][] CropArray(float[][] source, int r0, int c0, int h, int w)
-    {
-        var output = new float[h][];
-        for (int r = 0; r < h; r++)
-        {
-            output[r] = new float[w];
-            Array.Copy(source[r + r0], c0, output[r], 0, w);
-        }
-        return output;
-    }
-
-    internal static float BilinearSample2D(float[][] source, int h, int w, float gy, float gx)
-    {
-        float y = Math.Clamp(gy, 0f, h - 1f);
-        float x = Math.Clamp(gx, 0f, w - 1f);
-        int y0 = (int)y, y1 = Math.Min(h - 1, y0 + 1);
-        int x0 = (int)x, x1 = Math.Min(w - 1, x0 + 1);
-        float wy = y - y0, wx = x - x0;
-        return (1 - wy) * (1 - wx) * source[y0][x0] + (1 - wy) * wx * source[y0][x1]
-             + wy * (1 - wx) * source[y1][x0] + wy * wx * source[y1][x1];
     }
 }
