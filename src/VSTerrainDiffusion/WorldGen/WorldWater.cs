@@ -66,6 +66,38 @@ public sealed partial class WorldWater : IDisposable
     /// <summary>Tiles waiting for the water above which pregeneration pauses.</summary>
     public const int PregenBacklogLimit = 24;
 
+    /// <summary>
+    /// Width in metres of the largest lake fill window from water version 2: the library's default 7 x 7
+    /// tiles at the 15 m cells it was tuned on.
+    /// </summary>
+    private const double FillReachMeters = (2 * RiverGraphSettings.DefaultMaxFillRadius + 1) * TileBlocks * 15.0;
+
+    /// <summary>The most rings of tiles the library lets a lake fill grow to.</summary>
+    private const int LibraryMaxFillRadius = 8;
+
+    /// <summary>
+    /// The most rings of tiles a lake fill may grow to before a lake still decided by the window edge is
+    /// cut off at a tile seam.
+    /// </summary>
+    /// <remarks>
+    /// A lake spans more cells at a finer resolution, so from water version 2 the window keeps the same
+    /// width in metres as the library's default at 15 m: 3 rings at 15 m and coarser, 5 at 10 m, 7 at
+    /// 7.5 m, and the library's limit of 8 at 6 m and finer. Version 1 always used the default, 3.
+    /// Widening only happens for the tiles a lake needs it for.
+    /// </remarks>
+    /// <param name="waterVersion">The world's water version.</param>
+    /// <param name="metersPerBlock">Horizontal metres per block.</param>
+    /// <returns>Rings of tiles around the tile, 3 to 8.</returns>
+    public static int FillRadius(int waterVersion, float metersPerBlock)
+    {
+        if (waterVersion < 2 || metersPerBlock <= 0f) return RiverGraphSettings.DefaultMaxFillRadius;
+
+        // Tiles across the window, rounded up to an odd count centred on the tile.
+        double tilesAcross = FillReachMeters / (TileBlocks * (double)metersPerBlock);
+        int radius = (int)Math.Ceiling((tilesAcross - 1.0) / 2.0 - 1e-9);
+        return Math.Clamp(radius, RiverGraphSettings.DefaultMaxFillRadius, LibraryMaxFillRadius);
+    }
+
     /// <summary>The world's terrain.</summary>
     private readonly TerrainDiffusionProvider _provider;
 
@@ -172,7 +204,7 @@ public sealed partial class WorldWater : IDisposable
             Seed = seed,
             LakeCells = TileBlocks * TileBlocks,
             FillMargin = null,
-            MaxFillRadius = RiverGraphSettings.DefaultMaxFillRadius,
+            MaxFillRadius = FillRadius(settings.WaterVersion, settings.MetersPerBlock),
             FlatGroundWeight = RiverGraphSettings.DefaultFlatGroundWeight,
             DischargeCap = RiverGraphSettings.DefaultDischargeCap,
             Meander = settings.MeanderSinuosity <= 1f ? null : new MeanderSettings

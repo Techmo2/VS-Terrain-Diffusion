@@ -54,8 +54,15 @@ public static class WorldValuePins
     /// <summary>The water library version the world's water was made with.</summary>
     public const string WaterVersionCode = "terraindiffusionWaterVersion";
 
-    /// <summary>The water library version new worlds are made with; bump it when the library changes the water.</summary>
-    public const int CurrentWaterVersion = 1;
+    /// <summary>
+    /// The water version new worlds are made with; bump it when the library or its settings change the water.
+    /// </summary>
+    /// <remarks>
+    /// 1: lake fills grow to at most 7 x 7 tiles at any resolution.
+    /// 2: the most a lake fill grows to scales with resolution (<see cref="WorldGen.WorldWater.FillRadius"/>).
+    /// Every version listed is reproduced exactly, so a world keeps the water it was made with.
+    /// </remarks>
+    public const int CurrentWaterVersion = 2;
 
     /// <summary>
     /// Water settings with their defaults (the same as worldconfig.json's), pinned so that a later
@@ -212,7 +219,8 @@ public static class WorldValuePins
 
         foreach ((string code, string value) in PinnedWaterDefaults) PinIfMissing(world, code, value);
 
-        PinIfMissing(world, WaterVersionCode, CurrentWaterVersion.ToString(CultureInfo.InvariantCulture));
+        // A world without a water version predates it: its water was made as version 1 makes it.
+        PinIfMissing(world, WaterVersionCode, (save.IsNew ? CurrentWaterVersion : 1).ToString(CultureInfo.InvariantCulture));
     }
 
     /// <summary>

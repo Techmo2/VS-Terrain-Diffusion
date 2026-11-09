@@ -547,7 +547,8 @@ public class TerrainDiffusionModSystem : ModSystem
             return null;
         }
 
-        if (_settings.WaterVersion != WorldValuePins.CurrentWaterVersion)
+        // Every earlier version is reproduced exactly; only a newer mod's water cannot be.
+        if (_settings.WaterVersion > WorldValuePins.CurrentWaterVersion)
         {
             _api.Logger.Warning(
                 "[{0}] This world's water was made with water version {1}, and this version of the mod makes version {2}: " +
