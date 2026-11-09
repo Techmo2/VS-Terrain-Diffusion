@@ -16,4 +16,17 @@ public static class IntMath
         if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
         return q;
     }
+
+    /// <summary>
+    /// <paramref name="a"/> modulo <paramref name="b"/>, never negative for a positive divisor, so
+    /// a coordinate's offset within its cell is the same either side of 0 (-1 mod 32 is 31).
+    /// </summary>
+    /// <param name="a">The dividend.</param>
+    /// <param name="b">The divisor; positive.</param>
+    /// <returns>A value in [0, <paramref name="b"/>).</returns>
+    public static int FloorMod(int a, int b)
+    {
+        int m = a % b;
+        return m < 0 ? m + b : m;
+    }
 }

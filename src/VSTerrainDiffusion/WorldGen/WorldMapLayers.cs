@@ -22,15 +22,33 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public sealed class WorldMapLayers
 {
+    /// <summary>
+    /// The layer fields are public on <see cref="GenMaps"/> but may not be on a replacement.
+    /// </summary>
     private const BindingFlags FieldFlags =
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
+    /// <summary>The object holding the layers.</summary>
     private readonly object _owner;
+
+    /// <summary>Its <c>oceanGen</c> field, or null.</summary>
     private readonly FieldInfo _ocean;
+
+    /// <summary>Its <c>climateGen</c> field.</summary>
     private readonly FieldInfo _climate;
+
+    /// <summary>Its <c>forestGen</c> field, or null.</summary>
     private readonly FieldInfo _forest;
+
+    /// <summary>Its <c>bushGen</c> field, or null.</summary>
     private readonly FieldInfo _bush;
 
+    /// <summary>Built by <see cref="For"/>.</summary>
+    /// <param name="owner">See <see cref="_owner"/>.</param>
+    /// <param name="ocean">See <see cref="_ocean"/>.</param>
+    /// <param name="climate">See <see cref="_climate"/>.</param>
+    /// <param name="forest">See <see cref="_forest"/>.</param>
+    /// <param name="bush">See <see cref="_bush"/>.</param>
     private WorldMapLayers(object owner, FieldInfo ocean, FieldInfo climate, FieldInfo forest, FieldInfo bush)
     {
         _owner = owner;
@@ -46,24 +64,30 @@ public sealed class WorldMapLayers
     /// <summary>True when the layers are vanilla's own, rather than a replacement generator's.</summary>
     public bool IsVanilla => _owner is GenMaps;
 
+    /// <summary>The ocean map layer; null when the owner has none. Setting it replaces the owner's.</summary>
     public MapLayerBase Ocean
     {
         get => Get(_ocean);
         set => Set(_ocean, value);
     }
 
+    /// <summary>The climate map layer. Setting it replaces the owner's.</summary>
     public MapLayerBase Climate
     {
         get => Get(_climate);
         set => Set(_climate, value);
     }
 
+    /// <summary>
+    /// The forest map layer; null when the owner has none. Setting it replaces the owner's.
+    /// </summary>
     public MapLayerBase Forest
     {
         get => Get(_forest);
         set => Set(_forest, value);
     }
 
+    /// <summary>The shrub map layer; null when the owner has none. Setting it replaces the owner's.</summary>
     public MapLayerBase Bush
     {
         get => Get(_bush);
@@ -113,13 +137,16 @@ public sealed class WorldMapLayers
             LayerField(candidate, "bushGen"));
     }
 
+    /// <summary>The named field of <paramref name="owner"/>'s type, if it holds a map layer.</summary>
     private static FieldInfo LayerField(object owner, string name)
     {
         FieldInfo field = owner.GetType().GetField(name, FieldFlags);
         return field != null && typeof(MapLayerBase).IsAssignableFrom(field.FieldType) ? field : null;
     }
 
+    /// <summary>Reads a layer field; null when the field is missing.</summary>
     private MapLayerBase Get(FieldInfo field) => field?.GetValue(_owner) as MapLayerBase;
 
+    /// <summary>Writes a layer field; nothing when the field is missing.</summary>
     private void Set(FieldInfo field, MapLayerBase value) => field?.SetValue(_owner, value);
 }

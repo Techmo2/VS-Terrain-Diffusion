@@ -28,25 +28,52 @@ public sealed class TilePregenerator : IDisposable
     /// <summary>How often <see cref="Progress"/> is raised while the job runs.</summary>
     public static readonly TimeSpan ProgressInterval = TimeSpan.FromSeconds(10);
 
+    /// <summary>The world's terrain, which stores what it generates.</summary>
     private readonly TerrainDiffusionProvider _provider;
+
+    /// <summary>The server log.</summary>
     private readonly ILogger _logger;
+
+    /// <summary>Tile coordinates to pregenerate, nearest first.</summary>
     private readonly (int X, int Z)[] _tiles;
 
     /// <summary>Block positions whose coarse windows are pregenerated, nearest first.</summary>
     private readonly (int X, int Z)[] _coarse;
+
+    /// <summary>Cancelled by <see cref="Stop"/> and <see cref="Dispose"/>.</summary>
     private readonly CancellationTokenSource _stop = new();
+
+    /// <summary>Runs the job.</summary>
     private readonly Thread _thread;
 
+    /// <summary>Tiles passed so far, stored before or generated now.</summary>
     private int _done;
+
+    /// <summary>Tiles the job generated, as opposed to found stored.</summary>
     private long _generated;
+
+    /// <summary>Time spent generating those, in Stopwatch ticks.</summary>
     private long _generateTicks;
+
+    /// <summary>Coarse areas passed so far.</summary>
     private int _coarseDone;
+
+    /// <summary>Coarse areas the job computed.</summary>
     private long _coarseComputed;
+
+    /// <summary>Time spent computing those, in Stopwatch ticks.</summary>
     private long _coarseTicks;
+
+    /// <summary>Why the job failed, or null.</summary>
     private volatile string _failure;
 
+    /// <summary>Block X the job centres on.</summary>
     public int CentreX { get; }
+
+    /// <summary>Block Z the job centres on.</summary>
     public int CentreZ { get; }
+
+    /// <summary>Radius, in blocks, of the disc whose chunks the tiles cover.</summary>
     public int RadiusBlocks { get; }
 
     /// <summary>
@@ -62,6 +89,7 @@ public sealed class TilePregenerator : IDisposable
     /// <summary>Coarse areas the job covers after the tiles.</summary>
     public int CoarseAreaCount => _coarse.Length;
 
+    /// <summary>Whether the job's thread is still running.</summary>
     public bool IsRunning => _thread.IsAlive;
 
     /// <summary>Asked to stop, and still finishing the tile it is on.</summary>
@@ -80,6 +108,12 @@ public sealed class TilePregenerator : IDisposable
     /// </summary>
     public event Action<TilePregenerator> Progress;
 
+    /// <summary>Plans a job; nothing runs until <see cref="Start"/>.</summary>
+    /// <param name="provider">The world's terrain, which stores what it generates.</param>
+    /// <param name="logger">The server log.</param>
+    /// <param name="centreX">Block X to centre on.</param>
+    /// <param name="centreZ">Block Z to centre on.</param>
+    /// <param name="radiusBlocks">Radius of the disc whose chunks the tiles cover.</param>
     /// <param name="regionSize">The world's map region size in blocks, 512 in Vintage Story.</param>
     public TilePregenerator(TerrainDiffusionProvider provider, ILogger logger, int centreX, int centreZ, int radiusBlocks,
                             int regionSize)
@@ -160,11 +194,15 @@ public sealed class TilePregenerator : IDisposable
     /// <summary>While this returns true the job waits before its next tile (the water catching up).</summary>
     public Func<bool> Hold { get; set; }
 
+    /// <summary>Starts the job on its own thread.</summary>
     public void Start() => _thread.Start();
 
     /// <summary>Asks the job to stop after the tile it is on.</summary>
     public void Stop() => _stop.Cancel();
 
+    /// <summary>
+    /// The job: tiles, then coarse areas, logging the start and the end and raising <see cref="Finished"/>.
+    /// </summary>
     private void Run()
     {
         _logger.Notification(
@@ -218,6 +256,7 @@ public sealed class TilePregenerator : IDisposable
         }
     }
 
+    /// <summary>Raises <see cref="Progress"/> from the timer, unless the job is stopping.</summary>
     private void RaiseProgress()
     {
         if (_stop.IsCancellationRequested) return;
@@ -257,6 +296,7 @@ public sealed class TilePregenerator : IDisposable
     /// <summary>A count with thousands separators, the same on every machine.</summary>
     public static string Count(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
 
+    /// <summary>A duration in the largest sensible unit: seconds, minutes, hours or days.</summary>
     public static string DescribeDuration(double seconds) => seconds switch
     {
         < 90 => $"{seconds:0} s",

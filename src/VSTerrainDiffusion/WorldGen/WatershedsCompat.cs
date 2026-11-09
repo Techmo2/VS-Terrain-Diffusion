@@ -58,28 +58,49 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class WatershedsCompat
 {
+    /// <summary>Watersheds' mod ID.</summary>
     public const string WatershedsModId = "watersheds";
 
+    /// <summary>Watersheds' terrain generator, by full name.</summary>
     private const string GenTerraTypeName = "Watersheds.WorldGen.Terrain.WatershedsGenTerra";
+
+    /// <summary>Watersheds' height sampler, by full name.</summary>
     private const string SamplerTypeName = "Watersheds.WorldGen.Terrain.GenTerraSampler";
 
+    /// <summary>Owns the patches, so <see cref="Uninstall"/> removes only these.</summary>
     private const string HarmonyId = DiffusionPaths.ModId + ".watersheds";
 
+    /// <summary>The patcher, while installed.</summary>
     private static Harmony _harmony;
 
+    /// <summary>The server, while installed.</summary>
     private static ICoreServerAPI _api;
+
+    /// <summary>The world's terrain, which answers every height query.</summary>
     private static TerrainDiffusionProvider _provider;
+
+    /// <summary>Highest Y a column's ground may reach: two below the world ceiling.</summary>
     private static int _maxTerrainY;
+
+    /// <summary>The fresh water block, which a column above sea level is told to hold.</summary>
     private static int _freshWaterId;
+
+    /// <summary>The salt water block, which a column the model put below sea level is told to hold.</summary>
     private static int _saltWaterId;
 
     /// <summary>The <c>columnResults</c> scratch array and the two fields of its element struct.</summary>
     private static FieldInfo _columnResultsField;
+
+    /// <summary><c>ColumnBlockSolidities</c> on the column result struct.</summary>
     private static FieldInfo _soliditiesField;
+
+    /// <summary><c>WaterBlockID</c> on the column result struct.</summary>
     private static FieldInfo _waterBlockIdField;
 
     /// <summary>Reads X and Z off a boxed <c>WorldMapCoordinate</c>, whose type we cannot name.</summary>
     private static Func<object, int> _coordinateX;
+
+    /// <summary>See <see cref="_coordinateX"/>.</summary>
     private static Func<object, int> _coordinateZ;
 
     /// <summary>
@@ -101,10 +122,13 @@ public static class WatershedsCompat
     [ThreadStatic]
     private static TerrainTile _tile;
 
-
+    /// <summary>A chunk column's coordinates, boxed so <see cref="CurrentChunk"/> can carry them.</summary>
     private sealed class ChunkRef
     {
+        /// <summary>Chunk X.</summary>
         public int X;
+
+        /// <summary>Chunk Z.</summary>
         public int Z;
     }
 
@@ -183,6 +207,9 @@ public static class WatershedsCompat
         return true;
     }
 
+    /// <summary>
+    /// Prefixes <paramref name="target"/> with this class's method <paramref name="prefixName"/>.
+    /// </summary>
     private static void Patch(MethodInfo target, string prefixName)
     {
         _harmony.Patch(target, prefix: new HarmonyMethod(
@@ -361,6 +388,10 @@ public static class WatershedsCompat
         return _coordinateX != null && _coordinateZ != null;
     }
 
+    /// <summary>
+    /// Reads an int property or field by name off an instance of <paramref name="type"/>, or null when it has
+    /// neither.
+    /// </summary>
     private static Func<object, int> MemberReader(Type type, string name)
     {
         PropertyInfo property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
@@ -394,6 +425,10 @@ public static class WatershedsCompat
         return true;
     }
 
+    /// <summary>
+    /// Finds <c>heightDisplacementFromStream</c> in the stream height query's arguments; false when it is
+    /// gone.
+    /// </summary>
     private static bool ResolveStreamDisplacementArgument(MethodInfo heightQuery)
     {
         ParameterInfo[] parameters = heightQuery.GetParameters();

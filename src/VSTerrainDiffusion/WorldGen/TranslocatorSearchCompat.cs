@@ -41,10 +41,16 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class TranslocatorSearchCompat
 {
+    /// <summary>Owns the patches, so <see cref="Uninstall"/> removes only these.</summary>
     private const string HarmonyId = "vsterraindiffusion.translocatorsearch";
 
+    /// <summary>The patcher, while installed.</summary>
     private static Harmony _harmony;
+
+    /// <summary>The server, while installed.</summary>
     private static ICoreServerAPI _api;
+
+    /// <summary>The world's terrain, asked whether a candidate's terrain is stored.</summary>
     private static TerrainDiffusionProvider _provider;
 
     /// <summary>The translocator whose search tick is running on this thread, if any.</summary>
@@ -53,9 +59,16 @@ public static class TranslocatorSearchCompat
     /// <summary>True while the patches are in place.</summary>
     public static bool Installed { get; private set; }
 
+    /// <summary>Chunk peeks run.</summary>
     private static long _peeks;
+
+    /// <summary>Stalled searches the watchdog restarted.</summary>
     private static long _rearms;
+
+    /// <summary>Region seasonality maps not built for a peek.</summary>
     private static long _regionMapsSkipped;
+
+    /// <summary>Candidates passed over because their terrain was not stored.</summary>
     private static long _unstoredSkipped;
 
     /// <summary>What the translocator search has cost and what was saved, for <c>/tdiff status</c>.</summary>
@@ -67,9 +80,16 @@ public static class TranslocatorSearchCompat
     /// <summary>Counted by the map region handler when it declines to build a map for a peek.</summary>
     public static void CountRegionMapSkipped() => Interlocked.Increment(ref _regionMapsSkipped);
 
+    /// <summary>What the watchdog knows about one translocator's search.</summary>
     private sealed class SearchState
     {
+        /// <summary>
+        /// When the current wait began, in <see cref="Environment.TickCount64"/> milliseconds; 0 when not
+        /// waiting.
+        /// </summary>
         public long StartedMs;
+
+        /// <summary>Whether a restart of this translocator has already been logged.</summary>
         public bool Warned;
 
         /// <summary>How many times this translocator's search has had to be restarted.</summary>
@@ -82,8 +102,15 @@ public static class TranslocatorSearchCompat
         public volatile bool AwaitingExitChunk;
     }
 
+    /// <summary>Each translocator's search state, dropped with the block entity.</summary>
     private static readonly ConditionalWeakTable<BlockEntityStaticTranslocator, SearchState> States = new();
 
+    /// <summary>
+    /// Patches the translocator search, the chunk peek and the worldgen pause, if Vintage Story still has
+    /// them where expected.
+    /// </summary>
+    /// <param name="api">The server.</param>
+    /// <param name="provider">The world's terrain.</param>
     public static void Install(ICoreServerAPI api, TerrainDiffusionProvider provider)
     {
         Uninstall();
@@ -171,6 +198,7 @@ public static class TranslocatorSearchCompat
             DiffusionConfig.Instance.WorldGen.TranslocatorStoredTerrainOnly ? ", stored terrain only" : "");
     }
 
+    /// <summary>A patch method of this class by name.</summary>
     private static HarmonyMethod Method(string name) =>
         new(AccessTools.Method(typeof(TranslocatorSearchCompat), name));
 
@@ -195,6 +223,10 @@ public static class TranslocatorSearchCompat
 
     // ------------------------------------------------------------------ the search tick
 
+    /// <summary>
+    /// Marks the tick's translocator for the peek code, and caps the search ring at
+    /// <see cref="WorldGenConfig.TranslocatorMaxRangeBlocks"/>.
+    /// </summary>
     private static void BeforeTranslocatorTick(BlockEntityStaticTranslocator __instance)
     {
         _ticking = __instance;
@@ -371,5 +403,6 @@ public static class TranslocatorSearchCompat
         ChunkPeekScope.Enter(coords.X, coords.Y);
     }
 
+    /// <summary>Ends the peek scope <see cref="BeforePeekArea"/> began.</summary>
     private static void AfterPeekArea() => ChunkPeekScope.Exit();
 }

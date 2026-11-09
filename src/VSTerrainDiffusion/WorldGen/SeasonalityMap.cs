@@ -6,6 +6,7 @@ using Vintagestory.API.MathTools;
 using Vintagestory.API.Util;
 using Vintagestory.ServerMods;
 using VSTerrainDiffusion.Core;
+using static VSTerrainDiffusion.Core.IntMath;
 
 namespace VSTerrainDiffusion.WorldGen;
 
@@ -74,8 +75,8 @@ public static class SeasonalityMap
 
                 provider.GetTileAt(blockX, blockZ, ref tile);
                 int index = tile.Index(
-                    Mod(blockX - tile.BlockX, tile.Size),
-                    Mod(blockZ - tile.BlockZ, tile.Size));
+                    FloorMod(blockX - tile.BlockX, tile.Size),
+                    FloorMod(blockZ - tile.BlockZ, tile.Size));
 
                 int sigma = GameMath.Clamp(
                     (int)Math.Round(tile.TemperatureSeasonality[index] / 100f * SigmaScale), 0, 255);
@@ -130,11 +131,5 @@ public static class SeasonalityMap
         // Cache the miss too, so a vanilla region is not deserialised on every temperature read.
         Decoded.AddOrUpdate(region, map ?? IntDataMap2D.CreateEmpty());
         return map;
-    }
-
-    private static int Mod(int a, int b)
-    {
-        int m = a % b;
-        return m < 0 ? m + b : m;
     }
 }

@@ -2,6 +2,7 @@ using System;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 using VSTerrainDiffusion.Core;
+using static VSTerrainDiffusion.Core.IntMath;
 
 namespace VSTerrainDiffusion.WorldGen;
 
@@ -19,9 +20,16 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public sealed class DiffusionSurface
 {
+    /// <summary>The server.</summary>
     private readonly ICoreServerAPI _api;
+
+    /// <summary>The world's terrain tiles: slope, climate and the model's height.</summary>
     private readonly TerrainDiffusionProvider _provider;
+
+    /// <summary>The config's world generation section.</summary>
     private readonly WorldGenConfig _config;
+
+    /// <summary>The glacier ice block, or 0 when the game has none.</summary>
     private readonly int _glacierIceId;
 
     /// <summary>Blocks of glacier ice capping ground that never thaws.</summary>
@@ -36,6 +44,9 @@ public sealed class DiffusionSurface
     /// </summary>
     private const int CarvedBlocks = 2;
 
+    /// <summary>A surface pass for one world.</summary>
+    /// <param name="api">The server.</param>
+    /// <param name="provider">The world's terrain tiles.</param>
     public DiffusionSurface(ICoreServerAPI api, TerrainDiffusionProvider provider)
     {
         _api = api;
@@ -44,8 +55,14 @@ public sealed class DiffusionSurface
         _glacierIceId = api.World.GetBlock(new AssetLocation("glacierice"))?.BlockId ?? 0;
     }
 
+    /// <summary>Whether either fix is on, and so whether the pass is worth registering.</summary>
     public bool Enabled => _config.BareSlopeRock || (_config.GlacierIce && _glacierIceId != 0);
 
+    /// <summary>
+    /// Caps permanently frozen ground with glacier ice and strips soil off ground too steep to hold it,
+    /// column by column. Runs after vanilla's block layers.
+    /// </summary>
+    /// <param name="request">The chunk column.</param>
     public void OnChunkColumnGeneration(IChunkColumnGenerateRequest request)
     {
         IServerChunk[] chunks = request.Chunks;
@@ -75,8 +92,8 @@ public sealed class DiffusionSurface
                 int blockX = baseX + lx, blockZ = baseZ + lz;
                 _provider.GetTileAt(blockX, blockZ, ref tile);
                 int index = tile.Index(
-                    Mod(blockX - tile.BlockX, tile.Size),
-                    Mod(blockZ - tile.BlockZ, tile.Size));
+                    FloorMod(blockX - tile.BlockX, tile.Size),
+                    FloorMod(blockZ - tile.BlockZ, tile.Size));
 
                 if (tile.ElevationMeters[index] <= 0f) continue;
 
@@ -149,6 +166,16 @@ public sealed class DiffusionSurface
             data.SetBlockUnsafe(flat, 0);
     }
 
+    /// <summary>
+    /// Replaces the top <paramref name="depth"/> non-air blocks of a column with <paramref name="blockId"/>,
+    /// clearing any fluid there.
+    /// </summary>
+    /// <param name="chunks">The chunk column.</param>
+    /// <param name="lx">Column X within the chunk.</param>
+    /// <param name="lz">Column Z within the chunk.</param>
+    /// <param name="topY">The column's surface.</param>
+    /// <param name="depth">Blocks to replace.</param>
+    /// <param name="blockId">The block to place.</param>
     private static void Fill(IServerChunk[] chunks, int lx, int lz, int topY, int depth, int blockId)
     {
         for (int i = 0; i < depth; i++)
@@ -172,8 +199,16 @@ public sealed class DiffusionSurface
     /// </summary>
     private sealed class Heights
     {
+        /// <summary>
+        /// Height maps: this chunk's and its four neighbours'; a neighbour's is null when unknown.
+        /// </summary>
         private readonly ushort[] _self, _west, _east, _north, _south;
 
+        /// <summary>Reads the height maps around a chunk.</summary>
+        /// <param name="api">The server.</param>
+        /// <param name="chunkX">The chunk's X.</param>
+        /// <param name="chunkZ">The chunk's Z.</param>
+        /// <param name="self">The chunk's own map chunk.</param>
         public Heights(ICoreServerAPI api, int chunkX, int chunkZ, IMapChunk self)
         {
             _self = self.WorldGenTerrainHeightMap;
@@ -183,9 +218,11 @@ public sealed class DiffusionSurface
             _south = Map(api, chunkX, chunkZ + 1);
         }
 
+        /// <summary>A chunk's terrain height map, or null when it is not loaded.</summary>
         private static ushort[] Map(ICoreServerAPI api, int chunkX, int chunkZ) =>
             api.WorldManager.GetMapChunk(chunkX, chunkZ)?.WorldGenTerrainHeightMap;
 
+        /// <summary>The ground height of a column of this chunk.</summary>
         public int At(int lx, int lz) => _self[lz * 32 + lx];
 
         /// <summary>Height at a column up to a chunk outside this one along one axis, or -1 where unknown.</summary>
@@ -215,18 +252,16 @@ public sealed class DiffusionSurface
                               Square(Gradient(Around(lx, lz - Baseline), centre, Around(lx, lz + Baseline))));
         }
 
+        /// <summary>
+        /// Rise over run between the two sides, or one side and the centre when the other is unknown, or 0.
+        /// </summary>
         private static float Gradient(int before, float centre, int after) =>
             before >= 0 && after >= 0 ? (after - before) / (2f * Baseline)
             : after >= 0 ? (after - centre) / Baseline
             : before >= 0 ? (centre - before) / Baseline
             : 0f;
 
+        /// <summary>v².</summary>
         private static float Square(float v) => v * v;
-    }
-
-    private static int Mod(int a, int b)
-    {
-        int m = a % b;
-        return m < 0 ? m + b : m;
     }
 }

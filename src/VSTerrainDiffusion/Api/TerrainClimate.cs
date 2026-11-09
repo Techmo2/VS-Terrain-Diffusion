@@ -1,6 +1,7 @@
 using System;
 using VSTerrainDiffusion.Pipeline;
 using VSTerrainDiffusion.WorldGen;
+using static VSTerrainDiffusion.Core.IntMath;
 
 namespace VSTerrainDiffusion.Api;
 
@@ -89,7 +90,7 @@ public sealed class TerrainClimate
         }
         if (tile == null) return false;
 
-        int index = tile.Index(Mod(blockX - tile.BlockX, tile.Size), Mod(blockZ - tile.BlockZ, tile.Size));
+        int index = tile.Index(FloorMod(blockX - tile.BlockX, tile.Size), FloorMod(blockZ - tile.BlockZ, tile.Size));
         float precipitationMm = tile.PrecipitationMm[index], precipitationCv = tile.PrecipitationCv[index];
 
         Span<float> cycle = stackalloc float[6];
@@ -138,15 +139,5 @@ public sealed class TerrainClimate
         }
         TerrainDiffusionProvider.InterpolateCorners(cache.Corners, _provider.CoarseSpec.Channels, fi, fj, cache.Channels);
         return cache.Channels;
-    }
-
-    /// <summary><paramref name="a"/> modulo <paramref name="b"/>, never negative.</summary>
-    /// <param name="a">The dividend.</param>
-    /// <param name="b">The divisor, positive.</param>
-    /// <returns>A value in [0, b).</returns>
-    private static int Mod(int a, int b)
-    {
-        int m = a % b;
-        return m < 0 ? m + b : m;
     }
 }
