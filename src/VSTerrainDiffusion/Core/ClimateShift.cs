@@ -33,9 +33,15 @@ public readonly struct ClimateShift
     /// <summary>Warmest temperature the game's climate byte can hold, in Celsius.</summary>
     public const float ScaleCeilingC = 40f;
 
+    /// <summary><see cref="Temperature"/> minus one.</summary>
     private readonly float _temperatureFromNeutral;
+
+    /// <summary><see cref="Precipitation"/> minus one.</summary>
     private readonly float _precipitationFromNeutral;
 
+    /// <summary>A shift from the two settings' multipliers.</summary>
+    /// <param name="temperature"><c>globalTemperature</c>; 1 is neutral.</param>
+    /// <param name="precipitation"><c>globalPrecipitation</c>; 1 is neutral.</param>
     public ClimateShift(float temperature, float precipitation)
     {
         _temperatureFromNeutral = temperature - 1f;
@@ -51,51 +57,14 @@ public readonly struct ClimateShift
     /// <summary>A world running both settings at their defaults.</summary>
     public static ClimateShift None => default;
 
+    /// <summary>Whether both settings are at their defaults.</summary>
     public bool IsNeutral => _temperatureFromNeutral == 0f && _precipitationFromNeutral == 0f;
 
     /// <summary>Applies a temperature multiplier the way Vintage Story's climate byte does.</summary>
     public static float ApplyTemperature(float celsius, float multiplier)
         => (celsius - ScaleFloorC) * multiplier + ScaleFloorC;
 
+    /// <summary>Both multipliers, for logs.</summary>
     public override string ToString()
         => $"temperature {Temperature:0.##}x, precipitation {Precipitation:0.##}x";
-}
-
-/// <summary>
-/// How one world's climate settings are divided between the model and its output.
-///
-/// A return value rather than state: both halves come from the same call so that the warp the
-/// model is given and the correction applied afterwards can never disagree about who is doing
-/// what.
-/// </summary>
-public readonly struct ClimatePlan
-{
-    /// <summary>Rank warp for the conditioning temperature channel; 1 leaves it alone.</summary>
-    public readonly float TemperatureExponent;
-
-    /// <summary>Scale for the conditioning precipitation channel; 1 leaves it alone.</summary>
-    public readonly float PrecipitationScale;
-
-    /// <summary>What is left of <c>globalTemperature</c> once the model has had its share.</summary>
-    public readonly float TemperatureCorrection;
-
-    /// <summary>What is left of <c>globalPrecipitation</c>.</summary>
-    public readonly float RainfallCorrection;
-
-    public ClimatePlan(float temperatureExponent, float precipitationScale,
-                       float temperatureCorrection, float rainfallCorrection)
-    {
-        TemperatureExponent = temperatureExponent;
-        PrecipitationScale = precipitationScale;
-        TemperatureCorrection = temperatureCorrection;
-        RainfallCorrection = rainfallCorrection;
-    }
-
-    /// <summary>
-    /// The plan for a world the model is told nothing about: it draws its ordinary climate and the
-    /// whole of both settings is applied to the result, which is vanilla's arrangement and this
-    /// mod's own before the settings became conditioning.
-    /// </summary>
-    public static ClimatePlan Unconditioned(ClimateShift climate)
-        => new(1f, 1f, climate.Temperature, climate.Precipitation);
 }

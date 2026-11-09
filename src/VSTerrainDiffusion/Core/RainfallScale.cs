@@ -24,11 +24,25 @@ namespace VSTerrainDiffusion.Core;
 /// </summary>
 public sealed class RainfallScale
 {
+    /// <summary>Whether tree moisture is mapped rather than raw precipitation.</summary>
     private readonly bool _useMoisture;
+
+    /// <summary>Log of the value that maps to the middle of the byte.</summary>
     private readonly float _logMedian;
+
+    /// <summary>Spread of the log-normal the quantile map assumes.</summary>
     private readonly float _sigma;
+
+    /// <summary>Added to the quantile before scaling to the byte; positive is wetter.</summary>
     private readonly float _bias;
 
+    /// <summary>Built by <see cref="FromConfig"/>.</summary>
+    /// <param name="useMoisture">See <see cref="_useMoisture"/>.</param>
+    /// <param name="median">
+    /// The value that maps to the middle of the byte, in the chosen quantity's units.
+    /// </param>
+    /// <param name="sigma">See <see cref="_sigma"/>.</param>
+    /// <param name="bias">See <see cref="_bias"/>.</param>
     private RainfallScale(bool useMoisture, float median, float sigma, float bias)
     {
         _useMoisture = useMoisture;
@@ -37,6 +51,8 @@ public sealed class RainfallScale
         _bias = bias;
     }
 
+    /// <summary>The scale the config's rainfall settings describe.</summary>
+    /// <param name="config">The world generation settings.</param>
     public static RainfallScale FromConfig(WorldGenConfig config)
     {
         bool moisture = config.RainfallBasis != "precipitation";

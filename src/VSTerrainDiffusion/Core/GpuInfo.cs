@@ -154,6 +154,8 @@ public readonly partial struct GpuInfo
 
 
     /// <summary>One display adapter the OS reported.</summary>
+    /// <param name="Manufacturer">The vendor, from the PCI vendor ID or the name.</param>
+    /// <param name="Name">The adapter's name as the OS gave it.</param>
     /// <param name="PciDeviceId">0 when the OS did not say.</param>
     /// <param name="TieBreak">Orders adapters from the same vendor; higher is more likely the discrete one.</param>
     private readonly record struct Adapter(GpuManufacturer Manufacturer, string Name, int PciDeviceId, long TieBreak);

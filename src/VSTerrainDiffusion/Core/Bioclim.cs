@@ -75,6 +75,11 @@ public readonly struct Bioclim
     /// <summary>Amplitude of the annual temperature cycle per unit of seasonality: sqrt(2).</summary>
     private const float SeasonalAmplitude = 1.4142136f;
 
+    /// <summary>Derives the woody-vegetation measures from the four annual statistics.</summary>
+    /// <param name="meanTemperatureC">Mean annual temperature, °C (BIO1).</param>
+    /// <param name="temperatureSeasonality">Standard deviation of monthly means × 100 (BIO4).</param>
+    /// <param name="precipitationMm">Annual precipitation, mm (BIO12).</param>
+    /// <param name="precipitationCv">Coefficient of variation of monthly precipitation, % (BIO15).</param>
     public Bioclim(float meanTemperatureC, float temperatureSeasonality, float precipitationMm, float precipitationCv)
     {
         MeanTemperatureC = meanTemperatureC;
@@ -176,7 +181,11 @@ public readonly struct Bioclim
     /// </summary>
     public bool IsPermanentIce => WarmestMonthC < 0f && PrecipitationMm > 150f;
 
+    /// <summary>
+    /// <paramref name="a"/> to <paramref name="b"/> by <paramref name="t"/>, clamped to the ends.
+    /// </summary>
     private static float Lerp(float a, float b, float t) => a + (b - a) * Clamp01(t);
 
+    /// <summary>Clamps to [0, 1].</summary>
     private static float Clamp01(float v) => v < 0f ? 0f : v > 1f ? 1f : v;
 }

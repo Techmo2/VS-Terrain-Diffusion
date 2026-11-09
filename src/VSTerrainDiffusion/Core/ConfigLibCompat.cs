@@ -24,14 +24,22 @@ namespace VSTerrainDiffusion.Core;
 /// </summary>
 public static class ConfigLibCompat
 {
+    /// <summary>ConfigLib's mod ID.</summary>
     private const string ModDomain = "configlib";
 
+    /// <summary>The server, while installed.</summary>
     private static ICoreServerAPI _api;
+
+    /// <summary>The event bus listener, while installed.</summary>
     private static EventBusListenerDelegate _listener;
 
     /// <summary>Whether ConfigLib is installed, and therefore whether the settings screen exists.</summary>
     public static bool IsPresent(ICoreAPI api) => api.ModLoader.IsModEnabled(ModDomain);
 
+    /// <summary>
+    /// Listens for ConfigLib's setting-changed events, if ConfigLib is installed. Idempotent.
+    /// </summary>
+    /// <param name="api">The server API.</param>
     public static void Install(ICoreServerAPI api)
     {
         if (_listener != null || !IsPresent(api)) return;
@@ -48,6 +56,7 @@ public static class ConfigLibCompat
             DiffusionPaths.ModId, DiffusionPaths.ModId + ".json");
     }
 
+    /// <summary>Stops listening. Safe to call when not installed.</summary>
     public static void Uninstall()
     {
         if (_listener == null) return;
@@ -56,6 +65,10 @@ public static class ConfigLibCompat
         _api = null;
     }
 
+    /// <summary>Applies one changed setting, logging rather than throwing if it fails.</summary>
+    /// <param name="eventName">The event's name.</param>
+    /// <param name="handling">Left alone.</param>
+    /// <param name="data">ConfigLib's payload: the setting's path and new value.</param>
     private static void OnSettingChanged(string eventName, ref EnumHandling handling, IAttribute data)
     {
         if (data is not ITreeAttribute tree) return;
@@ -76,6 +89,11 @@ public static class ConfigLibCompat
         }
     }
 
+    /// <summary>
+    /// Applies a setting that can change while the server runs; others wait for the next start.
+    /// </summary>
+    /// <param name="code">The setting's path in the config file, e.g. "WorldGen/ForestClearings".</param>
+    /// <param name="tree">ConfigLib's payload, holding the new value.</param>
     private static void Apply(string code, ITreeAttribute tree)
     {
         ILogger logger = _api?.Logger;

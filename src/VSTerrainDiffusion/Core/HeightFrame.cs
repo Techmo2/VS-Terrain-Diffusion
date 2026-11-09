@@ -19,10 +19,15 @@ public readonly struct HeightFrame
     /// <summary>Vanilla's sea level as a fraction of world height, 110/255.</summary>
     public const double VanillaSeaFraction = 0.4313725490196078;
 
+    /// <summary>The world's sea level.</summary>
     public int SeaLevel { get; }
 
+    /// <summary>The world's height in blocks.</summary>
     public int MapSizeY { get; }
 
+    /// <summary>A frame for this sea level and height.</summary>
+    /// <param name="seaLevel">The world's sea level.</param>
+    /// <param name="mapSizeY">The world's height.</param>
     public HeightFrame(int seaLevel, int mapSizeY)
     {
         SeaLevel = seaLevel;
@@ -81,6 +86,7 @@ public readonly struct HeightFrame
         return (float)Math.Clamp(VanillaFractionToY(fraction, rescaleAboveSea) / MapSizeY, 0.0, 1.0);
     }
 
+    /// <summary>Sea level, height and the equivalent vanilla height, for logs.</summary>
     public override string ToString() =>
         $"sea level {SeaLevel} of {MapSizeY} ({BlocksAboveSea} above, like a vanilla world {EquivalentMapSizeY:0} tall)";
 }

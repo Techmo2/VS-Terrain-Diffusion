@@ -6,6 +6,7 @@ namespace VSTerrainDiffusion.Core;
 /// <summary>Well-known on-disk locations used by the mod, all under the Vintage Story data folder.</summary>
 public static class DiffusionPaths
 {
+    /// <summary>The mod's ID, also its asset domain, config file name and log prefix.</summary>
     public const string ModId = "vsterraindiffusion";
 
     /// <summary>
@@ -31,7 +32,10 @@ public static class DiffusionPaths
         return Path.Combine(TileDatabaseDirectory, name + ".db");
     }
 
+    /// <summary>The machine config file, <c>ModConfig/vsterraindiffusion.json</c>.</summary>
     public static string ConfigFile => Path.Combine(GamePaths.ModConfig, ModId + ".json");
 
+    /// <summary>A downloaded model asset's path by file name.</summary>
+    /// <param name="fileName">The asset's file name.</param>
     public static string ResolveAsset(string fileName) => Path.Combine(ModelDirectory, fileName);
 }

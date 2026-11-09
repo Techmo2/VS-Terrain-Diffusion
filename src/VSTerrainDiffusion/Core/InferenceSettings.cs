@@ -21,8 +21,12 @@ namespace VSTerrainDiffusion.Core;
 /// </summary>
 public sealed class InferenceSettings
 {
+    /// <summary>
+    /// Prefixes every setting's world config code, e.g. <c>terraindiffusionInferenceDevice</c>.
+    /// </summary>
     public const string CodePrefix = "terraindiffusion";
 
+    /// <summary>The values <see cref="ModelLoadMode"/> accepts.</summary>
     public static readonly string[] AllModelLoadModes = { "file", "memory" };
 
     /// <summary>
@@ -78,6 +82,7 @@ public sealed class InferenceSettings
     /// </summary>
     public string ClimateModel { get; private init; } = Pipeline.CoarseModelSpec.Annual.Code;
 
+    /// <summary>The coarse model <see cref="ClimateModel"/> names.</summary>
     public Pipeline.CoarseModelSpec CoarseModel => Pipeline.CoarseModelSpec.ByCode(ClimateModel);
 
     /// <summary>
@@ -91,6 +96,7 @@ public sealed class InferenceSettings
         nameof(TileDatabase)
     }.Select(Code);
 
+    /// <summary>Backing field of <see cref="Current"/>.</summary>
     private static InferenceSettings _current;
 
     /// <summary>The loaded world's settings, or the defaults when no world has been loaded (offline tools).</summary>
@@ -157,6 +163,7 @@ public sealed class InferenceSettings
         var other => other
     };
 
+    /// <summary>Trims and lowercases a setting value; null becomes empty.</summary>
     private static string Normalize(string value) => (value ?? "").Trim().ToLowerInvariant();
 
     /// <summary>Save data key marking a world whose tile database was switched on by <see cref="TurnOnTileDatabaseOnce"/>.</summary>
@@ -184,6 +191,10 @@ public sealed class InferenceSettings
         }
     }
 
+    /// <summary>Reads one setting from the world config as text.</summary>
+    /// <param name="world">The world config.</param>
+    /// <param name="setting">The property name; prefixed by <see cref="Code"/>.</param>
+    /// <param name="fallback">Returned when the setting is absent or blank.</param>
     private static string Read(ITreeAttribute world, string setting, string fallback) =>
         DiffusionWorldSettings.ReadWorldConfig(world, Code(setting), fallback);
 }

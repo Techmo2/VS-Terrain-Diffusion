@@ -1,20 +1,8 @@
-using ProtoBuf;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 
 namespace VSTerrainDiffusion.Core;
-
-/// <summary>Tells a joining client what lapse rate this world's climate map is written against.</summary>
-[ProtoContract]
-public class ClimateScalePacket
-{
-    /// <summary>Matches <see cref="ClimateScale.LapseScale"/>.</summary>
-    [ProtoMember(1)] public float LapseScale;
-
-    /// <summary>False on a world the mod is not generating, where the game's own rate is correct.</summary>
-    [ProtoMember(2)] public bool Active;
-}
 
 /// <summary>
 /// Carries the climate lapse rate to clients.
@@ -34,17 +22,25 @@ public class ClimateScalePacket
 /// </summary>
 public class ClimateScaleSync : ModSystem
 {
+    /// <summary>The network channel the packet travels on.</summary>
     private const string ChannelName = "vsterraindiffusion.climatescale";
 
+    /// <summary>The client API, on the client side.</summary>
     private ICoreClientAPI _capi;
+
+    /// <summary>The server's end of the channel.</summary>
     private IServerNetworkChannel _serverChannel;
+
+    /// <summary>Whether this client installed the patches itself and so must remove them.</summary>
     private bool _clientOwnsPatches;
 
+    /// <summary>Both sides: the server sends, the client receives.</summary>
     public override bool ShouldLoad(EnumAppSide side) => true;
 
     /// <summary>Before the terrain systems, so the channel exists by the time a world generates.</summary>
     public override double ExecuteOrder() => 0.05;
 
+    /// <summary>Registers the channel and sends the current rate to each player as they join.</summary>
     public override void StartServerSide(ICoreServerAPI api)
     {
         _serverChannel = api.Network
@@ -54,12 +50,14 @@ public class ClimateScaleSync : ModSystem
         api.Event.PlayerJoin += player => _serverChannel.SendPacket(Current(), player);
     }
 
+    /// <summary>The packet describing the rate in force now.</summary>
     private static ClimateScalePacket Current() => new()
     {
         Active = ClimateScale.Installed,
         LapseScale = ClimateScale.LapseScale
     };
 
+    /// <summary>Registers the channel and listens for the server's rate.</summary>
     public override void StartClientSide(ICoreClientAPI api)
     {
         _capi = api;
@@ -69,6 +67,7 @@ public class ClimateScaleSync : ModSystem
             .SetMessageHandler<ClimateScalePacket>(OnScaleReceived);
     }
 
+    /// <summary>Installs the server's rate, unless the world is not the mod's.</summary>
     private void OnScaleReceived(ClimateScalePacket packet)
     {
         if (!packet.Active) return;
@@ -80,6 +79,7 @@ public class ClimateScaleSync : ModSystem
         _clientOwnsPatches = !_capi.IsSinglePlayer;
     }
 
+    /// <summary>Removes the patches this client installed itself.</summary>
     public override void Dispose()
     {
         if (!_clientOwnsPatches) return;

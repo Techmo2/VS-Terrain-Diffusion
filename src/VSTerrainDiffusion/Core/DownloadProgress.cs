@@ -21,14 +21,26 @@ internal sealed class DownloadProgress
     /// <summary>Tenths, reported at 0% through 90%; the end is announced as "Done!" instead.</summary>
     private const int Steps = 10;
 
+    /// <summary>Where progress is posted.</summary>
     private readonly ILogger _logger;
+
+    /// <summary>Names the thing being fetched.</summary>
     private readonly string _what;
 
+    /// <summary>Bytes expected.</summary>
     private long _total;
+
+    /// <summary>Bytes received so far; updated from several download threads.</summary>
     private long _done;
+
+    /// <summary>The last tenth posted, or -1 before the first.</summary>
     private int _reported = -1;
+
+    /// <summary>Whether the opening line went out.</summary>
     private bool _announced;
 
+    /// <summary>Starts tracking a download; nothing is posted until <see cref="Announce"/>.</summary>
+    /// <param name="logger">Where progress is reported.</param>
     /// <param name="what">Names the thing being fetched, e.g. "model files".</param>
     /// <param name="totalBytes">What is expected over the wire; may grow, see <see cref="AddPending"/>.</param>
     public DownloadProgress(ILogger logger, string what, long totalBytes)
@@ -84,6 +96,8 @@ internal sealed class DownloadProgress
         LoadingNotice.Post(_logger, "Downloading {0}: Done!", _what);
     }
 
+    /// <summary>Posts one percentage step.</summary>
+    /// <param name="step">Tenths done.</param>
     private void Report(int step)
     {
         _reported = step;

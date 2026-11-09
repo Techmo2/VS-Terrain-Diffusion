@@ -40,6 +40,7 @@ namespace VSTerrainDiffusion.Core;
 /// </summary>
 public static class ClimateScale
 {
+    /// <summary>Owns the patches, so <see cref="Uninstall"/> removes only these.</summary>
     private const string HarmonyId = "vsterraindiffusion.climatescale";
 
     /// <summary>
@@ -56,7 +57,10 @@ public static class ClimateScale
     public static float NeutralMetersPerBlock =>
         1f / (1.5f * Climate.TemperatureScaleConversion) / (ReferenceLapseCPerKm / 1000f);
 
+    /// <summary>The patcher, once <see cref="Install"/> has run.</summary>
     private static Harmony _harmony;
+
+    /// <summary>Where install and removal are reported.</summary>
     private static ILogger _logger;
 
     /// <summary>
@@ -83,6 +87,8 @@ public static class ClimateScale
     /// Puts the correction in place, or updates it. Idempotent: in single player the server and the
     /// client share one process and both will ask for it.
     /// </summary>
+    /// <param name="logger">The log for the install and the readers' reports.</param>
+    /// <param name="lapseScale">The new <see cref="LapseScale"/>.</param>
     /// <param name="lapseCPerKm">The rate that scale amounts to, for the log.</param>
     public static void Install(ILogger logger, float lapseScale, float lapseCPerKm = ReferenceLapseCPerKm)
     {
@@ -136,6 +142,7 @@ public static class ClimateScale
             DiffusionPaths.ModId, lapseCPerKm, LapseScale, NeutralMetersPerBlock);
     }
 
+    /// <summary>A patch method of this class by name.</summary>
     private static HarmonyMethod Method(string name) =>
         new(AccessTools.Method(typeof(ClimateScale), name));
 

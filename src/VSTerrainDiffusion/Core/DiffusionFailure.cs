@@ -25,7 +25,10 @@ namespace VSTerrainDiffusion.Core;
 /// </summary>
 public static class DiffusionFailure
 {
+    /// <summary>Set by the first fatal failure; later ones wait for it to end the process.</summary>
     private static int _failing;
+
+    /// <summary>The server log, for callers not handed one; see <see cref="UseLogger"/>.</summary>
     private static ILogger _ambient;
 
     /// <summary>

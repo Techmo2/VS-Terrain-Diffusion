@@ -22,9 +22,17 @@ public readonly struct StartingClimate
     /// <summary>Human-readable name, matching the world creation screen.</summary>
     public readonly string Label;
 
+    /// <summary>The band's coldest mean temperature, °C.</summary>
     public readonly float MinimumC;
+
+    /// <summary>The band's warmest mean temperature, °C.</summary>
     public readonly float MaximumC;
 
+    /// <summary>Only the five bands in <see cref="All"/> exist.</summary>
+    /// <param name="code">See <see cref="Code"/>.</param>
+    /// <param name="label">See <see cref="Label"/>.</param>
+    /// <param name="minimumC">See <see cref="MinimumC"/>.</param>
+    /// <param name="maximumC">See <see cref="MaximumC"/>.</param>
     private StartingClimate(string code, string label, float minimumC, float maximumC)
     {
         Code = code;
@@ -62,6 +70,7 @@ public readonly struct StartingClimate
         return null;
     }
 
+    /// <summary>Whether a temperature lies in the band, ends included.</summary>
     public bool Contains(float temperatureC) => temperatureC >= MinimumC && temperatureC <= MaximumC;
 
     /// <summary>
@@ -72,6 +81,7 @@ public readonly struct StartingClimate
         ? MinimumC - temperatureC
         : temperatureC > MaximumC ? temperatureC - MaximumC : 0f;
 
+    /// <summary>The band's name and range, for messages.</summary>
     public override string ToString() =>
         $"{Label} ({MinimumC:0.#} to {MaximumC:0.#} C)";
 }
