@@ -1,0 +1,40 @@
+# Doxygen configuration for VSTerrainDiffusion. Run `doxygen` from the repository root;
+# HTML lands in docs/api/html.
+
+PROJECT_NAME           = "VSTerrainDiffusion"
+PROJECT_BRIEF          = "Diffusion-model terrain generation for Vintage Story"
+OUTPUT_DIRECTORY       = docs/api
+CREATE_SUBDIRS         = NO
+
+INPUT                  = src/VSTerrainDiffusion src/VSTerrainDiffusion.Worker README.md
+FILE_PATTERNS          = *.cs
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */obj/* */bin/*
+# Vendored third-party code, documented upstream.
+EXCLUDE                = src/VSTerrainDiffusion/Pipeline/FastNoiseLite.cs
+USE_MDFILE_AS_MAINPAGE = README.md
+
+OPTIMIZE_OUTPUT_JAVA   = YES
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = YES
+EXTRACT_PACKAGE        = YES
+EXTRACT_STATIC         = YES
+EXTRACT_ANON_NSPACES   = YES
+HIDE_UNDOC_MEMBERS     = NO
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_LATEX         = NO
+GENERATE_TREEVIEW      = YES
+HAVE_DOT               = NO
+
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+WARN_LOGFILE           = docs/api/warnings.log

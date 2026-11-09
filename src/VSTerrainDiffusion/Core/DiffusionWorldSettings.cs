@@ -385,7 +385,7 @@ public sealed class DiffusionWorldSettings
                 ReadWorldConfig(worldConfig, "terraindiffusionHeightNoise", "0").ToInt(0) / 100f, 0f, 10f),
             CoastFill = ReadWorldConfig(worldConfig, "terraindiffusionCoastFill", "false").ToBool(false),
             DryShallowsFill = ReadWorldConfig(worldConfig, "terraindiffusionDryShallowsFill", "true").ToBool(true),
-            // Pinned when the world was created (TerrainDiffusionModSystem.PinWorldValues); a world from
+            // Pinned when the world was created (WorldValuePins.Pin); a world from
             // before lakes reads off, as it was generated.
             WaterFill = ReadWorldConfig(worldConfig, "terraindiffusionWaterFill", "false").ToBool(false),
             // Pinned like WaterFill; the defaults equal worldconfig.json's. Integer sliders in fixed units.
@@ -443,7 +443,7 @@ public sealed class DiffusionWorldSettings
             ReadWorldConfig(worldConfig, "worldClimate", "realistic"),
             ReadWorldConfig(worldConfig, "polarEquatorDistance", "50000").ToInt(50000),
             shaping.LatitudeStrength, climate,
-            // Pinned when the world was created (TerrainDiffusionModSystem.PinWorldValues); a world
+            // Pinned when the world was created (WorldValuePins.Pin); a world
             // from before version 2 keeps the profile its ground was made with.
             ReadWorldConfig(worldConfig, "terraindiffusionLatitudeProfile", "1").ToInt(1),
             // Off for new worlds (worldconfig.json); a world made before the setting reads true, as generated.

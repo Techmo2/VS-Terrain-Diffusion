@@ -1,19 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using Vintagestory.API.Common;
-using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
-using Vintagestory.API.Util;
-using Vintagestory.ServerMods;
+using TerrainDiffusion.Water;
+using VSTerrainDiffusion.Commands;
 using VSTerrainDiffusion.Core;
 using VSTerrainDiffusion.Debug;
-using VSTerrainDiffusion.Native;
 using VSTerrainDiffusion.Pipeline;
 using VSTerrainDiffusion.WorldGen;
-using TerrainDiffusion.Water;
 
 namespace VSTerrainDiffusion;
 
@@ -23,15 +19,49 @@ namespace VSTerrainDiffusion;
 /// alone. The ocean map goes the other way: it is read as conditioning for the model rather than
 /// written, so the world's own land cover and ocean scale settings still decide where the sea is.
 /// </summary>
+/// <remarks>
+/// This class only orders the lifecycle; each concern lives in its own type:
+/// <list type="bullet">
+/// <item><see cref="WorldValuePins"/> - per-world values pinned at creation</item>
+/// <item><see cref="SpawnPlacement"/>, <see cref="HeightCalibration"/> - spawn search and height fit</item>
+/// <item><see cref="TileFingerprint"/> - what empties the tile database</item>
+/// <item><see cref="TerrainHandlerInstaller"/>, <see cref="MapLayerInstaller"/> - hooks into vanilla worldgen</item>
+/// <item><see cref="PregenerationController"/> - the <c>/tdiff pregen</c> job</item>
+/// <item><see cref="TerrainDiffusionCommands"/> - the <c>/tdiff</c> command</item>
+/// </list>
+/// </remarks>
 public class TerrainDiffusionModSystem : ModSystem
 {
+    /// <summary>Where Terrain Continuity looks for a terrain mod's surface height at a block column.</summary>
+    private const string ContinuityHeightSourceKey = "terraincontinuity:surfaceheight";
+
     private ICoreServerAPI _api;
+
+    /// <summary>The world's resolved settings; null before initialisation. Read by test probes by name.</summary>
     private DiffusionWorldSettings _settings;
+
+    /// <summary>The world's terrain; null until the generator is ready. Read by test probes by name.</summary>
     private TerrainDiffusionProvider _provider;
+
+    /// <summary>The generated climate published to other mods; see <see cref="Climate"/>.</summary>
     private Api.TerrainClimate _climate;
 
     /// <summary>Story structures' climates and landforms the model is asked for (experimental), or null.</summary>
-    private List<Pipeline.CoarseConditioningSite> _conditioningSites;
+    private List<CoarseConditioningSite> _conditioningSites;
+
+    /// <summary>What the model was told about rivers, kept so the debug map can show it; null without Rivers.</summary>
+    private IRiverBasinSource _riverBasins;
+
+    private GenDiffusionTerra _generator;
+    private WorldWater _water;
+    private DiffusionSurface _surface;
+    private DebugMapServer _debugMap;
+    private DiffusionForestMapLayer _forestLayer;
+    private DiffusionForestMapLayer _shrubLayer;
+
+    private SpawnPlacement _spawn;
+    private TerrainHandlerInstaller _terrainHandler;
+    private PregenerationController _pregeneration;
 
     /// <summary>
     /// The generated climate for other mods (see <see cref="Api.TerrainClimate"/>): server side, and
@@ -39,21 +69,20 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     public Api.TerrainClimate Climate => _climate;
 
-    /// <summary>The running <c>/tdiff pregen</c> job, if any.</summary>
-    private TilePregenerator _pregen;
+    /// <summary>The world's resolved settings, or null before the world generator initialises.</summary>
+    internal DiffusionWorldSettings Settings => _settings;
 
-    /// <summary>
-    /// Where a pregeneration job is recorded in the save while it runs, as "x,z,radius", so a
-    /// server restart picks it up again. Removed once it finishes or is stopped.
-    /// </summary>
-    private const string PregenSaveKey = "terraindiffusionPregen";
-    private GenDiffusionTerra _generator;
-    private WorldWater _water;
-    private DiffusionSurface _surface;
-    private DebugMapServer _debugMap;
-    private DiffusionForestMapLayer _forestLayer;
-    private DiffusionForestMapLayer _shrubLayer;
-    private ChunkColumnGenerationDelegate _installedHandler;
+    /// <summary>The world's terrain, or null when the mod is not generating this world.</summary>
+    internal TerrainDiffusionProvider Provider => _provider;
+
+    /// <summary>The world's lakes and rivers, or null when it has none.</summary>
+    internal WorldWater Water => _water;
+
+    /// <summary>The debug map server, or null when it is off.</summary>
+    internal DebugMapServer DebugMap => _debugMap;
+
+    /// <summary>The <c>/tdiff pregen</c> job controller.</summary>
+    internal PregenerationController Pregeneration => _pregeneration;
 
     /// <summary>
     /// Runs after every vanilla world generation system has registered (GenTerra is 0.0,
@@ -61,6 +90,7 @@ public class TerrainDiffusionModSystem : ModSystem
     /// </summary>
     public override double ExecuteOrder() => 0.5;
 
+    /// <summary>Server only: clients receive finished chunks.</summary>
     public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Server;
 
     /// <summary>
@@ -90,12 +120,16 @@ public class TerrainDiffusionModSystem : ModSystem
 
         DiffusionConfig.Load(api);
         InferenceThrottle.UtilizationPercent = InferenceSettings.Load((ICoreServerAPI)api).GpuUtilizationPercent;
-        PinWorldValues((ICoreServerAPI)api);
+        WorldValuePins.Pin((ICoreServerAPI)api);
     }
 
+    /// <summary>Registers the world generation hooks, run phase hooks and commands, and starts loading the models.</summary>
     public override void StartServerSide(ICoreServerAPI api)
     {
         _api = api;
+        _spawn = new SpawnPlacement(api);
+        _terrainHandler = new TerrainHandlerInstaller(api);
+        _pregeneration = new PregenerationController(api, () => _water);
         DiffusionFailure.UseLogger(api.Logger);
         ConfigLibCompat.Install(api);
 
@@ -108,10 +142,10 @@ public class TerrainDiffusionModSystem : ModSystem
         // After GenBlockLayers, which is registered on the same pass at execute order 0.4.
         api.Event.ChunkColumnGeneration(OnSurfacePass, EnumWorldGenPass.TerrainFeatures, "standard");
 
-        api.Event.ServerRunPhase(EnumServerRunPhase.RunGame, ApplyPendingSpawn);
+        api.Event.ServerRunPhase(EnumServerRunPhase.RunGame, _spawn.ApplyPending);
         api.Event.ServerRunPhase(EnumServerRunPhase.Shutdown, OnShutdown);
 
-        RegisterCommands(api);
+        new TerrainDiffusionCommands(api, this).Register();
 
         // Model download and session creation are slow, so start them the moment the server boots
         // rather than when the first chunk is requested.
@@ -131,11 +165,14 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            throw DiffusionFailure.Fatal(_api.Logger,
-                "World generation could not be initialised.", e);
+            throw DiffusionFailure.Fatal(_api.Logger, "World generation could not be initialised.", e);
         }
     }
 
+    /// <summary>
+    /// Builds everything this world's generation needs, in dependency order, and hooks it into
+    /// vanilla's world generation. Runs once per world load and again on <c>/wgen regen</c>.
+    /// </summary>
     private void InitWorldGenerator()
     {
         // Only the world's own on/off flag can be read before the models are: everything else in
@@ -151,26 +188,88 @@ public class TerrainDiffusionModSystem : ModSystem
         // Blocks until the assets are on disk, downloading them if the directory was emptied or
         // never populated. The metre-to-block mapping hangs off the native resolution it brings.
         PipelineModels models = LoadModels();
+        _settings = ReadSettings();
 
+        ReleaseWorldState();
+        SetUpRivers();
+
+        ILandmaskSource landmask = BuildLandmask();
+        _conditioningSites = DiffusionConfig.Instance.WorldGen.StructureConditioning
+            ? StoryStructureConditioning.Read(_api, _settings, _api.Logger)
+            : null;
+        _provider = new TerrainDiffusionProvider(
+            WorldSeed(), models, _settings, _api.Logger, landmask,
+            _riverBasins, _settings.RiverBasinDepth, StoredTileSize(), _conditioningSites);
+        _climate = new Api.TerrainClimate(_provider);
+
+        // Before anything builds a Rivers region, which the spawn search below is the first to do.
+        if (RiversCompat.Installed) RiversCompat.UseModelSea(_provider.IsCoarseSea);
+        TerrainSamplerCompat.Install(_api, _provider);
+
+        TerrainDiffusionProvider.SpawnCandidate? spawn = SearchAndCalibrate(landmask);
+
+        StartDebugMap();
+        PublishToOtherMods();
+
+        // Order terrain generation by how far it is from somebody. After a translocator hop the
+        // queue is full of tiles for where the player used to be, and without this the ground they
+        // are standing on is generated only once all of that has drained.
+        _provider.TileUrgency = (x, z) => PlayerProximity.Urgency(_api?.World, x, z);
+
+        _water = CreateWater();
+        _generator = new GenDiffusionTerra(_api, _provider, _settings, _water);
+        _surface = new DiffusionSurface(_api, _provider);
+
+        _terrainHandler.Install(OnTerrainPass, _provider);
+        _forestLayer = _shrubLayer = null;
+        (_forestLayer, _shrubLayer) = MapLayerInstaller.Install(_api, _provider, _settings);
+
+        InstallCompatibilityPatches();
+        InstallClimateCorrections();
+        FitAltitudeBands();
+
+        _spawn.Record(spawn, _provider, _settings, _water);
+
+        _api.Logger.Notification("[{0}] Active: {1}", DiffusionPaths.ModId, _settings.Describe());
+        WarnAboutWorldHeight();
+        _pregeneration.Resume(_provider);
+    }
+
+    /// <summary>The world's settings with its pinned shore detail applied. Stops the game if they cannot be read.</summary>
+    private DiffusionWorldSettings ReadSettings()
+    {
         try
         {
-            _settings = DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.Instance.NativeResolution);
-            (float shoreDetail, float shoreFade) = ResolveShoreDetail();
-            _settings.ApplyShoreDetail(shoreDetail, shoreFade);
+            DiffusionWorldSettings settings =
+                DiffusionWorldSettings.FromWorld(_api, WorldPipelineModelConfig.Instance.NativeResolution);
+            (float shoreDetail, float shoreFade) = WorldValuePins.ShoreDetail(_api.WorldManager.SaveGame.WorldConfiguration);
+            settings.ApplyShoreDetail(shoreDetail, shoreFade);
+            return settings;
         }
         catch (Exception e)
         {
             throw DiffusionFailure.Fatal(_api.Logger,
                 "This world's Terrain Diffusion settings could not be read.", e);
         }
+    }
 
-        StopPregeneration(forget: false);
+    /// <summary>Stops and drops what a previous initialisation built: the pregen job, the water and the terrain.</summary>
+    private void ReleaseWorldState()
+    {
+        _pregeneration.Stop(forget: false);
         _water?.Dispose();
         _water = null;
         _provider?.Dispose();
-        // Before the provider, because the first coarse window is built during the spawn search and
-        // a window generated without the rivers would be cached and then seam against every one
-        // after it.
+    }
+
+    /// <summary>
+    /// Hooks into Rivers, when it is generating this world's rivers, and decides whether the model
+    /// shapes valleys for them. Before the provider, because the first coarse window is built during
+    /// the spawn search and a window generated without the rivers would be cached and then seam
+    /// against every one after it.
+    /// </summary>
+    private void SetUpRivers()
+    {
         bool rivers = !WatershedsCompat.IsPresent(_api) && RiversCompat.IsPresent(_api);
         if (rivers) RiversCompat.TryInstall(_api);
 
@@ -188,32 +287,28 @@ public class TerrainDiffusionModSystem : ModSystem
                     : "The model is not shaped around the rivers (terraindiffusionRiverValleyDepth {1:0}%).";
             _api.Logger.Notification("[{0}] " + shaping, DiffusionPaths.ModId, _settings.RiverBasinDepth * 100f);
         }
+    }
 
-        ILandmaskSource landmask = BuildLandmask();
-        _conditioningSites = DiffusionConfig.Instance.WorldGen.StructureConditioning
-            ? StoryStructureConditioning.Read(_api, _settings, _api.Logger)
-            : null;
-        _provider = new TerrainDiffusionProvider(
-            WorldSeed(), models, _settings, _api.Logger, landmask,
-            _riverBasins, _settings.RiverBasinDepth, StoredTileSize(), _conditioningSites);
-        _climate = new Api.TerrainClimate(_provider);
-
-        // Before anything builds a Rivers region, which the spawn search below is the first to do.
-        if (RiversCompat.Installed) RiversCompat.UseModelSea(_provider.IsCoarseSea);
-        TerrainSamplerCompat.Install(_api, _provider);
-
+    /// <summary>
+    /// Runs the spawn search when it is useful, settles the height mapping, and attaches the tile
+    /// database once block heights are final.
+    /// </summary>
+    /// <remarks>
+    /// The spawn search can run before the height mapping is settled - and it should, because the
+    /// survey wants to be centred on where people will actually play. Only a new world uses its result
+    /// for the spawn, though, and an existing one only for a height calibration it has not stored yet.
+    /// Otherwise it is minutes of coarse surveying on every load, for nothing.
+    /// </remarks>
+    /// <returns>The spawn column, or null when there was no search or it found no land.</returns>
+    private TerrainDiffusionProvider.SpawnCandidate? SearchAndCalibrate(ILandmaskSource landmask)
+    {
         // A stored tile keeps block heights, so the tile database waits for a height calibration;
         // without one the mapping is already settled and the spawn search can read from it.
         bool calibrates = _settings.WantsCalibration;
         if (!calibrates) AttachTileStore(landmask);
 
-        // The spawn search can run before the height mapping is settled - and it should, because
-        // the survey wants to be centred on where people will actually play. Only a new world uses
-        // its result for the spawn, though, and an existing one only for a height calibration it
-        // has not stored yet. Otherwise it is minutes of coarse surveying on every load, for
-        // nothing.
-        bool searchSpawn = _api.WorldManager.SaveGame.IsNew || (calibrates && StoredCalibration() == null);
-        TerrainDiffusionProvider.SpawnCandidate? spawn = searchSpawn ? FindSpawn() : null;
+        bool searchSpawn = _api.WorldManager.SaveGame.IsNew || (calibrates && HeightCalibration.Stored(_api) == null);
+        TerrainDiffusionProvider.SpawnCandidate? spawn = searchSpawn ? _spawn.Find(_provider, _settings) : null;
         if (!searchSpawn)
         {
             _api.Logger.VerboseDebug("[{0}] Existing world: its spawn is already placed, so no spawn search.",
@@ -222,31 +317,28 @@ public class TerrainDiffusionModSystem : ModSystem
 
         // Must happen before anything asks for a tile: it decides the metre-to-block mapping every
         // surface height is computed from.
-        CalibrateTerrainHeight(spawn);
+        HeightCalibration.Apply(_api, _provider, _settings, spawn);
         if (calibrates) AttachTileStore(landmask);
+        return spawn;
+    }
 
-        StartDebugMap();
-
-        // Terrain Continuity (a separate mod) slopes new ground to meet chunks built by an older
-        // setup; told what this mod would build at any column, it corrects only real steps. A plain
-        // delegate, so neither mod needs the other.
+    /// <summary>
+    /// Publishes the built surface height for Terrain Continuity (a separate mod), which slopes new
+    /// ground to meet chunks built by an older setup and corrects only real steps. A plain delegate,
+    /// so neither mod needs the other.
+    /// </summary>
+    private void PublishToOtherMods()
+    {
         _api.ObjectCache[ContinuityHeightSourceKey] =
             (System.Func<int, int, int>)((x, z) => _provider?.SampleSurfaceY(x, z, SurfaceSampleMode.Full) ?? 0);
+    }
 
-        // Order terrain generation by how far it is from somebody. After a translocator hop the
-        // queue is full of tiles for where the player used to be, and without this the ground they
-        // are standing on is generated only once all of that has drained.
-        _provider.TileUrgency = DistanceToNearestPlayer;
-
-        _water = CreateWater();
-        _generator = new GenDiffusionTerra(_api, _provider, _settings, _water);
-        _surface = new DiffusionSurface(_api, _provider);
-
-        InstallTerrain();
-        InstallMapLayers();
-
-        // Unrelated to the climate patches below: this one only makes the static translocator
-        // search affordable, and never changes what the world contains.
+    /// <summary>
+    /// Patches that make vanilla systems cheap or correct on modelled terrain. The translocator patch
+    /// only makes the static translocator search affordable and never changes what the world contains.
+    /// </summary>
+    private void InstallCompatibilityPatches()
+    {
         TranslocatorSearchCompat.Install(_api, _provider);
         StoryTeleportCompat.Install(_api, _provider);
         DryShallowsCompat.Install(_settings.DryShallowsFill, _api.Logger);
@@ -255,11 +347,16 @@ public class TerrainDiffusionModSystem : ModSystem
             _api.Logger.Notification("[{0}] Vanilla's filling of dry-climate shallows is off: the model's water stays water.",
                 DiffusionPaths.ModId);
         }
+    }
 
-        // Both only while the model owns the climate map. Left to vanilla the stored byte is a
-        // sea-level temperature already read at the game's own lapse rate, and correcting either
-        // would make it wrong. After calibration, because the lapse correction follows from how
-        // tall a block is, and before any chunk generates, because the map layer writes through it.
+    /// <summary>
+    /// The altitude and surface climate corrections, only while the model owns the climate map. Left to
+    /// vanilla the stored byte is a sea-level temperature already read at the game's own lapse rate, and
+    /// correcting it would make it wrong. After calibration, because the lapse correction follows from
+    /// how tall a block is, and before any chunk generates, because the map layer writes through it.
+    /// </summary>
+    private void InstallClimateCorrections()
+    {
         if (_settings.ClimateMode != DiffusionClimateMode.Off)
         {
             ClimateScale.Install(_api.Logger,
@@ -272,9 +369,15 @@ public class TerrainDiffusionModSystem : ModSystem
             ClimateScale.Uninstall();
             SurfaceClimateCompat.Uninstall();
         }
+    }
 
-        // Always, even when there is nothing to move: the bands are shared by every world in the
-        // process, so one moved for the last world has to be put back for this one.
+    /// <summary>
+    /// Moves the block layer and tree altitude bands to this world's sea level and vertical scale.
+    /// Always, even when there is nothing to move: the bands are shared by every world in the process,
+    /// so one moved for the last world has to be put back for this one.
+    /// </summary>
+    private void FitAltitudeBands()
+    {
         try
         {
             bool exaggerated = DiffusionConfig.Instance.WorldGen.RescaleBlockLayerAltitudes && !_settings.IsIsotropic;
@@ -287,12 +390,6 @@ public class TerrainDiffusionModSystem : ModSystem
                 "The altitude bands of surface layers and trees could not be fitted to this world's sea level " +
                 "and vertical scale.", e);
         }
-
-        RecordSpawn(spawn);
-
-        _api.Logger.Notification("[{0}] Active: {1}", DiffusionPaths.ModId, _settings.Describe());
-        WarnAboutWorldHeight();
-        ResumePregeneration();
     }
 
     /// <summary>
@@ -309,52 +406,10 @@ public class TerrainDiffusionModSystem : ModSystem
         int port = DiffusionConfig.Instance.DebugMapPort;
         if (port == 0) return;
 
-        var server = new DebugMapServer(_api.Logger, _provider, _settings, _riverBasins, PlayerMarkers,
-            () => (_forestLayer, _shrubLayer));
+        var server = new DebugMapServer(_api.Logger, _provider, _settings, _riverBasins,
+            () => PlayerProximity.Markers(_api?.World), () => (_forestLayer, _shrubLayer));
         if (server.Start(DiffusionConfig.Instance.DebugMapBindAddress, port)) _debugMap = server;
         else server.Dispose();
-    }
-
-    /// <summary>Where everyone is, in world blocks, for the debug map's markers.</summary>
-    private IReadOnlyList<(string Name, int X, int Z)> PlayerMarkers()
-    {
-        var markers = new List<(string, int, int)>();
-        IPlayer[] players = _api?.World?.AllOnlinePlayers;
-        if (players == null) return markers;
-
-        foreach (IPlayer player in players)
-        {
-            Entity entity = player?.Entity;
-            if (entity == null) continue;
-            markers.Add((player.PlayerName ?? "?", (int)entity.Pos.X, (int)entity.Pos.Z));
-        }
-
-        return markers;
-    }
-
-    /// <summary>
-    /// Blocks from a world position to the nearest player, or 0 when nobody is connected - during
-    /// world creation everything is equally urgent. Squared distance would overflow at map scale,
-    /// so this is a plain Chebyshev-ish sum that is monotone in what matters.
-    /// </summary>
-    private long DistanceToNearestPlayer(int blockX, int blockZ)
-    {
-        IPlayer[] players = _api?.World?.AllOnlinePlayers;
-        if (players == null || players.Length == 0) return 0;
-
-        long best = long.MaxValue;
-        foreach (IPlayer player in players)
-        {
-            Entity entity = player?.Entity;
-            if (entity == null) continue;
-
-            long dx = Math.Abs((long)entity.Pos.X - blockX);
-            long dz = Math.Abs((long)entity.Pos.Z - blockZ);
-            long distance = dx > dz ? dx : dz;
-            if (distance < best) best = distance;
-        }
-
-        return best == long.MaxValue ? 0 : best;
     }
 
     /// <summary>
@@ -364,11 +419,11 @@ public class TerrainDiffusionModSystem : ModSystem
     private ILandmaskSource BuildLandmask()
     {
         if (DiffusionConfig.Instance.WorldGen.OceanMap != "input") return null;
-        return new OceanMapLandmask(
-            () => WorldMapLayers.Resolve(_api)?.Ocean, _settings, ResolveOceanMapSamples(), _api.Logger);
+        int samples = WorldValuePins.OceanMapSamples(_api.WorldManager.SaveGame.WorldConfiguration);
+        return new OceanMapLandmask(() => WorldMapLayers.Resolve(_api)?.Ocean, _settings, samples, _api.Logger);
     }
 
-    /// <summary>Loads the ONNX models. Stops the game rather than returning without them.</summary>
+    /// <summary>Waits for the ONNX models. Stops the game rather than returning without them.</summary>
     private PipelineModels LoadModels()
     {
         try
@@ -384,11 +439,44 @@ public class TerrainDiffusionModSystem : ModSystem
         }
         catch (Exception e)
         {
-            throw DiffusionFailure.Fatal(_api.Logger,
-                "The models could not be loaded.", e);
+            throw DiffusionFailure.Fatal(_api.Logger, "The models could not be loaded.", e);
         }
     }
 
+    /// <summary>The world seed as the pipeline takes it: the int's bits, zero-extended.</summary>
+    private ulong WorldSeed() => (ulong)(uint)_api.WorldManager.Seed;
+
+    /// <summary>
+    /// The tile size this world's tile database holds, if it has one with tiles in it: the world keeps
+    /// it whatever this machine would pick, so tiles pregenerated on a GPU (256 blocks) are still
+    /// served on a CPU (128).
+    /// </summary>
+    private int? StoredTileSize() => InferenceSettings.Current.TileDatabase
+        ? TerrainTileStore.ReadTileSize(DiffusionPaths.TileDatabaseFile(_api.WorldManager.SaveGame.SavegameIdentifier))
+        : null;
+
+    /// <summary>
+    /// Opens the world's tile database when its <c>terraindiffusionTileDatabase</c> setting asks for
+    /// one. A database that cannot be opened only costs speed, so the world carries on without it.
+    /// </summary>
+    private void AttachTileStore(ILandmaskSource landmask)
+    {
+        if (!InferenceSettings.Current.TileDatabase) return;
+
+        string path = DiffusionPaths.TileDatabaseFile(_api.WorldManager.SaveGame.SavegameIdentifier);
+        try
+        {
+            Dictionary<string, string> fingerprint = TileFingerprint.Build(_api, _settings, landmask, _conditioningSites);
+            _provider.AttachStore(TerrainTileStore.Open(path, _provider.TileSize, fingerprint, _api.Logger));
+        }
+        catch (Exception e)
+        {
+            _api.Logger.Warning("[{0}] The tile database {1} could not be opened, so tiles will not be kept: {2}",
+                DiffusionPaths.ModId, path, e.Message);
+        }
+    }
+
+    /// <summary>Warns when the world's height or the climate map's range will flatten the model's terrain or climate.</summary>
     private void WarnAboutWorldHeight()
     {
         // A temperate 10 C place is the useful yardstick: colder ground has scale to spare and
@@ -424,12 +512,70 @@ public class TerrainDiffusionModSystem : ModSystem
     }
 
     /// <summary>
-    /// Records the model's temperature and precipitation seasonality for the region, which the
+    /// Lakes and rivers for this world, or null when it has them off or another mod fills the terrain.
+    /// </summary>
+    private WorldWater CreateWater()
+    {
+        if (!_settings.WaterFill)
+        {
+            _api.Logger.Notification("[{0}] Lakes and rivers are off for this world: depressions above sea level stay dry.",
+                DiffusionPaths.ModId);
+            return null;
+        }
+
+        if (WatershedsCompat.IsPresent(_api))
+        {
+            _api.Logger.Notification("[{0}] Lakes and rivers are left to Algernon's Watersheds, which fills this world's terrain.",
+                DiffusionPaths.ModId);
+            return null;
+        }
+
+        if (_settings.WaterVersion != WorldValuePins.CurrentWaterVersion)
+        {
+            _api.Logger.Warning(
+                "[{0}] This world's water was made with water version {1}, and this version of the mod makes version {2}: " +
+                "lakes and rivers may not meet at the edge of the explored ground.",
+                DiffusionPaths.ModId, _settings.WaterVersion, WorldValuePins.CurrentWaterVersion);
+        }
+
+        // Two river networks would cross each other: with Rivers installed it keeps its own.
+        bool rivers = !RiversCompat.IsPresent(_api);
+        if (!rivers && _settings.RiverMode != RiverMode.Off)
+        {
+            _api.Logger.Notification("[{0}] Rivers is installed, so this mod adds lakes but no rivers of its own.",
+                DiffusionPaths.ModId);
+        }
+
+        // Nobody online means nobody needs anything kept.
+        var water = new WorldWater(_provider, _settings, (uint)_api.WorldManager.Seed, rivers,
+            (x, z) => PlayerProximity.NearestPlayerDistance(_api?.World, x, z), _api.Logger);
+        LogWater(water);
+        return water;
+    }
+
+    /// <summary>Logs the water settings this world runs with.</summary>
+    private void LogWater(WorldWater water)
+    {
+        RiverGraphSettings graph = water.Settings;
+        MeanderSettings meander = graph.Meander;
+        _api.Logger.Notification(
+            "[{0}] Lakes and rivers: lakes {8} block(s) below their spill, wetland above; rivers {1} from {9:0}% of peak discharge, width x{2:0.#}; meanders {3}; " +
+            "{4} m per cell, discharge cap {5}, fill up to {6}x{6} tiles, {7} thread(s).",
+            DiffusionPaths.ModId, water.RiverMode.ToString().ToLowerInvariant(), _settings.RiverWidth,
+            meander == null
+                ? "off"
+                : string.Format(CultureInfo.InvariantCulture,
+                    "sinuosity {0:0.##}, wavelength {1:0} m, slope {2:0.####}, relief {3:0.#} m, confinement {4:0} m, free relief x{5:0.#}",
+                    meander.MaxSinuosity, meander.WavelengthMetres, meander.SlopeScale, meander.ReliefScaleMetres,
+                    meander.ConfinementMetres, meander.FreeReliefRatio),
+            graph.CellSizeMetres, graph.DischargeCap, 2 * graph.MaxFillRadius + 1, graph.MaxDegreeOfParallelism,
+            _settings.WetlandDepth, _settings.RiverTrim * 100f);
+    }
+
+    /// <summary>
+    /// Records the model's temperature and precipitation seasonality for a new map region, which the
     /// climate map has no room for and the seasons need at runtime.
     /// </summary>
-    /// <summary>What the model was told about rivers, kept so the debug map can show it.</summary>
-    private IRiverBasinSource _riverBasins;
-
     private void OnMapRegionGeneration(IMapRegion mapRegion, int regionX, int regionZ, ITreeAttribute chunkGenParams)
     {
         if (_provider == null || _settings is not { Enabled: true }) return;
@@ -462,539 +608,6 @@ public class TerrainDiffusionModSystem : ModSystem
         }
     }
 
-    private void OnSurfacePass(IChunkColumnGenerateRequest request)
-    {
-        if (_surface is not { Enabled: true }) return;
-
-        try
-        {
-            _surface.OnChunkColumnGeneration(request);
-        }
-        catch (Exception e)
-        {
-            throw DiffusionFailure.Fatal(_api.Logger,
-                $"The surface pass failed for chunk ({request.ChunkX}, {request.ChunkZ}).", e);
-        }
-    }
-
-    /// <summary>World settings this mod decides for itself, once, when a world is created.</summary>
-    private const string ShoreDetailCode = "terraindiffusionShoreDetail";
-    private const string ShoreFadeCode = "terraindiffusionShoreFade";
-    private const string OceanMapSamplesCode = "terraindiffusionOceanMapSamples";
-    private const string LatitudeProfileCode = "terraindiffusionLatitudeProfile";
-    private const string CoastFillCode = "terraindiffusionCoastFill";
-    private const string DryShallowsFillCode = "terraindiffusionDryShallowsFill";
-    private const string WaterFillCode = "terraindiffusionWaterFill";
-    private const string RiverModeCode = "terraindiffusionRiverMode";
-    private const string WetlandDepthCode = "terraindiffusionWetlandDepth";
-    private const string RiverTrimCode = "terraindiffusionRiverTrim";
-    private const string WaterVersionCode = "terraindiffusionWaterVersion";
-
-    /// <summary>The water library version new worlds are made with; bump it when the library changes the water.</summary>
-    private const int CurrentWaterVersion = 1;
-
-    /// <summary>
-    /// Water settings with their defaults (the same as worldconfig.json's), pinned so that a later
-    /// default never changes the water of a world's ungenerated chunks.
-    /// </summary>
-    private static readonly (string Code, string Default)[] PinnedWaterDefaults =
-    {
-        ("terraindiffusionRiverWidth", "2000"),
-        ("terraindiffusionMeanderSinuosity", "190"),
-        ("terraindiffusionMeanderWavelength", "600"),
-        ("terraindiffusionMeanderSlope", "150"),
-        ("terraindiffusionMeanderRelief", "40"),
-        ("terraindiffusionMeanderConfinement", "240"),
-        ("terraindiffusionMeanderFreeRelief", "20")
-    };
-
-    /// <summary>
-    /// World settings that decide what is built on the tiles, never what a tile holds. The region
-    /// size of the earlier lakes stays listed: worlds made with them still carry it.
-    /// </summary>
-    private static readonly string[] TileNeutralWorldCodes =
-    {
-        WaterFillCode, "terraindiffusionWaterRegion", WetlandDepthCode, RiverTrimCode, RiverModeCode, WaterVersionCode, "terraindiffusionWaterThreads",
-        "terraindiffusionRiverWidth", "terraindiffusionMeanderSinuosity", "terraindiffusionMeanderWavelength",
-        "terraindiffusionMeanderSlope", "terraindiffusionMeanderRelief", "terraindiffusionMeanderConfinement",
-        "terraindiffusionMeanderFreeRelief"
-    };
-
-    /// <summary>Where these lived before they were world settings: save game mod data.</summary>
-    private const string LegacyShoreDetailKey = "vsterraindiffusion:shoredetail";
-    private const string LegacyOceanMapSamplesKey = "vsterraindiffusion:oceanmapsamples";
-
-    /// <summary>
-    /// Settles, once per world, the values that shape its terrain without being on the Customize
-    /// screen - shore detail and how finely the ocean map is read - and writes them into the world's
-    /// settings, so that the same seed and settings always generate the same ground.
-    ///
-    /// It has to happen here, before the game first writes a new world's save game at asset
-    /// finalisation. Until the world's first autosave or a completed shutdown that is the only copy
-    /// on disk, and the world generator's set-up comes after it: a world closed before either lost
-    /// values written there, and on its next load was taken for one from before they existed,
-    /// generating the rest of its terrain differently from the ground already there.
-    ///
-    /// A new world takes the config's shore detail and the sampled ocean map. A world that kept these
-    /// in save game mod data carries them over. Any other world predates them, and keeps the plain
-    /// metre mapping and the full ocean map it was generated with.
-    /// </summary>
-    private static void PinWorldValues(ICoreServerAPI api)
-    {
-        ISaveGame save = api.WorldManager.SaveGame;
-        ITreeAttribute world = save?.WorldConfiguration;
-        if (world == null) return;
-
-        try
-        {
-            WorldGenConfig shaping = DiffusionConfig.Instance.WorldGen;
-
-            if (!world.HasAttribute(ShoreDetailCode) || !world.HasAttribute(ShoreFadeCode))
-            {
-                float detail, fade = shaping.ShoreFade;
-                if (save.GetData(LegacyShoreDetailKey) is { Length: 2 * sizeof(float) } stored)
-                {
-                    detail = BitConverter.ToSingle(stored, 0);
-                    fade = BitConverter.ToSingle(stored, sizeof(float));
-                }
-                else
-                {
-                    detail = save.IsNew ? shaping.ShoreDetail : 0f;
-                    if (!save.IsNew && shaping.ShoreDetail != 0f)
-                    {
-                        api.Logger.Notification(
-                            "[{0}] This world was generated before shore detail existed, so its coasts keep the " +
-                            "plain metre mapping; shoreDetail applies to worlds created from now on.", DiffusionPaths.ModId);
-                    }
-                }
-                world.SetString(ShoreDetailCode, detail.ToString(CultureInfo.InvariantCulture));
-                world.SetString(ShoreFadeCode, fade.ToString(CultureInfo.InvariantCulture));
-            }
-
-            // New worlds take today's latitude profile; one made before profiles were versioned keeps
-            // version 1, so ground generated from here on still meets the ground it already has.
-            if (!world.HasAttribute(LatitudeProfileCode))
-            {
-                int version = save.IsNew ? LatitudeProfile.CurrentVersion : 1;
-                world.SetString(LatitudeProfileCode, version.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (!world.HasAttribute(DryShallowsFillCode))
-            {
-                world.SetString(DryShallowsFillCode, save.IsNew ? "false" : "true");
-            }
-
-            // Lakes are new: a world made before them keeps its open depressions, so ground generated
-            // from here on still meets the ground it already has.
-            if (!world.HasAttribute(WaterFillCode))
-            {
-                world.SetString(WaterFillCode, save.IsNew ? "true" : "false");
-            }
-
-            // Rivers are newer still. A world that already has lakes keeps its explored ground free of
-            // rivers that would start at its edge; its lakes carry on with the new water.
-            if (!world.HasAttribute(RiverModeCode))
-            {
-                world.SetString(RiverModeCode, save.IsNew ? "trunk" : "off");
-                if (!save.IsNew && DiffusionWorldSettings.ReadWorldConfig(world, WaterFillCode, "false").ToBool(false))
-                {
-                    api.Logger.Notification(
-                        "[{0}] This world was made before rivers, so it gets none; its lakes are worked out by the " +
-                        "new water from here on.", DiffusionPaths.ModId);
-                }
-            }
-
-            // Wetlands came after the first lakes; a world explored without them keeps brim-full lakes.
-            if (!world.HasAttribute(WetlandDepthCode))
-            {
-                world.SetString(WetlandDepthCode, save.IsNew ? "1" : "0");
-            }
-
-            // As is the trim: a world explored without it keeps its small tributaries.
-            if (!world.HasAttribute(RiverTrimCode))
-            {
-                world.SetString(RiverTrimCode, save.IsNew ? "30" : "0");
-            }
-
-            foreach ((string code, string value) in PinnedWaterDefaults)
-            {
-                if (!world.HasAttribute(code)) world.SetString(code, value);
-            }
-
-            if (!world.HasAttribute(WaterVersionCode))
-            {
-                world.SetString(WaterVersionCode, CurrentWaterVersion.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (!world.HasAttribute(CoastFillCode))
-            {
-                world.SetString(CoastFillCode, save.IsNew ? "true" : "false");
-            }
-
-            if (!world.HasAttribute(OceanMapSamplesCode))
-            {
-                int samples = save.GetData(LegacyOceanMapSamplesKey) is { Length: sizeof(int) } stored
-                    ? BitConverter.ToInt32(stored, 0)
-                    : save.IsNew ? OceanMapLandmask.DefaultSamplesPerAxis : 0;
-                world.SetString(OceanMapSamplesCode, samples.ToString(CultureInfo.InvariantCulture));
-            }
-        }
-        catch (Exception e)
-        {
-            throw DiffusionFailure.Fatal(api.Logger, "This world's terrain settings could not be read or saved.", e);
-        }
-    }
-
-    /// <summary>The shore detail and fade <see cref="PinWorldValues"/> settled for this world.</summary>
-    private (float Detail, float Fade) ResolveShoreDetail()
-    {
-        ITreeAttribute world = _api.WorldManager.SaveGame.WorldConfiguration;
-        return (DiffusionWorldSettings.ReadWorldConfig(world, ShoreDetailCode, "0").ToFloat(0f),
-                DiffusionWorldSettings.ReadWorldConfig(world, ShoreFadeCode, "3").ToFloat(3f));
-    }
-
-    /// <summary>The ocean map sampling <see cref="PinWorldValues"/> settled for this world.</summary>
-    private int ResolveOceanMapSamples() =>
-        DiffusionWorldSettings.ReadWorldConfig(_api.WorldManager.SaveGame.WorldConfiguration, OceanMapSamplesCode, "0")
-            .ToInt(0);
-
-    /// <summary>Save game key holding the measured peak elevation, in metres.</summary>
-    private const string CalibrationSaveKey = "vsterraindiffusion:peakelevation";
-
-    /// <summary>
-    /// Fits the metre-to-block mapping to the terrain this seed actually produces around spawn, for
-    /// worlds using <c>heightMode: "auto"</c>. Not the default: at the shipped isotropic scale the
-    /// mapping is fixed and nothing needs measuring.
-    ///
-    /// The measurement costs a few model invocations, so it is kept in the save game: the answer
-    /// only depends on the seed, but paying for it on every server start would be wasteful, and a
-    /// stored value also keeps old chunks and new chunks agreeing if the survey settings change.
-    /// </summary>
-    /// <summary>The terrain height calibration this world keeps, if it has measured one.</summary>
-    private float? StoredCalibration()
-    {
-        byte[] stored;
-        try
-        {
-            stored = _api.WorldManager.SaveGame.GetData(CalibrationSaveKey);
-        }
-        catch (Exception e)
-        {
-            throw DiffusionFailure.Fatal(_api.Logger,
-                "This world's stored terrain height calibration could not be read.", e);
-        }
-        return stored is { Length: sizeof(float) } ? BitConverter.ToSingle(stored, 0) : null;
-    }
-
-    private void CalibrateTerrainHeight(TerrainDiffusionProvider.SpawnCandidate? center)
-    {
-        if (!_settings.WantsCalibration) return;
-
-        if (StoredCalibration() is { } saved)
-        {
-            _settings.ApplyCalibration(saved);
-            _api.Logger.VerboseDebug("[{0}] Reusing the stored terrain height calibration ({1:0} m peak).",
-                DiffusionPaths.ModId, saved);
-            return;
-        }
-
-        _api.Logger.Notification(
-            "[{0}] Measuring how tall the terrain gets around spawn so the world height can be used fully. " +
-            "This runs the model a few times and only happens once for this world.",
-            DiffusionPaths.ModId);
-
-        float? peak;
-        try
-        {
-            peak = _provider.MeasurePeakElevation(
-                center?.BlockX ?? _settings.OriginBlockX, center?.BlockZ ?? _settings.OriginBlockZ);
-        }
-        catch (Exception e)
-        {
-            throw DiffusionFailure.Fatal(_api.Logger,
-                "Terrain height calibration failed.", e);
-        }
-
-        if (peak == null) return;
-
-        _settings.ApplyCalibration(peak.Value);
-
-        // The spawn search above may already have built a tile, and a tile stores block heights
-        // rather than metres. Calibration has just changed what a metre is worth, so anything
-        // generated before now describes a different landscape from everything after it.
-        _provider.InvalidateTiles();
-
-        try
-        {
-            _api.WorldManager.SaveGame.StoreData(CalibrationSaveKey, BitConverter.GetBytes(peak.Value));
-        }
-        catch (Exception e)
-        {
-            throw DiffusionFailure.Fatal(_api.Logger,
-                "The terrain height calibration could not be saved to this world.", e);
-        }
-    }
-
-    private ulong WorldSeed() => (ulong)(uint)_api.WorldManager.Seed;
-
-    /// <summary>
-    /// The game's own world settings a tile depends on: the climate ones this mod reads, and the two
-    /// that shape the ocean map. Every other vanilla setting is gameplay, and changing it with
-    /// /worldconfig keeps the tiles.
-    /// </summary>
-    private static readonly string[] TileShapingVanillaCodes =
-    {
-        "globalTemperature", "globalPrecipitation", "polarEquatorDistance", "startingClimate", "worldClimate",
-        "landcover", "oceanscale"
-    };
-
-    /// <summary>Mod config fields that never reach a tile: the translocator search and the spawn search.</summary>
-    private static readonly string[] TileNeutralWorldGenFields =
-    {
-        nameof(WorldGenConfig.TranslocatorSearchTimeoutSeconds), nameof(WorldGenConfig.TranslocatorPeekPauseSeconds),
-        nameof(WorldGenConfig.TranslocatorMaxRangeBlocks), nameof(WorldGenConfig.TranslocatorStoredTerrainOnly),
-        nameof(WorldGenConfig.StartingClimateSearch),
-        nameof(WorldGenConfig.StartingClimateSearchRadiusBlocks), nameof(WorldGenConfig.StartingClimateNorthSouthCost),
-        nameof(WorldGenConfig.SpawnMaxBlocksAboveSea)
-    };
-
-    /// <summary>
-    /// The tile size this world's tile database holds, if it has one with tiles in it: the world keeps
-    /// it whatever this machine would pick, so tiles pregenerated on a GPU (256 blocks) are still
-    /// served on a CPU (128).
-    /// </summary>
-    private int? StoredTileSize() => InferenceSettings.Current.TileDatabase
-        ? TerrainTileStore.ReadTileSize(DiffusionPaths.TileDatabaseFile(_api.WorldManager.SaveGame.SavegameIdentifier))
-        : null;
-
-    /// <summary>
-    /// Opens the world's tile database when its <c>terraindiffusionTileDatabase</c> setting asks for
-    /// one. A database that cannot be opened only costs speed, so the world carries on without it.
-    /// </summary>
-    private void AttachTileStore(ILandmaskSource landmask)
-    {
-        if (!InferenceSettings.Current.TileDatabase) return;
-
-        string path = DiffusionPaths.TileDatabaseFile(_api.WorldManager.SaveGame.SavegameIdentifier);
-        try
-        {
-            _provider.AttachStore(TerrainTileStore.Open(path, _provider.TileSize, TileFingerprint(landmask),
-                _api.Logger));
-        }
-        catch (Exception e)
-        {
-            _api.Logger.Warning("[{0}] The tile database {1} could not be opened, so tiles will not be kept: {2}",
-                DiffusionPaths.ModId, path, e.Message);
-        }
-    }
-
-    /// <summary>
-    /// Everything that decides what this world's tiles contain, one entry per input, each a hash:
-    /// the terrain version and the models, the seed, the world's terrain settings, this mod's
-    /// terrain config, the settings as resolved (calibration included), and the two things a tile
-    /// takes from outside this mod - the ocean map, read the way the model reads it, and Rivers'
-    /// version and config. Settings that only decide how fast tiles are made are left out, and so
-    /// are other mods, which reach a tile only through the ocean map: installing one that does not
-    /// touch it keeps the tiles.
-    ///
-    /// Also left out, so that a world's tiles can be pregenerated on one machine and served from
-    /// another, or kept across an update: the mod's version (<see cref="TerrainTileStore.TerrainVersion"/>
-    /// stands for the code that shapes a tile), and the device and precisions the models ran at.
-    /// Those change a tile by a few metres at most, which is a faint seam where stored terrain meets
-    /// new terrain - against the hours it took to generate what is stored.
-    ///
-    /// The ocean map is sampled near the model's origin, so a mod that reshapes it only far from
-    /// there is not seen; that is what <c>/tdiff tiles clear</c> is for.
-    /// </summary>
-    /// <summary>
-    /// World values <see cref="PinWorldValues"/> writes onto a world made before they existed, with
-    /// what such a world always had; a world holding these hashes as it did before they were added.
-    /// </summary>
-    private static readonly Dictionary<string, string> PinnedLegacyValues = new(StringComparer.Ordinal)
-    {
-        [LatitudeProfileCode] = "1",
-        [CoastFillCode] = "false",
-        [DryShallowsFillCode] = "true"
-    };
-
-    private Dictionary<string, string> TileFingerprint(ILandmaskSource landmask)
-    {
-        var neutral = new HashSet<string>(InferenceSettings.AllCodes, StringComparer.Ordinal);
-        neutral.UnionWith(TileNeutralWorldCodes);
-        var world = new List<string>();
-        foreach (KeyValuePair<string, IAttribute> entry in _api.WorldManager.SaveGame.WorldConfiguration)
-        {
-            bool shaping = entry.Key.StartsWith(InferenceSettings.CodePrefix, StringComparison.Ordinal)
-                ? !neutral.Contains(entry.Key)
-                : Array.IndexOf(TileShapingVanillaCodes, entry.Key) >= 0;
-            // A value pinned onto an older world as what it always had is no change to its tiles.
-            if (shaping && PinnedLegacyValues.TryGetValue(entry.Key, out string legacy)
-                && entry.Value?.GetValue()?.ToString() == legacy) continue;
-            if (shaping) world.Add(entry.Key + "=" + entry.Value?.ToJsonToken());
-        }
-        world.Sort(StringComparer.Ordinal);
-
-        var worldGen = Newtonsoft.Json.Linq.JObject.FromObject(DiffusionConfig.Instance.WorldGen);
-        foreach (string field in TileNeutralWorldGenFields) worldGen.Remove(field);
-
-        string resolved;
-        try
-        {
-            resolved = Newtonsoft.Json.JsonConvert.SerializeObject(_settings);
-        }
-        catch (Exception)
-        {
-            resolved = _settings.Describe();
-        }
-        _api.Logger.VerboseDebug("[{0}] Tile database fingerprint, resolved settings: {1}", DiffusionPaths.ModId, resolved);
-
-        // 16 by 16 coarse cells, about 120 km across, of the ocean map as the coarse model is handed it.
-        float[] sea = landmask?.SeaFraction(-8, -8, 8, 8);
-        string oceanMap = sea == null ? "none" : Convert.ToHexString(System.Runtime.InteropServices.MemoryMarshal.AsBytes(sea.AsSpan()));
-
-        var inputs = new Dictionary<string, string>
-        {
-            ["terrain version"] = TerrainTileStore.TerrainVersion.ToString(CultureInfo.InvariantCulture),
-            ["models"] = ModelAssetManager.ModelIdentity,
-            ["seed"] = _api.WorldManager.Seed.ToString(CultureInfo.InvariantCulture),
-            ["world settings"] = string.Join("\n", world),
-            ["terrain config"] = worldGen.ToString(Newtonsoft.Json.Formatting.None),
-            ["resolved settings"] = resolved,
-            ["ocean map"] = oceanMap,
-            ["rivers"] = RiversCompat.Installed
-                ? (_api.ModLoader.GetMod("rivers")?.Info.Version ?? "") + "\n" + (RiversCompat.ConfigJson() ?? "")
-                : "none"
-        };
-
-        // Only when the experiment is on, so every other world keeps its fingerprint.
-        if (_conditioningSites != null)
-            inputs["story structures"] = Pipeline.CoarseConditioningSite.Fingerprint(_conditioningSites);
-
-        return inputs.ToDictionary(entry => entry.Key, entry => Convert.ToHexString(
-            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(entry.Value)))[..16]);
-    }
-
-    /// <summary>
-    /// Gets the model's heights into the world, whichever mod is generating terrain.
-    ///
-    /// Normally that is vanilla and this mod takes its place. When another mod has replaced terrain
-    /// generation outright there is nowhere to stand: two generators filling the same column
-    /// produce the union of both landscapes with only one mod's heightmaps recorded, which leaves
-    /// the surface block layers buried under the other mod's rock. So the only supported
-    /// arrangement with such a mod is to hand it our heights and let it do the filling.
-    ///
-    /// Stops the game when that could not be arranged. Standing aside would leave the world's
-    /// existing chunks modelled and everything after them not.
-    /// </summary>
-    private void InstallTerrain()
-    {
-        if (WatershedsCompat.IsPresent(_api))
-        {
-            InstallWatershedsHandover();
-            return;
-        }
-
-        InstallTerrainHandler();
-    }
-
-    /// <summary>
-    /// Hands the diffusion heightmap to Algernon's Watersheds and leaves the filling, the rivers
-    /// and everything downstream of them to it. See <see cref="WatershedsCompat"/> for how.
-    /// </summary>
-    private void InstallWatershedsHandover()
-    {
-        if (WatershedsCompat.TryInstall(_api, _provider, out string failure))
-        {
-            _api.Logger.Notification(
-                "[{0}] Algernon's Watersheds is generating this world's terrain, so the model is " +
-                "supplying its heights instead of filling chunks itself. Its rivers and streams are " +
-                "routed over the modelled landscape.", DiffusionPaths.ModId);
-            return;
-        }
-
-        throw DiffusionFailure.Fatal(_api.Logger,
-            "Algernon's Watersheds also generates terrain, and " + failure +
-            ". Remove or update one of the two mods.");
-    }
-
-    /// <summary>
-    /// Replaces vanilla GenTerra's Terrain-pass delegate in place, so the ordering relative to
-    /// rock strata, caves and block layers is exactly what those systems expect.
-    /// </summary>
-    private void InstallTerrainHandler()
-    {
-        IWorldGenHandler handlers = _api.Event.GetRegisteredWorldGenHandlers("standard");
-        List<ChunkColumnGenerationDelegate> terrainPass = handlers.OnChunkColumnGen[(int)EnumWorldGenPass.Terrain];
-
-        // Rivers leaves its own generator registered even when asked to stand aside, and two
-        // generators filling one column produce the union of both landscapes. Before anything else,
-        // so the vanilla slot below is the only one left to take.
-        if (RiversCompat.Installed) RiversCompat.RemoveTerrainHandler(_api, terrainPass);
-
-        ChunkColumnGenerationDelegate replacement = OnTerrainPass;
-
-        // Re-initialisation (for example /wgen regen) hits this a second time. Our handler may by
-        // then sit inside another mod's wrapper - ChunkLOD's worldgen profiler wraps every handler
-        // in the pass - where it cannot be swapped and need not be: it reads _generator on every
-        // call, so the wrapped copy already runs the generator this initialisation built.
-        if (_installedHandler != null)
-        {
-            int existing = terrainPass.IndexOf(_installedHandler);
-            if (existing >= 0)
-            {
-                terrainPass[existing] = replacement;
-                _installedHandler = replacement;
-                return;
-            }
-
-            if (terrainPass.Exists(d => Holds(d, _installedHandler, depth: 3)))
-            {
-                _api.Logger.VerboseDebug("[{0}] Terrain handler is still installed, inside another mod's wrapper",
-                    DiffusionPaths.ModId);
-                return;
-            }
-        }
-
-        int vanillaIndex = terrainPass.FindIndex(d => d.Target is GenTerra);
-        if (vanillaIndex >= 0)
-        {
-            terrainPass[vanillaIndex] = replacement;
-            _api.Logger.VerboseDebug("[{0}] Replaced vanilla GenTerra at terrain handler index {1}",
-                DiffusionPaths.ModId, vanillaIndex);
-        }
-        else
-        {
-            // Something else already took vanilla GenTerra's place. Running as well as it would fill
-            // every column twice, with the union of two landscapes and only one set of heightmaps.
-            throw DiffusionFailure.Fatal(_api.Logger,
-                "Another mod has already replaced vanilla GenTerra, so two generators would fill " +
-                "the same columns. Remove one of them.");
-        }
-
-        _installedHandler = replacement;
-    }
-
-    /// <summary>
-    /// Whether <paramref name="handler"/> is <paramref name="target"/>, or wraps it: a closure or
-    /// object whose fields hold it, to <paramref name="depth"/> wrappers deep.
-    /// </summary>
-    private static bool Holds(Delegate handler, Delegate target, int depth)
-    {
-        if (handler == null) return false;
-        if (handler.Equals(target)) return true;
-        if (depth <= 0 || handler.Target == null) return false;
-
-        foreach (System.Reflection.FieldInfo field in handler.Target.GetType().GetFields(
-                     System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public |
-                     System.Reflection.BindingFlags.NonPublic))
-        {
-            if (typeof(Delegate).IsAssignableFrom(field.FieldType) &&
-                Holds(field.GetValue(handler.Target) as Delegate, target, depth - 1))
-                return true;
-        }
-        return false;
-    }
-
     /// <summary>
     /// The Terrain pass itself. Wrapped because the server catches whatever a generation handler
     /// throws and simply moves on to the next one, which would leave this column part filled by the
@@ -1013,1048 +626,20 @@ public class TerrainDiffusionModSystem : ModSystem
         }
     }
 
-    /// <summary>
-    /// Points GenMaps at model-backed climate, vegetation and ocean layers. All are plain map
-    /// layers, so the rest of world generation keeps reading them the way it always has.
-    /// </summary>
-    private void InstallMapLayers()
+    /// <summary>The TerrainFeatures-pass surface shaping (beaches, bare rock), stopping the game if it fails.</summary>
+    private void OnSurfacePass(IChunkColumnGenerateRequest request)
     {
-        _forestLayer = _shrubLayer = null;
-        WorldMapLayers genMaps = WorldMapLayers.Resolve(_api);
-        if (genMaps == null)
-        {
-            throw DiffusionFailure.Fatal(_api.Logger,
-                "GenMaps is not loaded, so the model's climate and ocean maps cannot be installed.");
-        }
+        if (_surface is not { Enabled: true }) return;
 
-        if (!genMaps.IsVanilla)
-        {
-            _api.Logger.Notification("[{0}] The world's map layers belong to {1}; reading and writing those.",
-                DiffusionPaths.ModId, genMaps.OwnerName);
-        }
-
-        // In "input" mode the ocean map is what the terrain was conditioned on, so it is already
-        // the coastline that got generated and overwriting it would throw away the very settings -
-        // and the very other mod's map - the terrain was built to honour. Only the reverse mode,
-        // where the model invented the continents, has anything to correct.
-        if (DiffusionConfig.Instance.WorldGen.OceanMap == "output")
-        {
-            genMaps.Ocean = new DiffusionOceanMapLayer(_api.WorldManager.Seed + 1873, _provider);
-            _api.Logger.Notification(
-                "[{0}] The model decides the coastline; the world's ocean map has been replaced to match it.",
-                DiffusionPaths.ModId);
-        }
-
-        if (_settings.ClimateMode == DiffusionClimateMode.Off)
-        {
-            _api.Logger.Notification("[{0}] Model climate disabled for this world; using vanilla climate maps.",
-                DiffusionPaths.ModId);
-            return;
-        }
-
-        // Wrap the vanilla climate layer rather than replace it: its geologic activity byte has
-        // nothing to do with climate and is still wanted. On re-initialisation GenMaps rebuilds
-        // climateGen, but unwrap defensively anyway.
-        MapLayerBase vanillaClimate = genMaps.Climate is DiffusionClimateMapLayer alreadyWrapped
-            ? alreadyWrapped.Baseline
-            : genMaps.Climate;
-
-        if (vanillaClimate == null)
-        {
-            throw DiffusionFailure.Fatal(_api.Logger,
-                "The world has no climate map layer to build the model's climate on.");
-        }
-
-        genMaps.Climate = new DiffusionClimateMapLayer(
-            _api.WorldManager.Seed + 1, vanillaClimate, _provider, _settings);
-
-        if (!_settings.Climate.IsNeutral)
-        {
-            // Worth saying, because it is not what these settings do in vanilla: they are part of
-            // the world the model draws rather than a scaling of the numbers it produced.
-            _api.Logger.Notification(
-                "[{0}] The model is drawing a world {1}.{2}", DiffusionPaths.ModId, _settings.Climate,
-                IsCorrected(_settings)
-                    ? $" What it cannot reach is scaled onto its output afterwards " +
-                      $"({_settings.TemperatureCorrection:0.##}x temperature, " +
-                      $"{_settings.RainfallCorrection:0.##}x rainfall)."
-                    : string.Empty);
-        }
-
-        _api.Logger.Notification(
-            _settings.Latitude.IsNeutral
-                ? $"[{DiffusionPaths.ModId}] Latitude bands {_settings.Latitude.Status}; the model's climate " +
-                  "keeps its cold places wherever it drew them."
-                : $"[{DiffusionPaths.ModId}] Latitude bands {_settings.Latitude.Status}. Heading north or " +
-                  "south now changes the climate, and the equator sits where the world's starting " +
-                  "climate put it.");
-
-        WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
-
-        // Vanilla's forest and shrub layers stay on as the source of clearings. On
-        // re-initialisation they may already be wrapped.
-        MapLayerBase vanillaForest = genMaps.Forest is DiffusionForestMapLayer wrappedForest
-            ? wrappedForest.Vanilla
-            : genMaps.Forest;
-        MapLayerBase vanillaShrubs = genMaps.Bush is DiffusionForestMapLayer wrappedShrubs
-            ? wrappedShrubs.Vanilla
-            : genMaps.Bush;
-        genMaps.Forest = _forestLayer = new DiffusionForestMapLayer(
-            _api.WorldManager.Seed + 2, _provider, TerraGenConfig.forestMapScale, false,
-            _settings.ForestDensity, vanillaForest, worldGen.ForestClearings);
-        genMaps.Bush = _shrubLayer = new DiffusionForestMapLayer(
-            _api.WorldManager.Seed + 3, _provider, TerraGenConfig.shrubMapScale, true,
-            _settings.ShrubDensity, vanillaShrubs, worldGen.ShrubClearings);
-    }
-
-    /// <summary>True when some of the world's climate settings had to be left to the output.</summary>
-    private static bool IsCorrected(DiffusionWorldSettings settings)
-        => Math.Abs(settings.TemperatureCorrection - 1f) > 0.01f
-           || Math.Abs(settings.RainfallCorrection - 1f) > 0.01f;
-
-    /// <summary>
-    /// Finds somewhere to wake up. Vanilla guarantees land at the map centre by forcing its ocean
-    /// map, and conditioning the terrain on that map carries the guarantee through, so this
-    /// usually only has to move the spawn far enough to satisfy the starting climate - and in
-    /// "output" mode, where the model decides the coastline itself, far enough to find land at all.
-    ///
-    /// It runs on every start, not just new saves, so that an existing world's height survey stays
-    /// centred where it always was.
-    /// </summary>
-    private TerrainDiffusionProvider.SpawnCandidate? FindSpawn()
-    {
         try
         {
-            // A new world starts at 08:00 on the first day of the fifth month (the game's
-            // SaveGame.GetTotalGameSecondsStart), so the starting climate is what a player reads then:
-            // the middle of that day, with the calendar's own test for which way the year runs.
-            IGameCalendar calendar = _api.World.Calendar;
-            int daysPerMonth = Math.Max(1, calendar?.DaysPerMonth ?? 12);
-            WorldGenConfig worldGen = DiffusionConfig.Instance.WorldGen;
-            _provider.ArrivalSeason = (4.0 + 0.5 / daysPerMonth,
-                z => worldGen.SeasonHemispheres && calendar?.OnGetLatitude != null && !(calendar.OnGetLatitude(z) > 0.0),
-                worldGen.SeasonalTemperatureStrength,
-                z => DiffusionSeasons.WinterGain(_api.World, z));
-            TerrainDiffusionProvider.SpawnCandidate? land = _provider.FindSpawn();
-            if (land == null)
-            {
-                _api.Logger.Warning(
-                    "[{0}] No land found near the world centre; the spawn point was left where it was. " +
-                    "Try a different seed if you start in the ocean.", DiffusionPaths.ModId);
-                return null;
-            }
-
-            ReportStartingClimate(land.Value);
-            return land;
+            _surface.OnChunkColumnGeneration(request);
         }
         catch (Exception e)
         {
             throw DiffusionFailure.Fatal(_api.Logger,
-                "The spawn search failed.", e);
+                $"The surface pass failed for chunk ({request.ChunkX}, {request.ChunkZ}).", e);
         }
-    }
-
-    /// <summary>
-    /// Says whether the world's starting climate was honoured. A miss is worth a warning rather
-    /// than silence: the player picked a climate and is not getting it, and the reason - no land
-    /// that cold or that hot anywhere within reach of this seed's map centre - is not something
-    /// they could work out from where they wake up.
-    /// </summary>
-    private void ReportStartingClimate(TerrainDiffusionProvider.SpawnCandidate spawn)
-    {
-        StartingClimate? band = _settings.StartingClimate;
-        if (band == null) return;
-
-        int distance = (int)Math.Sqrt(
-            Math.Pow(spawn.BlockX - _settings.OriginBlockX, 2) + Math.Pow(spawn.BlockZ - _settings.OriginBlockZ, 2));
-
-        if (spawn.MatchedClimate)
-        {
-            _api.Logger.Notification(
-                "[{0}] Starting climate {1}: spawning near sea level at about {2:0.#} C on the first day, {3} blocks from the map centre.",
-                DiffusionPaths.ModId, band.Value, spawn.TemperatureC, distance);
-            return;
-        }
-
-        _api.Logger.Warning(
-            "[{0}] No {1} land within range of the map centre on this seed; spawning at about {2:0.#} C instead, " +
-            "{3} blocks out. Raise worldGen.startingClimateSearchRadiusBlocks to look further, or try another seed.",
-            DiffusionPaths.ModId, band.Value, spawn.TemperatureC, distance);
-    }
-
-    /// <summary>
-    /// Turns the spawn column found earlier into a position to apply once the save game's spawn
-    /// record exists. Only for brand new saves, so an existing world never has its spawn moved.
-    /// </summary>
-    private void RecordSpawn(TerrainDiffusionProvider.SpawnCandidate? land)
-    {
-        if (land == null || !_api.WorldManager.SaveGame.IsNew) return;
-
-        try
-        {
-            int blockX = land.Value.BlockX, blockZ = land.Value.BlockZ;
-            if (_water != null && _water.IsWater(blockX, blockZ))
-            {
-                (int x, int z)? shore = NearestDryLand(blockX, blockZ);
-                if (shore != null)
-                {
-                    _api.Logger.Notification("[{0}] The spawn search's column ({1}, {2}) is in a lake or river; moved to " +
-                        "dry land at ({3}, {4}).", DiffusionPaths.ModId, blockX, blockZ, shore.Value.x, shore.Value.z);
-                    (blockX, blockZ) = shore.Value;
-                }
-            }
-
-            TerrainTile tile = _provider.GetTileAt(blockX, blockZ);
-            int index = tile.Index(blockX - tile.BlockX, blockZ - tile.BlockZ);
-            int y = Math.Min(_settings.MapSizeY - 2, tile.SurfaceY[index] + 1);
-
-            _pendingSpawn = (blockX, y, blockZ);
-            _api.Logger.Notification("[{0}] Found a land spawn at ({1}, {2}, {3}), {4} m above sea level.",
-                DiffusionPaths.ModId, blockX, y, blockZ, (int)tile.ElevationMeters[index]);
-        }
-        catch (Exception e)
-        {
-            throw DiffusionFailure.Fatal(_api.Logger, "The world spawn could not be placed on land.", e);
-        }
-    }
-
-    private (int X, int Y, int Z)? _pendingSpawn;
-
-    /// <summary>
-    /// The nearest column to a spawn in a lake or river that is land above the sea and dry,
-    /// searching outward square by square up to <see cref="SpawnShoreSearchBlocks"/>; null if none.
-    /// </summary>
-    private (int x, int z)? NearestDryLand(int blockX, int blockZ)
-    {
-        TerrainTile tile = null;
-        for (int r = 1; r <= SpawnShoreSearchBlocks; r++)
-        {
-            (int x, int z)? best = null;
-            long bestDistance = long.MaxValue;
-            for (int dz = -r; dz <= r; dz++)
-            for (int dx = -r; dx <= r; dx++)
-            {
-                if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
-                long distance = (long)dx * dx + (long)dz * dz;
-                if (distance >= bestDistance) continue;
-
-                int x = blockX + dx, z = blockZ + dz;
-                if (!_settings.IsInsideWorld(x, z)) continue;
-                _provider.GetTileAt(x, z, ref tile);
-                int index = tile.Index(x - tile.BlockX, z - tile.BlockZ);
-                if (tile.ElevationMeters[index] <= 0f || tile.SurfaceY[index] < _settings.SeaLevel) continue;
-                if (_water.IsWater(x, z)) continue;
-
-                best = (x, z);
-                bestDistance = distance;
-            }
-            if (best != null) return best;
-        }
-        return null;
-    }
-
-    private const int SpawnShoreSearchBlocks = 256;
-
-    /// <summary>
-    /// Lakes and rivers for this world, or null when it has them off or another mod fills the terrain.
-    /// </summary>
-    private WorldWater CreateWater()
-    {
-        if (!_settings.WaterFill)
-        {
-            _api.Logger.Notification("[{0}] Lakes and rivers are off for this world: depressions above sea level stay dry.",
-                DiffusionPaths.ModId);
-            return null;
-        }
-
-        if (WatershedsCompat.IsPresent(_api))
-        {
-            _api.Logger.Notification("[{0}] Lakes and rivers are left to Algernon's Watersheds, which fills this world's terrain.",
-                DiffusionPaths.ModId);
-            return null;
-        }
-
-        if (_settings.WaterVersion != CurrentWaterVersion)
-        {
-            _api.Logger.Warning(
-                "[{0}] This world's water was made with water version {1}, and this version of the mod makes version {2}: " +
-                "lakes and rivers may not meet at the edge of the explored ground.",
-                DiffusionPaths.ModId, _settings.WaterVersion, CurrentWaterVersion);
-        }
-
-        // Two river networks would cross each other: with Rivers installed it keeps its own.
-        bool rivers = !RiversCompat.IsPresent(_api);
-        if (!rivers && _settings.RiverMode != RiverMode.Off)
-        {
-            _api.Logger.Notification("[{0}] Rivers is installed, so this mod adds lakes but no rivers of its own.",
-                DiffusionPaths.ModId);
-        }
-
-        var water = new WorldWater(_provider, _settings, (uint)_api.WorldManager.Seed, rivers, WaterDistance, _api.Logger);
-        RiverGraphSettings graph = water.Settings;
-        MeanderSettings meander = graph.Meander;
-        _api.Logger.Notification(
-            "[{0}] Lakes and rivers: lakes {8} block(s) below their spill, wetland above; rivers {1} from {9:0}% of peak discharge, width x{2:0.#}; meanders {3}; " +
-            "{4} m per cell, discharge cap {5}, fill up to {6}x{6} tiles, {7} thread(s).",
-            DiffusionPaths.ModId, water.RiverMode.ToString().ToLowerInvariant(), _settings.RiverWidth,
-            meander == null
-                ? "off"
-                : string.Format(CultureInfo.InvariantCulture,
-                    "sinuosity {0:0.##}, wavelength {1:0} m, slope {2:0.####}, relief {3:0.#} m, confinement {4:0} m, free relief x{5:0.#}",
-                    meander.MaxSinuosity, meander.WavelengthMetres, meander.SlopeScale, meander.ReliefScaleMetres,
-                    meander.ConfinementMetres, meander.FreeReliefRatio),
-            graph.CellSizeMetres, graph.DischargeCap, 2 * graph.MaxFillRadius + 1, graph.MaxDegreeOfParallelism,
-            _settings.WetlandDepth, _settings.RiverTrim * 100f);
-        return water;
-    }
-
-    /// <summary>
-    /// How far a block is from the nearest player, for what the water may forget: nobody online
-    /// means nobody needs anything kept.
-    /// </summary>
-    private long WaterDistance(int blockX, int blockZ)
-    {
-        IPlayer[] players = _api?.World?.AllOnlinePlayers;
-        long best = long.MaxValue;
-        if (players == null) return best;
-        foreach (IPlayer player in players)
-        {
-            Entity entity = player?.Entity;
-            if (entity == null) continue;
-            long dx = Math.Abs((long)entity.Pos.X - blockX), dz = Math.Abs((long)entity.Pos.Z - blockZ);
-            best = Math.Min(best, Math.Max(dx, dz));
-        }
-        return best;
-    }
-
-    private void ApplyPendingSpawn()
-    {
-        if (_pendingSpawn == null) return;
-        (int x, int y, int z) = _pendingSpawn.Value;
-        _pendingSpawn = null;
-
-        try
-        {
-            // A brand new save has no spawn record at all, and SetDefaultSpawnPosition assumes one
-            // exists. The serverconfig command creates it, so go through that instead.
-            _api.InjectConsole($"/serverconfig setspawn {x} {y} {z}");
-            _api.Logger.Notification("[{0}] World spawn set to ({1}, {2}, {3}).", DiffusionPaths.ModId, x, y, z);
-        }
-        catch (Exception e)
-        {
-            throw DiffusionFailure.Fatal(_api.Logger, "The world spawn could not be moved to land.", e);
-        }
-    }
-
-    private void RegisterCommands(ICoreServerAPI api)
-    {
-        api.ChatCommands
-            .Create("terraindiffusion")
-            .WithAlias("tdiff")
-            .WithDescription("Inspect the Terrain Diffusion generator")
-            .RequiresPrivilege(Privilege.controlserver)
-            .BeginSubCommand("status")
-                .WithDescription("Show the model, device and world scaling in use")
-                .HandleWith(OnStatusCommand)
-            .EndSubCommand()
-            .BeginSubCommand("gpulimit")
-                .WithDescription("Show or set the share of the time inference may keep the device busy")
-                .WithArgs(api.ChatCommands.Parsers.OptionalInt("percent"))
-                .HandleWith(OnGpuLimitCommand)
-            .EndSubCommand()
-            .BeginSubCommand("map")
-                .WithDescription("Show the address of the debug map, if it is running")
-                .HandleWith(OnMapCommand)
-            .EndSubCommand()
-            .BeginSubCommand("here")
-                .WithDescription("Show the model's elevation and climate at your position")
-                .RequiresPlayer()
-                .HandleWith(OnHereCommand)
-            .EndSubCommand()
-            .BeginSubCommand("season")
-                .WithDescription("Show the seasonal temperature and rainfall cycle at a position")
-                .WithArgs(api.ChatCommands.Parsers.Int("x"), api.ChatCommands.Parsers.Int("z"))
-                .HandleWith(OnSeasonCommand)
-            .EndSubCommand()
-            .BeginSubCommand("climate")
-                .WithDescription("Show the climate other mods see at a position (yours by default): monthly " +
-                                 "temperature and rain, diurnal range and Köppen class")
-                .WithArgs(api.ChatCommands.Parsers.OptionalInt("x"), api.ChatCommands.Parsers.OptionalInt("z"))
-                .HandleWith(OnClimateCommand)
-            .EndSubCommand()
-            .BeginSubCommand("rivers")
-                .WithDescription("Report the Rivers network around a position, for working out why rivers come up short")
-                .WithArgs(api.ChatCommands.Parsers.OptionalInt("x"), api.ChatCommands.Parsers.OptionalInt("z"))
-                .HandleWith(OnRiversCommand)
-            .EndSubCommand()
-            .BeginSubCommand("tiles")
-                .WithDescription("Show this world's tile database, or empty it with 'clear'")
-                .WithArgs(api.ChatCommands.Parsers.OptionalWord("clear"))
-                .HandleWith(OnTilesCommand)
-            .EndSubCommand()
-            .BeginSubCommand("pregen")
-                .WithDescription("Pregenerate terrain into the tile database: '<radius> [x z]' starts (around " +
-                                 "spawn by default), 'stop' stops, no argument shows progress")
-                .WithArgs(api.ChatCommands.Parsers.OptionalWord("radius|stop"),
-                          api.ChatCommands.Parsers.OptionalInt("x"), api.ChatCommands.Parsers.OptionalInt("z"))
-                .HandleWith(OnPregenCommand)
-            .EndSubCommand()
-            .BeginSubCommand("column")
-                .WithDescription("Read back the generated block column at a position, for diagnosing world generation")
-                .WithArgs(api.ChatCommands.Parsers.Int("x"), api.ChatCommands.Parsers.Int("z"))
-                .HandleWith(OnColumnCommand)
-            .EndSubCommand();
-    }
-
-    private Vintagestory.API.Common.TextCommandResult OnRiversCommand(
-        Vintagestory.API.Common.TextCommandCallingArgs args)
-    {
-        if (!RiversCompat.Installed)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Success(
-                "Rivers is not generating this world's rivers.");
-        }
-
-        // Defaults to where the caller is standing, which is the usual thing to ask about.
-        int x, z;
-        if (args.Parsers[0].IsMissing || args.Parsers[1].IsMissing)
-        {
-            Entity caller = args.Caller?.Entity;
-            if (caller == null)
-            {
-                return Vintagestory.API.Common.TextCommandResult.Error(
-                    "Give an x and z, or run this as a player.");
-            }
-            x = (int)caller.Pos.X;
-            z = (int)caller.Pos.Z;
-        }
-        else
-        {
-            x = (int)args[0];
-            z = (int)args[1];
-        }
-
-        return Vintagestory.API.Common.TextCommandResult.Success(RiversCompat.DescribeRegion(x, z));
-    }
-
-    private Vintagestory.API.Common.TextCommandResult OnStatusCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
-    {
-        if (_settings == null)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Success("Terrain Diffusion has not initialised yet.");
-        }
-        if (!_settings.Enabled)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Success("Terrain Diffusion is disabled for this world.");
-        }
-        if (_provider == null)
-        {
-            string reason = PipelineModels.LoadFailure?.Message ?? "still loading";
-            return Vintagestory.API.Common.TextCommandResult.Success("Terrain Diffusion is not running: " + reason);
-        }
-
-        var lines = new List<string>
-        {
-            "Terrain Diffusion active",
-            "",
-            $"Requested device: {InferenceSettings.Current.InferenceDevice}",
-            $"Model precision: coarse fp32, base {InferenceSettings.Current.BasePrecision}, " +
-            $"decoder {InferenceSettings.Current.DecoderPrecision}",
-            $"Runtime: {OnnxRuntimeBootstrap.ActiveRuntimeDescription}",
-            $"Provider: {OnnxModel.ActiveProvider}",
-            $"Model resolution: {WorldPipelineModelConfig.Instance.NativeResolution:0.##} m per pixel",
-            $"CPU threads: {(InferenceSettings.Current.CpuThreads > 0 ? InferenceSettings.Current.CpuThreadsOr(0) : "auto")}",
-            $"Models resident: {(InferenceSettings.Current.OffloadModels ? "no, one at a time (terraindiffusionOffloadModels)" : "yes")}",
-            $"Latent batch: {_provider.LatentBatchSize}",
-            $"Pipeline cache: {_provider.PipelineCachedBytes / 1048576.0:0.#} / " +
-            $"{DiffusionConfig.Instance.TileCacheMegabytes} MB",
-            $"Pipeline windows computed: {_provider.PipelineComputedWindows}",
-            $"Translocator search: {TranslocatorSearchCompat.Describe()}",
-            $"Tiles dropped for closer work: {_provider.PreemptionCount}",
-            $"Device limit: {InferenceThrottle.Describe()}",
-            $"Settings screen: {(ConfigLibCompat.IsPresent(_api) ? "ConfigLib" : "not installed")}",
-            $"Debug map: {(_debugMap?.IsRunning == true ? _debugMap.Url : "off")}",
-            $"Tiles generated: {_provider.TilesGenerated}",
-            $"Water: {(_water == null ? "off" : _water.Describe())}",
-            $"Tile database: {DescribeTileStore(_provider.Store)}",
-            $"Pregeneration: {(_pregen == null ? "none" : _pregen.Describe())}",
-            $"Tile size: {_provider.TileSize}x{_provider.TileSize} blocks",
-            $"Average tile time: {_provider.AverageTileMillis} ms",
-            $"Model inference: {_provider.ModelTimingSummary}",
-            $"Inference share of tile time: {_provider.InferenceSharePercent}%",
-            "",
-            $"Horizontal scale: {_settings.MetersPerBlock:0.##} m per block (scale {_settings.Scale})",
-            $"Vertical scale: {_settings.DescribeHeight()}",
-            $"Sea level: Y {_settings.SeaLevel}",
-            $"World height: {_settings.MapSizeY}",
-            $"Headroom: {_settings.HeadroomBlocks} blocks above sea level",
-            $"Linear up to: {_settings.LinearRangeMeters:0} m of elevation",
-            $"Climate: {_settings.ClimateMode.ToString().ToLowerInvariant()}"
-        };
-
-        if (!_settings.Climate.IsNeutral) lines.Add($"Global climate: {_settings.Climate}");
-        lines.Add($"Latitude bands: {_settings.Latitude.Status}");
-
-        return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
-    }
-
-    private static string DescribeTileStore(TerrainTileStore store) => store == null
-        ? "off (terraindiffusionTileDatabase)"
-        : $"{store.CountTiles()} tiles and {store.CountCoarseWindows()} coarse windows, " +
-          $"{store.SizeOnDisk() / 1048576.0:0.#} MB; this session {store.TilesLoaded} tiles read " +
-          $"({store.AverageLoadMillis:0.#} ms each), {store.TilesSaved} written ({store.AverageTileBytes / 1024} KB, " +
-          $"{store.AverageSaveMillis:0.#} ms each), {store.TilesPending} queued; {store.CoarseWindowsLoaded} coarse " +
-          $"windows read, {store.CoarseWindowsSaved} written";
-
-    private Vintagestory.API.Common.TextCommandResult OnTilesCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
-    {
-        TerrainTileStore store = _provider?.Store;
-        if (store == null)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Success(
-                "This world keeps no tile database. Turn on terraindiffusionTileDatabase with /worldconfig and reload the world.");
-        }
-
-        string action = args.Parsers[0].IsMissing ? "" : ((string)args[0]).Trim().ToLowerInvariant();
-        if (action == "")
-        {
-            return Vintagestory.API.Common.TextCommandResult.Success($"{store.Path}\n{DescribeTileStore(store)}");
-        }
-        if (action != "clear")
-        {
-            return Vintagestory.API.Common.TextCommandResult.Error("The only action is 'clear'.");
-        }
-
-        long removed = _provider.ClearStoredTiles();
-        return Vintagestory.API.Common.TextCommandResult.Success(
-            $"Removed {removed} stored tiles; terrain not yet in a chunk will be generated again.");
-    }
-
-    /// <summary>Furthest a pregeneration may reach, in blocks: 100 km, about 480,000 tiles of 256.</summary>
-    private const int MaxPregenRadius = 100_000;
-
-    private Vintagestory.API.Common.TextCommandResult OnPregenCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
-    {
-        string word = args.Parsers[0].IsMissing ? "" : ((string)args[0]).Trim().ToLowerInvariant();
-        if (word == "")
-        {
-            return Vintagestory.API.Common.TextCommandResult.Success(DescribePregeneration());
-        }
-
-        if (word == "stop")
-        {
-            if (_pregen == null || !_pregen.IsRunning)
-            {
-                ForgetPregeneration();
-                return Vintagestory.API.Common.TextCommandResult.Success("No pregen is running.");
-            }
-            if (_pregen.IsStopping)
-            {
-                return Vintagestory.API.Common.TextCommandResult.Success(
-                    $"Pregen is already stopping: {_pregen.Describe()}.");
-            }
-            string progress = _pregen.Describe();
-            _pregen.Stop();
-            ForgetPregeneration();
-            return Vintagestory.API.Common.TextCommandResult.Success(
-                $"Pregen stopping after the current tile: {progress}. Start it again with the same radius to resume.");
-        }
-
-        if (!int.TryParse(word, NumberStyles.Integer, CultureInfo.InvariantCulture, out int radius) || radius < 1)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Error("Usage: /tdiff pregen <radius> [x z], or /tdiff pregen stop.");
-        }
-        if (radius > MaxPregenRadius)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Error(
-                $"The radius can be at most {TilePregenerator.Count(MaxPregenRadius)} blocks.");
-        }
-        if (_provider == null)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Error("Terrain Diffusion is not generating this world.");
-        }
-        if (_provider.Store == null)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Error(
-                "Pregen needs the tile database. Turn on terraindiffusionTileDatabase with /worldconfig, then " +
-                "reload the world.");
-        }
-        if (_pregen?.IsRunning == true)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Error(
-                $"A pregen is already running: {_pregen.Describe()}. Stop it first with /tdiff pregen stop.");
-        }
-
-        int x, z;
-        if (!args.Parsers[1].IsMissing && !args.Parsers[2].IsMissing)
-        {
-            x = (int)args[1];
-            z = (int)args[2];
-        }
-        else
-        {
-            Vintagestory.API.MathTools.BlockPos spawn = _api.World.DefaultSpawnPosition?.AsBlockPos;
-            x = spawn?.X ?? _api.WorldManager.MapSizeX / 2;
-            z = spawn?.Z ?? _api.WorldManager.MapSizeZ / 2;
-        }
-
-        TilePregenerator job = StartPregeneration(x, z, radius, args.Caller.Player?.PlayerUID);
-
-        // From this session's tile times, so only once some tile has been generated.
-        int minutes = (int)Math.Ceiling(job.TileCount * _provider.AverageTileMillis / 60000.0);
-        string eta = minutes > 0 ? $" ETA {minutes} minute{(minutes == 1 ? "" : "s")}." : "";
-        return Vintagestory.API.Common.TextCommandResult.Success(
-            $"Pregen started: Radius is {TilePregenerator.Count(radius)} blocks " +
-            $"({TilePregenerator.Count(job.TileCount)} tiles and {job.CoarseAreaCount} coarse tiles).{eta} " +
-            "Stop with /tdiff pregen stop.");
-    }
-
-    private string DescribePregeneration()
-    {
-        if (_pregen == null)
-        {
-            return "No pregen has run this session. Start one with /tdiff pregen <radius> [x z].";
-        }
-        string state = _pregen.IsStopping ? "stopping" : _pregen.IsRunning ? "running"
-            : _pregen.Completed ? "finished" : "stopped";
-        return $"Pregen {state}, {TilePregenerator.Count(_pregen.RadiusBlocks)} blocks around " +
-               $"({_pregen.CentreX}, {_pregen.CentreZ}): " +
-               _pregen.Describe();
-    }
-
-    /// <summary>
-    /// Starts a pregeneration job and records it in the save. Progress goes to the log, and to
-    /// <paramref name="playerUid"/>'s chat when a player started it.
-    /// </summary>
-    private TilePregenerator StartPregeneration(int x, int z, int radius, string playerUid)
-    {
-        var job = new TilePregenerator(_provider, _api.Logger, x, z, radius, _api.WorldManager.RegionSize);
-        // A fast GPU would otherwise queue tiles for the water without bound.
-        job.Hold = () => _water is { } water && water.Backlog > WorldWater.PregenBacklogLimit;
-        job.Progress += j =>
-        {
-            string line = "Pregen: " + j.Describe();
-            _api.Logger.Notification("[{0}] {1}", DiffusionPaths.ModId, line);
-            TellPlayer(playerUid, line);
-        };
-        job.Finished += j =>
-        {
-            TellPlayer(playerUid, $"Pregen {(j.Completed ? "finished" : "stopped")}: {j.Describe()}");
-            if (!j.Completed) return;
-            _api.Event.EnqueueMainThreadTask(() =>
-            {
-                if (ReferenceEquals(_pregen, j)) ForgetPregeneration();
-            }, "terraindiffusion-pregen-done");
-        };
-
-        _pregen = job;
-        _api.WorldManager.SaveGame.StoreData(PregenSaveKey,
-            System.Text.Encoding.UTF8.GetBytes(string.Create(CultureInfo.InvariantCulture, $"{x},{z},{radius}")));
-        job.Start();
-        return job;
-    }
-
-    /// <summary>Picks up a pregeneration the save says was still running when the server last stopped.</summary>
-    private void ResumePregeneration()
-    {
-        byte[] stored = _api.WorldManager.SaveGame.GetData(PregenSaveKey);
-        if (stored == null || stored.Length == 0) return;
-
-        string[] parts = System.Text.Encoding.UTF8.GetString(stored).Split(',');
-        if (parts.Length != 3 ||
-            !int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int x) ||
-            !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int z) ||
-            !int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int radius))
-        {
-            ForgetPregeneration();
-            return;
-        }
-
-        if (_provider?.Store == null)
-        {
-            _api.Logger.Warning(
-                "[{0}] Pregen not resumed: this world no longer has a tile database.", DiffusionPaths.ModId);
-            ForgetPregeneration();
-            return;
-        }
-
-        _api.Logger.Notification("[{0}] Resuming pregen: {1} blocks around ({2}, {3}).",
-            DiffusionPaths.ModId, TilePregenerator.Count(radius), x, z);
-        StartPregeneration(x, z, radius, null);
-    }
-
-    /// <summary>Stops the running job, waiting for its tile; <paramref name="forget"/> also drops it from the save.</summary>
-    private void StopPregeneration(bool forget)
-    {
-        _pregen?.Dispose();
-        _pregen = null;
-        if (forget) ForgetPregeneration();
-    }
-
-    private void ForgetPregeneration() =>
-        _api.WorldManager.SaveGame.StoreData(PregenSaveKey, Array.Empty<byte>());
-
-    /// <summary>A chat line to a player, if they are still online. Safe from any thread.</summary>
-    private void TellPlayer(string playerUid, string message)
-    {
-        if (playerUid == null) return;
-        _api.Event.EnqueueMainThreadTask(() =>
-        {
-            if (_api.World.PlayerByUid(playerUid) is IServerPlayer player &&
-                player.ConnectionState == EnumClientState.Playing)
-            {
-                player.SendMessage(Vintagestory.API.Config.GlobalConstants.GeneralChatGroup, message,
-                    EnumChatType.Notification);
-            }
-        }, "terraindiffusion-pregen-message");
-    }
-
-    private Vintagestory.API.Common.TextCommandResult OnGpuLimitCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
-    {
-        // An omitted OptionalInt reads back as 0 rather than null, which would clamp to the lowest
-        // setting instead of printing the current one. ArgCount is no help either: it is how many
-        // tokens the parsers consume, not how many were given.
-        if (args.Parsers[0].IsMissing)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Success(
-                $"Inference is limited to {InferenceThrottle.Describe()}. " +
-                "Pass a percentage from 5 to 100 to change it.");
-        }
-
-        int requested = (int)args[0];
-        InferenceThrottle.UtilizationPercent = requested;
-        int applied = InferenceThrottle.UtilizationPercent;
-        InferenceSettings.Current.GpuUtilizationPercent = applied;
-
-        // Saved with the world, as the Customize screen's own value is.
-        string code = InferenceSettings.Code(nameof(InferenceSettings.GpuUtilizationPercent));
-        _api.WorldManager.SaveGame.WorldConfiguration.SetInt(code, applied);
-        string persisted = $"Saved to this world's {code}.";
-
-        string effect = applied >= 100
-            ? "World generation runs at full speed."
-            : $"World generation will take roughly {100f / applied:0.#} times as long, " +
-              "in exchange for the device being free between model runs.";
-
-        return Vintagestory.API.Common.TextCommandResult.Success(
-            $"Inference is now limited to {applied}% of the time. {effect} {persisted}");
-    }
-
-    private Vintagestory.API.Common.TextCommandResult OnMapCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
-    {
-        if (_debugMap == null || !_debugMap.IsRunning)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Success(
-                $"The debug map is off. Set debugMapPort in {DiffusionPaths.ModId}.json (8088 is a reasonable " +
-                "choice) and restart the server.");
-        }
-
-        return Vintagestory.API.Common.TextCommandResult.Success(
-            $"Debug map: {_debugMap.Url}\n" +
-            $"Remembering {_debugMap.TileCount} of the last {DiffusionConfig.Instance.DebugMapHistoryTiles} tiles.");
-    }
-
-    private Vintagestory.API.Common.TextCommandResult OnHereCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
-    {
-        if (_provider == null)
-        {
-            return Vintagestory.API.Common.TextCommandResult.Error("Terrain Diffusion is not running in this world.");
-        }
-
-        var position = args.Caller.Entity.Pos.AsBlockPos;
-        TerrainTile tile = _provider.GetTileAt(position.X, position.Z);
-        int index = tile.Index(position.X - tile.BlockX, position.Z - tile.BlockZ);
-        Bioclim climate = tile.ClimateAt(index);
-        RainfallScale rainfall = RainfallScale.FromConfig(DiffusionConfig.Instance.WorldGen);
-
-        var lines = new List<string> { $"Terrain Diffusion at ({position.X}, {position.Z})", "" };
-        lines.AddRange(PlaceLines(position));
-        lines.Add("");
-        lines.Add($"Elevation: {tile.ElevationMeters[index]:0} m");
-        lines.Add($"Surface block: Y {tile.SurfaceY[index]}");
-        lines.Add($"Slope: {tile.Slope[index] * 100f:0.#}% (bare rock above {climate.BareSlopeThreshold * 100f:0}%)");
-        lines.Add("");
-        lines.Add($"Mean temperature: {climate.MeanTemperatureC:0.#} C");
-        lines.AddRange(TemperatureLines(position));
-        lines.Add($"Coldest month: {climate.ColdestMonthC:0.#} C");
-        lines.Add($"Warmest month: {climate.WarmestMonthC:0.#} C");
-        lines.Add($"Temperature seasonality: {climate.TemperatureSigmaC:0.#} C sigma");
-        lines.Add("");
-        lines.Add($"Precipitation: {climate.PrecipitationMm:0} mm/year");
-        lines.AddRange(PrecipitationLines(position, climate));
-        lines.Add($"Precipitation seasonality: {climate.PrecipitationCv:0}%");
-        lines.Add("");
-        lines.Add($"Aridity index: {climate.AridityIndex:0.00}");
-        lines.Add($"Potential evapotranspiration: {climate.PotentialEvapotranspirationMm:0} mm");
-        lines.Add($"Tree moisture: {climate.TreeMoisture:0.00}");
-        lines.Add($"Growing season: {climate.GrowingSeasonDays:0} days");
-        lines.Add("");
-        lines.Add($"Game rainfall: {rainfall.ToRainfall(climate)} / 255");
-        lines.Add($"Forest cover: {climate.ForestDensity:0.00}");
-        lines.Add($"Shrub cover: {climate.ShrubDensity:0.00}");
-
-        return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
-    }
-
-    /// <summary>
-    /// Where a column sits between equator and pole, and which way round its year runs there. The
-    /// hemisphere is the game's own, so the season named here is the one every other system will
-    /// think it is.
-    /// </summary>
-    private IEnumerable<string> PlaceLines(Vintagestory.API.MathTools.BlockPos pos)
-    {
-        double latitude = _api.World.Calendar.OnGetLatitude(pos.Z);
-        yield return $"Latitude: {Math.Abs(latitude) * 90.0:0.0} deg {(latitude > 0.0 ? "north" : "south")}";
-        yield return $"Hemisphere: {(latitude > 0.0 ? "northern" : "southern")}, " +
-                     $"currently {_api.World.Calendar.GetSeason(pos)}";
-        yield return $"Latitude bands: {_settings?.Latitude.Status ?? "unknown"}";
-    }
-
-    /// <summary>
-    /// The workings behind one column's temperature: the same reading with the altitude taken back
-    /// out, and what the latitude band was aiming for.
-    ///
-    /// The two answer different questions and neither settles anything on its own. The band is a
-    /// median over all the land in its belt, relief included, so the like-for-like figure is the
-    /// surface reading — and one column scatters either side of it by several degrees, which is the
-    /// point of having a model rather than a gradient. Sea level is the number to compare two
-    /// places by, because it has the mountain taken out of it.
-    ///
-    /// Empty when the pipeline could not be re-queried for the workings.
-    /// </summary>
-    private IEnumerable<string> TemperatureLines(Vintagestory.API.MathTools.BlockPos pos)
-    {
-        if (_provider == null || _settings == null) yield break;
-
-        TerrainDiffusionProvider.ColumnDetail? detail = _provider.GetColumnDetail(pos.X, pos.Z);
-        if (detail != null)
-        {
-            // Through the same corrections the surface value went through, so the two compare. The
-            // elevation behind it is the model pixel's own, which differs from the column's by the
-            // upsampling and the slope noise, so it is not repeated here.
-            float seaLevel = _settings.WorldTemperature(detail.Value.SeaLevelTemperatureC, pos.Z);
-            yield return $"Sea-level temperature: {seaLevel:0.#} C " +
-                         $"(lapse {detail.Value.LapseRateKPerKm:0.0} C/km)";
-        }
-
-        if (_settings.Latitude.IsNeutral) yield break;
-
-        TerrainTile tile = _provider.GetTileAt(pos.X, pos.Z);
-        float surface = tile.TemperatureC[tile.Index(pos.X - tile.BlockX, pos.Z - tile.BlockZ)];
-        float band = _settings.Latitude.BandTemperatureC(pos.Z);
-        float offset = _settings.Latitude.TemperatureOffsetC(pos.Z);
-
-        yield return $"Band temperature: {band:0.#} C (median over this belt's land; " +
-                     $"this column is {surface - band:+0.#;-0.#} C)";
-        if (Math.Abs(offset) >= 0.05f)
-        {
-            yield return $"Band offset applied: {offset:+0.#;-0.#} C, added after the model ran " +
-                         "because the conditioning could not reach it";
-        }
-    }
-
-    /// <summary>What the latitude band asked for in rainfall, against what this column reads.</summary>
-    private IEnumerable<string> PrecipitationLines(Vintagestory.API.MathTools.BlockPos pos, Bioclim climate)
-    {
-        if (_settings == null || _settings.Latitude.IsNeutral) yield break;
-
-        float band = _settings.Latitude.BandPrecipitationMm(pos.Z);
-        yield return $"Band precipitation: {band:0} mm (median over this belt's land; " +
-                     $"this column is {climate.PrecipitationMm / Math.Max(1f, band):0.00}x)";
-    }
-
-    /// <summary>Prints <see cref="Api.TerrainClimate"/>'s answer for one column, the same one other mods get.</summary>
-    private Vintagestory.API.Common.TextCommandResult OnClimateCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
-    {
-        if (_climate == null) return Vintagestory.API.Common.TextCommandResult.Error("Terrain Diffusion is not generating this world.");
-
-        int x, z;
-        if (!args.Parsers[0].IsMissing && !args.Parsers[1].IsMissing)
-        {
-            x = (int)args[0];
-            z = (int)args[1];
-        }
-        else if (args.Caller.Entity != null)
-        {
-            x = (int)args.Caller.Entity.Pos.X;
-            z = (int)args.Caller.Entity.Pos.Z;
-        }
-        else
-        {
-            return Vintagestory.API.Common.TextCommandResult.Error("Give a position: /tdiff climate <x> <z>");
-        }
-
-        if (!_climate.TryGetClimate(x, z, out Api.ClimateRecord c))
-            return Vintagestory.API.Common.TextCommandResult.Error("The climate could not be computed there.");
-
-        var culture = System.Globalization.CultureInfo.InvariantCulture;
-        var lines = new List<string>
-        {
-            $"Climate at ({x}, {z}), {_climate.ClimateModel} model" + (c.HasSeasonalCycle ? "" : " (seasonal cycle approximated)"),
-            string.Format(culture, "Ground {0:0} m; annual mean {1:0.0} C, seasonality {2:0} (sd {3:0.0} C); " +
-                "rain {4:0} mm, CV {5:0}%; diurnal range {6}",
-                c.ElevationMeters, c.TemperatureC, c.TemperatureSeasonality, c.TemperatureSeasonality / 100f,
-                c.PrecipitationMm, c.PrecipitationCv, float.IsNaN(c.DiurnalRangeC) ? "n/a" : $"{c.DiurnalRangeC:0.0} C")
-        };
-
-        if (c.IsWater)
-        {
-            lines.Add("Under the sea: no Köppen class.");
-            return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
-        }
-
-        Api.MonthlyClimate months = c.Months();
-        lines.Add("Months from midsummer:  " + string.Join(" ", months.TemperatureC.Select(t => t.ToString("0", culture).PadLeft(4))) + " C");
-        lines.Add("                        " + string.Join(" ", months.PrecipitationMm.Select(p => p.ToString("0", culture).PadLeft(4))) + " mm");
-
-        int hard = c.KoppenClass;
-        float[] soft = c.KoppenMemberships();
-        string blend = string.Join(", ", Enumerable.Range(0, Api.Koppen.Count)
-            .Where(i => soft[i] >= 0.01f)
-            .OrderByDescending(i => soft[i])
-            .Take(4)
-            .Select(i => $"{Api.Koppen.Classes[i].Code} {soft[i] * 100f:0}%"));
-        lines.Add($"Köppen {Api.Koppen.Classes[hard].Code} ({Api.Koppen.Classes[hard].Name}); blend: {blend}");
-        return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
-    }
-
-    /// <summary>
-    /// Walks a year at one position and prints what the climate does, which is the only practical
-    /// way to see whether the model's seasonality survived the trip through the region map.
-    /// </summary>
-    private Vintagestory.API.Common.TextCommandResult OnSeasonCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
-    {
-        int x = (int)args[0];
-        int z = (int)args[1];
-
-        Vintagestory.API.Common.IMapChunk mapChunk = _api.WorldManager.GetMapChunk(x / 32, z / 32);
-        if (mapChunk == null)
-        {
-            _api.WorldManager.LoadChunkColumnPriority(x / 32, z / 32, new ChunkLoadOptions { KeepLoaded = true });
-            return Vintagestory.API.Common.TextCommandResult.Success(
-                "That chunk is not loaded yet; a load was requested. Run the command again in a moment.");
-        }
-
-        int y = mapChunk.RainHeightMap[(z % 32 + 32) % 32 * 32 + (x % 32 + 32) % 32] + 1;
-        var pos = new Vintagestory.API.MathTools.BlockPos(x, y, z);
-
-        SeasonalityMap.Sample? seasonality = SeasonalityMap.At(_api.World.BlockAccessor, pos);
-        var lines = new List<string> { $"Terrain Diffusion at ({x}, {y}, {z})", "" };
-        lines.AddRange(PlaceLines(pos));
-        lines.Add("");
-        lines.AddRange(TemperatureLines(pos));
-
-        if (seasonality == null)
-        {
-            lines.Add("Seasonality: none mapped here, so vanilla's latitude seasons apply.");
-        }
-        else
-        {
-            lines.Add($"Temperature seasonality: {seasonality.Value.TemperatureSigmaC:0.0} C sigma");
-            lines.Add($"Precipitation seasonality: {seasonality.Value.PrecipitationCv:0}%");
-        }
-        lines.Add("");
-        lines.Add("Through the year, at midday:");
-
-        // Midday on the first day of each season, so the numbers are comparable to each other.
-        // Rainfall is reported as a share of the place's annual average rather than as the
-        // instantaneous value, which only says whether it happens to be raining at that moment.
-        var seasons = _api.ModLoader.GetModSystem<DiffusionSeasons>();
-        double daysPerYear = _api.World.Calendar.DaysPerYear;
-        string[] names = { "midwinter", "spring", "midsummer", "autumn" };
-
-        for (int quarter = 0; quarter < 4; quarter++)
-        {
-            double totalDays = daysPerYear * quarter / 4.0 + 0.5;
-            Vintagestory.API.Common.ClimateCondition conditions = _api.World.BlockAccessor.GetClimateAt(
-                pos, EnumGetClimateMode.ForSuppliedDate_TemperatureRainfallOnly, totalDays);
-            if (conditions == null) continue;
-
-            float share = seasons != null && seasonality != null
-                ? seasons.RainfallFactorAt(pos, totalDays, seasonality.Value.PrecipitationCv)
-                : 1f;
-            lines.Add($"  {names[quarter],-10} {conditions.Temperature,6:0.0} C, {share * 100f,3:0}% of average rainfall");
-        }
-
-        return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
-    }
-
-    /// <summary>
-    /// Loads the chunk column at (x, z) and reports what actually ended up in the world, so the
-    /// generated result can be compared against what the model predicted.
-    /// </summary>
-    private Vintagestory.API.Common.TextCommandResult OnColumnCommand(Vintagestory.API.Common.TextCommandCallingArgs args)
-    {
-        int x = (int)args[0];
-        int z = (int)args[1];
-
-        int chunkX = x / 32, chunkZ = z / 32;
-        Vintagestory.API.Common.IMapChunk mapChunk = _api.WorldManager.GetMapChunk(chunkX, chunkZ);
-        if (mapChunk == null)
-        {
-            // Chunks can only be force-loaded during startup, so ask for it (and pin it, otherwise
-            // an unvisited chunk is dropped again before the next command runs) and let the caller retry.
-            _api.WorldManager.LoadChunkColumnPriority(chunkX, chunkZ, new ChunkLoadOptions { KeepLoaded = true });
-            return Vintagestory.API.Common.TextCommandResult.Success(
-                "That chunk is not loaded yet; a load was requested. Run the command again in a moment.");
-        }
-
-        int index2d = (z % 32 + 32) % 32 * 32 + (x % 32 + 32) % 32;
-        int terrainHeight = mapChunk.WorldGenTerrainHeightMap[index2d];
-        int rainHeight = mapChunk.RainHeightMap[index2d];
-
-        var accessor = _api.World.BlockAccessor;
-        var lines = new List<string>
-        {
-            $"Terrain Diffusion column ({x}, {z})",
-            "",
-            $"Terrain height: Y {terrainHeight}",
-            $"Rain height: Y {rainHeight}",
-            $"Sea level: Y {_settings.SeaLevel}",
-            "",
-            "Blocks:"
-        };
-
-        foreach (int y in new[] { rainHeight + 1, rainHeight, terrainHeight, terrainHeight - 1, terrainHeight - 4, 1 })
-        {
-            if (y < 0 || y >= _api.WorldManager.MapSizeY) continue;
-            var pos = new Vintagestory.API.MathTools.BlockPos(x, y, z);
-            Block block = accessor.GetBlock(pos);
-            Block fluid = accessor.GetBlock(pos, Vintagestory.API.Common.BlockLayersAccess.Fluid);
-            lines.Add($"  y={y,4}  {block?.Code?.ToShortString() ?? "air"}" +
-                      (fluid != null && fluid.BlockId != 0 ? $" + fluid {fluid.Code?.ToShortString()}" : ""));
-        }
-
-        if (_provider != null)
-        {
-            TerrainTile tile = _provider.GetTileAt(x, z);
-            int index = tile.Index(x - tile.BlockX, z - tile.BlockZ);
-            Bioclim climate = tile.ClimateAt(index);
-            lines.Add("");
-            lines.Add("What the model said:");
-            lines.Add($"  Elevation: {tile.ElevationMeters[index]:0} m (Y {tile.SurfaceY[index]})");
-            lines.Add($"  Temperature: {climate.MeanTemperatureC:0.#} C");
-            lines.Add($"  Precipitation: {climate.PrecipitationMm:0} mm/year");
-            lines.Add($"  Tree moisture: {climate.TreeMoisture:0.00}");
-        }
-
-        // What the game actually reads at the surface, after blending and its own altitude
-        // corrections - this is the number that decides block layers and vegetation.
-        var surfacePos = new Vintagestory.API.MathTools.BlockPos(x, rainHeight, z);
-        Vintagestory.API.Common.ClimateCondition climate2 =
-            _api.World.BlockAccessor.GetClimateAt(surfacePos, EnumGetClimateMode.WorldGenValues);
-        if (climate2 != null)
-        {
-            lines.Add("");
-            lines.Add("What the game reads at the surface:");
-            lines.Add($"  Temperature: {climate2.Temperature:0.#} C");
-            lines.Add($"  Rainfall: {climate2.Rainfall:0.##}");
-            lines.Add($"  Fertility: {climate2.Fertility:0.##}");
-            lines.Add($"  Forest: {climate2.ForestDensity:0.##}");
-            lines.Add($"  Shrubs: {climate2.ShrubDensity:0.##}");
-        }
-
-        return Vintagestory.API.Common.TextCommandResult.Success(string.Join("\n", lines));
     }
 
     /// <summary>
@@ -2066,7 +651,7 @@ public class TerrainDiffusionModSystem : ModSystem
         _debugMap = null;
         TranslocatorSearchCompat.Uninstall();
         ConfigLibCompat.Uninstall();
-        StopPregeneration(forget: false);
+        _pregeneration?.Stop(forget: false);
         _water?.StopBackground();
 
         // Let the last column finish at full speed rather than at the /tdiff gpulimit share.
@@ -2082,9 +667,6 @@ public class TerrainDiffusionModSystem : ModSystem
     /// may still be generating a column. What generation uses is released once that thread has
     /// stopped, so it isn't killed and the server closes the save as usual.
     /// </summary>
-    /// <summary>Where Terrain Continuity looks for a terrain mod's surface height at a block column.</summary>
-    private const string ContinuityHeightSourceKey = "terraincontinuity:surfaceheight";
-
     public override void Dispose()
     {
         OnShutdown();
