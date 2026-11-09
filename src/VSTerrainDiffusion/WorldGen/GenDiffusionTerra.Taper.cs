@@ -1,10 +1,7 @@
 using System;
-using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
-using Vintagestory.ServerMods.NoObf;
-using VSTerrainDiffusion.Core;
 
 namespace VSTerrainDiffusion.WorldGen;
 

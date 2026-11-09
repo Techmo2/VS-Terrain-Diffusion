@@ -1,4 +1,3 @@
-using System.Globalization;
 using VSTerrainDiffusion.Native;
 
 // One executable for both of the mod's worker processes:

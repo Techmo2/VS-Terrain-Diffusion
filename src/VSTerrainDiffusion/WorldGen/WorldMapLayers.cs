@@ -1,9 +1,7 @@
-using System;
 using System.Reflection;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 using Vintagestory.ServerMods;
-using VSTerrainDiffusion.Core;
 
 namespace VSTerrainDiffusion.WorldGen;
 

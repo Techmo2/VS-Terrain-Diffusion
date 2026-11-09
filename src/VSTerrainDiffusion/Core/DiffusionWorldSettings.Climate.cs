@@ -1,9 +1,4 @@
 using System;
-using System.Globalization;
-using Vintagestory.API.Datastructures;
-using Vintagestory.API.Server;
-using Vintagestory.API.Util;
-using VSTerrainDiffusion.Pipeline;
 
 namespace VSTerrainDiffusion.Core;
 

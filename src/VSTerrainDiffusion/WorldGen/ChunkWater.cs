@@ -1,7 +1,4 @@
 using System;
-using TerrainDiffusion.Water;
-using TerrainDiffusion.Water.Grid;
-using VSTerrainDiffusion.Core;
 
 namespace VSTerrainDiffusion.WorldGen;
 

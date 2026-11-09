@@ -14,6 +14,7 @@
     <UseAppHost>false</UseAppHost>
     <DebugType>none</DebugType>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
     <!-- Only the managed binding; the game downloads the native runtime that matches the machine. -->

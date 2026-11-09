@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -7,10 +6,7 @@ using System.Net;
 using System.Reflection;
 using System.Text;
 using System.Threading;
-using Vintagestory.API.Common;
-using VSTerrainDiffusion.Pipeline;
 using VSTerrainDiffusion.Core;
-using VSTerrainDiffusion.WorldGen;
 
 namespace VSTerrainDiffusion.Debug;
 

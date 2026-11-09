@@ -1,12 +1,6 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Threading;
-using Vintagestory.API.Common;
 using VSTerrainDiffusion.Core;
-using VSTerrainDiffusion.Native;
-using VSTerrainDiffusion.Pipeline;
 using VSTerrainDiffusion.Tensors;
 using static VSTerrainDiffusion.Core.IntMath;
 

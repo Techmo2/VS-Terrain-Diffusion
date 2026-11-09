@@ -1,0 +1,4 @@
+# Vendored from FastNoiseLite and kept as upstream has it, so its public API is not held to the
+# doc-comment rule the rest of the mod follows.
+[Pipeline/FastNoiseLite.cs]
+dotnet_diagnostic.CS1591.severity = none

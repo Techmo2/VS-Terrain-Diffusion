@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using TerrainDiffusion.Water;
-using PlayerDistance = System.Func<int, int, long>;
 using VSTerrainDiffusion.Core;
 using static VSTerrainDiffusion.Core.IntMath;
 
