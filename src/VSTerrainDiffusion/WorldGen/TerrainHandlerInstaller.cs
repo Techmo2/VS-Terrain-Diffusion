@@ -24,6 +24,7 @@ public sealed class TerrainHandlerInstaller
     /// <summary>How many wrapper levels deep another mod may have nested our handler.</summary>
     private const int MaxWrapperDepth = 3;
 
+    /// <summary>The server API.</summary>
     private readonly ICoreServerAPI _api;
 
     /// <summary>The handler put in the Terrain pass by the last installation, or null.</summary>

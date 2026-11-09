@@ -17,10 +17,23 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 internal static class OnnxWorkerHost
 {
+    /// <summary>The loaded models' threads, by the id the game gave each model.</summary>
     private static readonly ConcurrentDictionary<int, ModelThread> Models = new();
+
+    /// <summary>Writes replies to the reply pipe, under <see cref="WriteGate"/>.</summary>
     private static BinaryWriter _writer = null!;
+
+    /// <summary>Keeps each frame in one piece when several model threads reply at once.</summary>
     private static readonly object WriteGate = new();
 
+    /// <summary>
+    /// Connects to the game's pipes, answers the handshake and serves requests until the game asks
+    /// for a shutdown or closes the request pipe.
+    /// </summary>
+    /// <param name="requestPipe">Name of the pipe the game writes requests to.</param>
+    /// <param name="replyPipe">Name of the pipe replies are written to.</param>
+    /// <param name="nonce">The secret the game started the worker with, echoed in the handshake.</param>
+    /// <returns>The exit code, 0.</returns>
     internal static int Run(string requestPipe, string replyPipe, string nonce)
     {
         using var requests = new NamedPipeClientStream(".", requestPipe, PipeDirection.In);
@@ -119,6 +132,10 @@ internal static class OnnxWorkerHost
         }
     }
 
+    /// <summary>Runs a model on its own thread and replies with the output, or the failure.</summary>
+    /// <param name="id">The request being answered.</param>
+    /// <param name="thread">The model's thread, on which this runs.</param>
+    /// <param name="inputs">Tensors in the graph's input order.</param>
     private static void RunModel(int id, ModelThread thread, IReadOnlyList<(float[] Data, long[] Shape)> inputs)
     {
         float[] output;
@@ -133,17 +150,17 @@ internal static class OnnxWorkerHost
             return;
         }
 
-        lock (WriteGate)
+        Send(InferenceWorkerProtocol.Ok, id, writer =>
         {
-            _writer.Write(InferenceWorkerProtocol.Ok);
-            _writer.Write(id);
-            _writer.Write(InferenceWorkerProtocol.PayloadTensor);
-            _writer.Write(elapsed);
-            InferenceWorkerProtocol.WriteFloats(_writer, output);
-            _writer.Flush();
-        }
+            writer.Write(InferenceWorkerProtocol.PayloadTensor);
+            writer.Write(elapsed);
+            InferenceWorkerProtocol.WriteFloats(writer, output);
+        });
     }
 
+    /// <summary>Does a piece of work and replies with an empty <c>Ok</c>, or the failure.</summary>
+    /// <param name="id">The request being answered.</param>
+    /// <param name="work">The work.</param>
     private static void Reply(int id, Action work)
     {
         try
@@ -156,15 +173,12 @@ internal static class OnnxWorkerHost
             return;
         }
 
-        lock (WriteGate)
-        {
-            _writer.Write(InferenceWorkerProtocol.Ok);
-            _writer.Write(id);
-            _writer.Write(InferenceWorkerProtocol.PayloadNone);
-            _writer.Flush();
-        }
+        Send(InferenceWorkerProtocol.Ok, id, writer => writer.Write(InferenceWorkerProtocol.PayloadNone));
     }
 
+    /// <summary>Loads a model and replies with what it loaded on, or the failure.</summary>
+    /// <param name="id">The request being answered.</param>
+    /// <param name="work">The load.</param>
     private static void Reply(int id, Func<ModelInfo> work)
     {
         ModelInfo info;
@@ -178,35 +192,43 @@ internal static class OnnxWorkerHost
             return;
         }
 
-        lock (WriteGate)
+        Send(InferenceWorkerProtocol.Ok, id, writer =>
         {
-            _writer.Write(InferenceWorkerProtocol.Ok);
-            _writer.Write(id);
-            _writer.Write(InferenceWorkerProtocol.PayloadJson);
-            InferenceWorkerProtocol.WriteJson(_writer, info);
-            _writer.Flush();
-        }
+            writer.Write(InferenceWorkerProtocol.PayloadJson);
+            InferenceWorkerProtocol.WriteJson(writer, info);
+        });
     }
 
-    private static void Fail(int id, string message)
+    /// <summary>Replies that a request failed.</summary>
+    /// <param name="id">The request being answered.</param>
+    /// <param name="message">Why, usually the exception's full text.</param>
+    private static void Fail(int id, string message) =>
+        Send(InferenceWorkerProtocol.Failed, id, writer => writer.Write(message));
+
+    /// <summary>Sends a line for the game's log; the sink of <see cref="WorkerLog"/>.</summary>
+    /// <param name="level">One of the <c>InferenceWorkerProtocol.Log*</c> levels.</param>
+    /// <param name="message">The line.</param>
+    private static void SendLog(int level, string message) =>
+        Send(InferenceWorkerProtocol.Log, 0, writer =>
+        {
+            writer.Write(level);
+            writer.Write(message);
+        });
+
+    /// <summary>
+    /// Writes one whole frame - kind, request id, then the body - and flushes it. Frames from
+    /// different model threads never interleave.
+    /// </summary>
+    /// <param name="kind">The frame kind, from <see cref="InferenceWorkerProtocol"/>.</param>
+    /// <param name="id">The request being answered, or 0 for a log line.</param>
+    /// <param name="body">Writes what follows the id.</param>
+    private static void Send(int kind, int id, Action<BinaryWriter> body)
     {
         lock (WriteGate)
         {
-            _writer.Write(InferenceWorkerProtocol.Failed);
+            _writer.Write(kind);
             _writer.Write(id);
-            _writer.Write(message);
-            _writer.Flush();
-        }
-    }
-
-    private static void SendLog(int level, string message)
-    {
-        lock (WriteGate)
-        {
-            _writer.Write(InferenceWorkerProtocol.Log);
-            _writer.Write(0);
-            _writer.Write(level);
-            _writer.Write(message);
+            body(_writer);
             _writer.Flush();
         }
     }
@@ -214,11 +236,17 @@ internal static class OnnxWorkerHost
     /// <summary>One model and the thread that runs everything asked of it, in order.</summary>
     private sealed class ModelThread
     {
+        /// <summary>Work for the model, run in the order it was posted.</summary>
         private readonly BlockingCollection<Action> _work = new();
+
+        /// <summary>The thread that runs <see cref="_work"/>.</summary>
         private readonly Thread _thread;
 
+        /// <summary>The model's session, once loaded on this thread.</summary>
         internal OnnxSession Session { get; private set; } = null!;
 
+        /// <summary>Starts the model's thread.</summary>
+        /// <param name="name">The model's name, for the thread name.</param>
         internal ModelThread(string name)
         {
             _thread = new Thread(() =>
@@ -233,12 +261,17 @@ internal static class OnnxWorkerHost
             _thread.Start();
         }
 
+        /// <summary>Loads the model; call on the model's thread.</summary>
+        /// <param name="spec">What to load.</param>
+        /// <returns>What it loaded on.</returns>
         internal ModelInfo Load(ModelSpec spec)
         {
             Session = new OnnxSession(spec);
             return Session.Info;
         }
 
+        /// <summary>Queues work for the model's thread.</summary>
+        /// <param name="action">The work.</param>
         internal void Post(Action action) => _work.Add(action);
 
         /// <summary>Finishes what is queued, disposes the session and waits for the thread.</summary>
@@ -248,14 +281,4 @@ internal static class OnnxWorkerHost
             _thread.Join();
         }
     }
-}
-
-/// <summary>Log lines for the game's log, sent back over the reply pipe.</summary>
-internal static class WorkerLog
-{
-    internal static Action<int, string> Sink { get; set; } = (_, message) => Console.Error.WriteLine(message);
-
-    internal static void Notification(string message) => Sink(InferenceWorkerProtocol.LogNotification, message);
-
-    internal static void Warning(string message) => Sink(InferenceWorkerProtocol.LogWarning, message);
 }

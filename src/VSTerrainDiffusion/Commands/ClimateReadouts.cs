@@ -20,7 +20,10 @@ public sealed class ClimateReadouts
     /// <summary>Season names for the quarters <c>/tdiff season</c> samples, from the start of the year.</summary>
     private static readonly string[] QuarterNames = { "midwinter", "spring", "midsummer", "autumn" };
 
+    /// <summary>The server API.</summary>
     private readonly ICoreServerAPI _api;
+
+    /// <summary>The mod system, for the world's current provider and settings.</summary>
     private readonly TerrainDiffusionModSystem _mod;
 
     /// <summary>Creates the readouts for one server.</summary>

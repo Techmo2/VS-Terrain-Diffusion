@@ -22,6 +22,9 @@ public readonly struct MonthlyClimate
     /// <summary>Precipitation of each month, mm; sums to the annual total.</summary>
     public readonly double[] PrecipitationMm;
 
+    /// <summary>Wraps the twelve months; use <see cref="Reconstruct"/>.</summary>
+    /// <param name="temperatureC">Monthly mean temperatures, °C.</param>
+    /// <param name="precipitationMm">Monthly precipitation, mm.</param>
     private MonthlyClimate(double[] temperatureC, double[] precipitationMm)
     {
         TemperatureC = temperatureC;

@@ -15,13 +15,25 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 public sealed class OpenVinoRuntime : IDisposable
 {
+    /// <summary>The C API's import name, resolved by <see cref="OpenVinoLibraryResolver"/>.</summary>
     private const string NativeLibraryName = "openvino_c";
 
+    /// <summary>One inference at a time on the single request; also guards disposal.</summary>
     private readonly object _runGate = new();
+
+    /// <summary>How many inputs the compiled model takes.</summary>
     private readonly int _inputCount;
+
+    /// <summary>The <c>ov_core_t</c> handle.</summary>
     private IntPtr _core;
+
+    /// <summary>The <c>ov_compiled_model_t</c> handle.</summary>
     private IntPtr _compiledModel;
+
+    /// <summary>The <c>ov_infer_request_t</c> handle every run reuses.</summary>
     private IntPtr _inferRequest;
+
+    /// <summary>Whether the handles have been freed.</summary>
     private bool _disposed;
 
     /// <summary>Configure where the standalone OpenVINO libraries were installed.</summary>
@@ -166,6 +178,11 @@ public sealed class OpenVinoRuntime : IDisposable
         }
     }
 
+    /// <summary>Checks that an input's shape is positive and matches its buffer.</summary>
+    /// <param name="data">The input's values.</param>
+    /// <param name="dimensions">The input's shape.</param>
+    /// <param name="index">The input's position, for the message.</param>
+    /// <exception cref="ArgumentException">The shape is empty, not positive or the wrong size.</exception>
     private static void ValidateTensor(float[] data, long[] dimensions, int index)
     {
         if (data == null) throw new ArgumentNullException($"inputs[{index}].Data");
@@ -183,12 +200,19 @@ public sealed class OpenVinoRuntime : IDisposable
                 $"Input {index} shape contains {elements} elements but its buffer contains {data.LongLength}");
     }
 
+    /// <summary>Sets one property of the CPU device.</summary>
+    /// <param name="key">The property name.</param>
+    /// <param name="value">Its value, as text.</param>
     private void SetCpuProperty(string key, string value)
     {
         Check(Native.ov_core_set_property_one(_core, "CPU", key, value),
             $"set CPU property {key}");
     }
 
+    /// <summary>Throws if a C API call failed, with OpenVINO's own description.</summary>
+    /// <param name="status">The call's status.</param>
+    /// <param name="operation">What was being done, for the message.</param>
+    /// <exception cref="InvalidOperationException">The status is not OK.</exception>
     private static void Check(OvStatus status, string operation)
     {
         if (status == OvStatus.Ok) return;
@@ -196,6 +220,7 @@ public sealed class OpenVinoRuntime : IDisposable
         throw new InvalidOperationException($"OpenVINO could not {operation} ({status}): {message}");
     }
 
+    /// <summary>Frees the request, the compiled model and the core. Waits for a run in progress.</summary>
     public void Dispose()
     {
         lock (_runGate)
@@ -212,30 +237,52 @@ public sealed class OpenVinoRuntime : IDisposable
         }
     }
 
+    /// <summary><c>ov_shape_t</c>: a rank and a pointer to that many 64-bit dimensions.</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct OvShape
     {
+        /// <summary>Number of dimensions.</summary>
         public long Rank;
+
+        /// <summary>Pointer to the dimensions, pinned for the call.</summary>
         public IntPtr Dimensions;
     }
 
+    /// <summary><c>ov_status_e</c>; only success is named, every other value is an error.</summary>
     private enum OvStatus
     {
+        /// <summary>The call succeeded.</summary>
         Ok = 0
     }
 
+    /// <summary><c>ov_element_type_e</c>; only the one type used here is named.</summary>
     private enum OvElementType : uint
     {
+        /// <summary>32-bit IEEE float.</summary>
         F32 = 5
     }
 
+    /// <summary>
+    /// The OpenVINO 2022.3 C API entry points used here. See <c>openvino/c/*.h</c> for each.
+    /// </summary>
     private static class Native
     {
+        /// <summary>Creates a core.</summary>
+        /// <param name="core">Receives the core handle.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_core_create(out IntPtr core);
 
-        // The 2022.3 C API has no non-variadic property setter. Its implementation consumes one
-        // key/value pair per call, so this declaration supplies exactly that pair.
+        /// <summary>Sets one property on a device.</summary>
+        /// <remarks>
+        /// The 2022.3 C API has no non-variadic property setter. Its implementation consumes one
+        /// key/value pair per call, so this declaration supplies exactly that pair.
+        /// </remarks>
+        /// <param name="core">The core.</param>
+        /// <param name="deviceName">The device, e.g. "CPU".</param>
+        /// <param name="propertyKey">The property name.</param>
+        /// <param name="propertyValue">Its value.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl,
             EntryPoint = "ov_core_set_property")]
         internal static extern OvStatus ov_core_set_property_one(
@@ -244,6 +291,12 @@ public sealed class OpenVinoRuntime : IDisposable
             [MarshalAs(UnmanagedType.LPUTF8Str)] string propertyKey,
             [MarshalAs(UnmanagedType.LPUTF8Str)] string propertyValue);
 
+        /// <summary>Reads an ONNX or IR model.</summary>
+        /// <param name="core">The core.</param>
+        /// <param name="modelPath">The model file.</param>
+        /// <param name="binPath">The IR weights file, or null for ONNX.</param>
+        /// <param name="model">Receives the model handle.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl,
             EntryPoint = "ov_core_read_model")]
         internal static extern OvStatus ov_core_read_model(
@@ -252,6 +305,13 @@ public sealed class OpenVinoRuntime : IDisposable
             IntPtr binPath,
             out IntPtr model);
 
+        /// <summary>Compiles a model for a device with no extra properties.</summary>
+        /// <param name="core">The core.</param>
+        /// <param name="model">The model.</param>
+        /// <param name="deviceName">The device.</param>
+        /// <param name="propertyArgsSize">Number of variadic property arguments; always 0 here.</param>
+        /// <param name="compiledModel">Receives the compiled model handle.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl,
             EntryPoint = "ov_core_compile_model")]
         internal static extern OvStatus ov_core_compile_model_default(
@@ -261,55 +321,111 @@ public sealed class OpenVinoRuntime : IDisposable
             nuint propertyArgsSize,
             out IntPtr compiledModel);
 
+        /// <summary>Frees a model handle.</summary>
+        /// <param name="model">The model.</param>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void ov_model_free(IntPtr model);
 
+        /// <summary>Number of inputs of a compiled model.</summary>
+        /// <param name="compiledModel">The compiled model.</param>
+        /// <param name="size">Receives the count.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_compiled_model_inputs_size(IntPtr compiledModel, out nuint size);
 
+        /// <summary>Number of outputs of a compiled model.</summary>
+        /// <param name="compiledModel">The compiled model.</param>
+        /// <param name="size">Receives the count.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_compiled_model_outputs_size(IntPtr compiledModel, out nuint size);
 
+        /// <summary>Creates an inference request.</summary>
+        /// <param name="compiledModel">The compiled model.</param>
+        /// <param name="inferRequest">Receives the request handle.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_compiled_model_create_infer_request(
             IntPtr compiledModel, out IntPtr inferRequest);
 
+        /// <summary>Wraps caller memory as a tensor, without copying.</summary>
+        /// <param name="type">Element type.</param>
+        /// <param name="shape">The shape.</param>
+        /// <param name="hostPointer">The data, pinned for the tensor's life.</param>
+        /// <param name="tensor">Receives the tensor handle.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_tensor_create_from_host_ptr(
             OvElementType type, OvShape shape, IntPtr hostPointer, out IntPtr tensor);
 
+        /// <summary>Binds an input tensor.</summary>
+        /// <param name="inferRequest">The request.</param>
+        /// <param name="index">The input's position.</param>
+        /// <param name="tensor">The tensor.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_infer_request_set_input_tensor_by_index(
             IntPtr inferRequest, nuint index, IntPtr tensor);
 
+        /// <summary>Runs inference synchronously.</summary>
+        /// <param name="inferRequest">The request.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_infer_request_infer(IntPtr inferRequest);
 
+        /// <summary>Gets an output tensor, which the caller frees.</summary>
+        /// <param name="inferRequest">The request.</param>
+        /// <param name="index">The output's position.</param>
+        /// <param name="tensor">Receives the tensor handle.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_infer_request_get_output_tensor_by_index(
             IntPtr inferRequest, nuint index, out IntPtr tensor);
 
+        /// <summary>A tensor's element type.</summary>
+        /// <param name="tensor">The tensor.</param>
+        /// <param name="type">Receives the type.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_tensor_get_element_type(IntPtr tensor, out OvElementType type);
 
+        /// <summary>A tensor's element count.</summary>
+        /// <param name="tensor">The tensor.</param>
+        /// <param name="elementCount">Receives the count.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_tensor_get_size(IntPtr tensor, out nuint elementCount);
 
+        /// <summary>A pointer to a tensor's data, owned by the tensor.</summary>
+        /// <param name="tensor">The tensor.</param>
+        /// <param name="data">Receives the pointer.</param>
+        /// <returns>The status.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern OvStatus ov_tensor_data(IntPtr tensor, out IntPtr data);
 
+        /// <summary>A static description of a status.</summary>
+        /// <param name="status">The status.</param>
+        /// <returns>A UTF-8 string owned by OpenVINO.</returns>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern IntPtr ov_get_error_info(OvStatus status);
 
+        /// <summary>Frees a tensor handle.</summary>
+        /// <param name="tensor">The tensor.</param>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void ov_tensor_free(IntPtr tensor);
 
+        /// <summary>Frees a request handle.</summary>
+        /// <param name="inferRequest">The request.</param>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void ov_infer_request_free(IntPtr inferRequest);
 
+        /// <summary>Frees a compiled model handle.</summary>
+        /// <param name="compiledModel">The compiled model.</param>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void ov_compiled_model_free(IntPtr compiledModel);
 
+        /// <summary>Frees a core handle.</summary>
+        /// <param name="core">The core.</param>
         [DllImport(NativeLibraryName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void ov_core_free(IntPtr core);
     }

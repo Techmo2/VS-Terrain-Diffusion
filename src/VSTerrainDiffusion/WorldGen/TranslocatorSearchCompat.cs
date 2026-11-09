@@ -310,10 +310,6 @@ public static class TranslocatorSearchCompat
     // ------------------------------------------------------------------ the peek itself
 
     /// <summary>
-    /// <c>coords</c> is the chunk column the peek is centred on; the game generates the 3x3 around
-    /// it and runs the pass that places structures on the middle one.
-    /// </summary>
-    /// <summary>
     /// Gives the pause before a chunk peek a deadline that suits modelled terrain.
     ///
     /// The server waits 3.6 s for every worldgen thread to park and drops the peek if they do not.
@@ -364,6 +360,11 @@ public static class TranslocatorSearchCompat
         return false;
     }
 
+    /// <summary>Marks this thread as inside a chunk peek, for the code that must tell peeks apart.</summary>
+    /// <param name="coords">
+    /// The chunk column the peek is centred on; the game generates the 3x3 around it and runs the
+    /// pass that places structures on the middle one.
+    /// </param>
     private static void BeforePeekArea(Vec2i coords)
     {
         Interlocked.Increment(ref _peeks);

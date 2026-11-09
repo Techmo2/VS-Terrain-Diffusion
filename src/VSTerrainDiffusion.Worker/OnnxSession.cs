@@ -15,8 +15,13 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 internal sealed class OnnxSession : IDisposable
 {
+    /// <summary>Guards the accelerated-provider slot shared by offloaded models.</summary>
     private static readonly object ProviderSlotLock = new();
+
+    /// <summary>The offloaded model whose session holds the slot, or null.</summary>
     private static OnnxSession? _providerSlotHolder;
+
+    /// <summary>The session in the slot, or null.</summary>
     private static InferenceSession? _activeProviderSession;
 
     /// <summary>
@@ -28,24 +33,50 @@ internal sealed class OnnxSession : IDisposable
     /// <summary>The provider sessions are created with, from the game's plan.</summary>
     internal static InferenceProvider Provider { get; set; } = InferenceProvider.Cpu;
 
+    /// <summary>
+    /// The name the TensorRT RTX plugin registered its devices under, from the game's plan.
+    /// </summary>
     internal static string? TensorRtRtxEpName { get; set; }
 
+    /// <summary>What the game asked for.</summary>
     private readonly ModelSpec _spec;
+
+    /// <summary>
+    /// The graph sessions are created from: the optimised copy if there is one, else the source.
+    /// </summary>
     private readonly string _graphPath;
+
+    /// <summary>
+    /// The graph in memory, for offloaded models that recreate sessions often; null when opened from file.
+    /// </summary>
     private byte[]? _graphBytes;
+
+    /// <summary>The graph's size, for the log.</summary>
     private readonly long _graphSize;
 
+    /// <summary>The session used for every run, unless the model is offloaded.</summary>
     private InferenceSession? _residentSession;
+
+    /// <summary>Whether <see cref="Dispose"/> has run.</summary>
     private bool _disposed;
 
     /// <summary>Names of this graph's inputs, in declaration order.</summary>
     private readonly List<string> _inputNames = new();
+
+    /// <summary>The one output fetched (the graph's first), or none.</summary>
     private readonly string[] _outputNames;
 
     /// <summary>Reused across runs, which the worker serialises per model.</summary>
     private readonly RunOptions _runOptions = new();
+
+    /// <summary>Input tensors of the run in progress; reused to avoid a list per run.</summary>
     private readonly List<OrtValue> _inputValues = new();
 
+    /// <summary>
+    /// Prepares the graph, optimising it once if asked, and creates the first session. A cached optimised
+    /// graph that will not load is rebuilt.
+    /// </summary>
+    /// <param name="spec">What to load.</param>
     internal OnnxSession(ModelSpec spec)
     {
         _spec = spec;
@@ -97,20 +128,31 @@ internal sealed class OnnxSession : IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether sessions may use the planned accelerated provider: it is not the CPU and has not failed.
+    /// </summary>
     private static bool ConfiguredProviderEnabled =>
         Provider is not (InferenceProvider.Cpu or InferenceProvider.OpenVino) && !_providerUnavailable;
 
+    /// <summary>Whether this model's sessions use the accelerated provider.</summary>
     private bool UsesConfiguredProvider => ConfiguredProviderEnabled && !_spec.CpuOnly;
 
     /// <summary>The provider actually in use, which is CPU if the requested provider was unusable.</summary>
     internal static InferenceProvider ActiveProvider => _providerUnavailable ? InferenceProvider.Cpu : Provider;
 
+    /// <summary>What to report to the game about this model.</summary>
     internal ModelInfo Info => new()
     {
         Backend = UsesConfiguredProvider ? $"ONNX Runtime {ActiveProvider}" : "ONNX Runtime CPU",
         ActiveProvider = UsesConfiguredProvider ? ActiveProvider : InferenceProvider.Cpu
     };
 
+    /// <summary>
+    /// Creates a session, on the accelerated provider if asked and available. A provider that fails is marked
+    /// unusable for the rest of the worker's life and the session falls back to the CPU.
+    /// </summary>
+    /// <param name="configured">Whether to try the accelerated provider.</param>
+    /// <returns>The session.</returns>
     private InferenceSession CreateSession(bool configured)
     {
         if (configured && UsesConfiguredProvider)
@@ -185,6 +227,9 @@ internal sealed class OnnxSession : IDisposable
         });
     }
 
+    /// <summary>Creates a session with the options for one provider.</summary>
+    /// <param name="useConfiguredProvider">The planned provider when true, the CPU when false.</param>
+    /// <returns>The session.</returns>
     private InferenceSession CreateSessionCore(bool useConfiguredProvider)
     {
         var options = new SessionOptions
@@ -275,6 +320,12 @@ internal sealed class OnnxSession : IDisposable
         }
     }
 
+    /// <summary>Runs one inference on a session, wrapping the inputs without copying them.</summary>
+    /// <param name="session">The session.</param>
+    /// <param name="inputs">Tensors in the graph's input order.</param>
+    /// <param name="elapsedNanoseconds">Receives the time spent in ONNX Runtime.</param>
+    /// <returns>The first output, flattened.</returns>
+    /// <exception cref="ArgumentException">The input count is wrong.</exception>
     private float[] RunWithSession(InferenceSession session, IReadOnlyList<(float[] Data, long[] Shape)> inputs,
                                    out long elapsedNanoseconds)
     {
@@ -378,14 +429,22 @@ internal sealed class OnnxSession : IDisposable
         }
     }
 
+    /// <summary>Whether two paths name the same file, compared as the platform does.</summary>
+    /// <param name="left">A path.</param>
+    /// <param name="right">Another path.</param>
+    /// <returns>True if they are the same.</returns>
     private static bool SamePath(string left, string right) => string.Equals(
         Path.GetFullPath(left), Path.GetFullPath(right),
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
+    /// <summary>A size in MB or GB, for the log.</summary>
+    /// <param name="bytes">The size.</param>
+    /// <returns>The text.</returns>
     private static string Bytes(long bytes) => bytes >= 1L << 30
         ? $"{bytes / (double)(1L << 30):0.##} GB"
         : $"{bytes / (double)(1L << 20):0.##} MB";
 
+    /// <summary>Releases this model's session, and the shared slot if it holds it.</summary>
     public void Dispose()
     {
         if (_disposed) return;

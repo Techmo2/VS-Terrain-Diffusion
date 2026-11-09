@@ -14,6 +14,7 @@ public sealed class SpawnPlacement
     /// <summary>Furthest a spawn in a lake or river is moved to reach dry land, in blocks.</summary>
     private const int ShoreSearchBlocks = 256;
 
+    /// <summary>The server API.</summary>
     private readonly ICoreServerAPI _api;
 
     /// <summary>The spawn to apply when the game reaches RunGame, or null.</summary>

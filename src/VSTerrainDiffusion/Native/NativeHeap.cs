@@ -15,6 +15,9 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 internal static class NativeHeap
 {
+    /// <summary>glibc's malloc_trim(3): returns free memory at the top of each arena to the system.</summary>
+    /// <param name="pad">Bytes to leave untrimmed at the top of the heap.</param>
+    /// <returns>1 if any memory was released, otherwise 0.</returns>
     [DllImport("libc", EntryPoint = "malloc_trim", SetLastError = false)]
     private static extern int malloc_trim(nuint pad);
 

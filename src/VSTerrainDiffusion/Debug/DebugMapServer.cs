@@ -37,6 +37,8 @@ public sealed class DebugMapServer : IDisposable
     private readonly IRiverBasinSource _riverBasins;
     private readonly TerrainDiffusionProvider _provider;
     private readonly DiffusionWorldSettings _settings;
+
+    /// <summary>One displayable quantity per column, in the order the wire format carries them.</summary>
     private readonly Layer[] _layers;
 
     /// <summary>Each layer's slot in <see cref="_layers"/> and the wire format, by id.</summary>
@@ -69,7 +71,6 @@ public sealed class DebugMapServer : IDisposable
     /// <summary>Whether the listener is up.</summary>
     public bool IsRunning => _listener != null && _listener.IsListening;
 
-    /// <summary>One displayable quantity per column, in the order the wire format carries them.</summary>
     /// <summary>
     /// One map layer. A categorical layer stores a class index in each byte (its range is fixed at
     /// 0-255, so the byte is the value) and the page paints it from <see cref="Api.Koppen.Classes"/>.

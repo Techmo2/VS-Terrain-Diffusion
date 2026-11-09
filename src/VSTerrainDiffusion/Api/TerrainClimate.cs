@@ -27,6 +27,7 @@ public sealed class TerrainClimate
         "second_rainy_cos", "second_rainy_sin", "diurnal_range_c"
     };
 
+    /// <summary>The world's terrain, which owns the tiles and the coarse model output read here.</summary>
     private readonly TerrainDiffusionProvider _provider;
 
     /// <summary>
@@ -37,15 +38,28 @@ public sealed class TerrainClimate
     /// </summary>
     [ThreadStatic] private static CoarseCache _coarseCache;
 
+    /// <summary>One thread's decoded coarse corners, with the provider and cells they came from.</summary>
     private sealed class CoarseCache
     {
         /// <summary>Weak, so a thread that outlives a world does not keep that world's provider alive.</summary>
         public readonly WeakReference<TerrainDiffusionProvider> Provider = new(null);
+
+        /// <summary>
+        /// The cell pair the corners belong to, packed (i0 in the high half); long.MinValue when empty.
+        /// </summary>
         public long Cells = long.MinValue;
+
+        /// <summary>The four corner cells' channels, corner-major.</summary>
         public readonly float[] Corners = new float[4 * CoarseChannel.SeasonalCount];
+
+        /// <summary>
+        /// The corners blended for the last column asked about; reused, so callers must copy.
+        /// </summary>
         public readonly float[] Channels = new float[CoarseChannel.SeasonalCount];
     }
 
+    /// <summary>Wraps a world's provider.</summary>
+    /// <param name="provider">The world's terrain.</param>
     internal TerrainClimate(TerrainDiffusionProvider provider)
     {
         _provider = provider;
@@ -126,6 +140,10 @@ public sealed class TerrainClimate
         return cache.Channels;
     }
 
+    /// <summary><paramref name="a"/> modulo <paramref name="b"/>, never negative.</summary>
+    /// <param name="a">The dividend.</param>
+    /// <param name="b">The divisor, positive.</param>
+    /// <returns>A value in [0, b).</returns>
     private static int Mod(int a, int b)
     {
         int m = a % b;

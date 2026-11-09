@@ -20,17 +20,29 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 internal sealed class CompileNotice
 {
+    /// <summary>How often the notice repeats during a compile.</summary>
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
 
     /// <summary>The lines MIGraphX's ONNX Runtime provider prints around a compile.</summary>
     private const string MigraphxBegin = "Model Compile: Begin", MigraphxComplete = "Model Compile: Complete";
 
+    /// <summary>The server log, which also feeds the loading screen.</summary>
     private readonly ILogger _logger;
+
+    /// <summary>Guards the timer and the compile state.</summary>
     private readonly object _gate = new();
+
+    /// <summary>Repeats the notice during a compile; null otherwise.</summary>
     private Timer? _timer;
+
+    /// <summary>Time since the current compile began; null when none is running.</summary>
     private Stopwatch? _elapsed;
+
+    /// <summary>The model being compiled, as the notice names it.</summary>
     private string _model = "";
 
+    /// <summary>Creates a notice that writes to <paramref name="logger"/>.</summary>
+    /// <param name="logger">The server log.</param>
     public CompileNotice(ILogger logger)
     {
         _logger = logger;
@@ -46,6 +58,8 @@ internal sealed class CompileNotice
         else if (line.Contains(MigraphxComplete, StringComparison.Ordinal)) Complete();
     }
 
+    /// <summary>A compile has begun: posts the first notice and starts repeating it.</summary>
+    /// <param name="model">The model, as the notice names it.</param>
     private void Begin(string model)
     {
         lock (_gate)
@@ -59,6 +73,7 @@ internal sealed class CompileNotice
             "Preparing {0} for this GPU. This happens once and can take several minutes.", model);
     }
 
+    /// <summary>Posts the time so far, from the timer.</summary>
     private void Report()
     {
         string model;
@@ -72,6 +87,7 @@ internal sealed class CompileNotice
         LoadingNotice.Post(_logger, "Still preparing {0}: {1} so far.", model, Describe(elapsed));
     }
 
+    /// <summary>A compile has finished: stops the timer and posts how long it took.</summary>
     private void Complete()
     {
         string model;
@@ -88,10 +104,14 @@ internal sealed class CompileNotice
         LoadingNotice.Post(_logger, "Prepared {0} in {1}.", model, Describe(elapsed));
     }
 
+    /// <summary>A short duration, e.g. "45 s" or "3 min 50 s".</summary>
+    /// <param name="time">The duration.</param>
+    /// <returns>The text.</returns>
     private static string Describe(TimeSpan time) => time.TotalMinutes < 1
         ? $"{time.TotalSeconds:0} s"
         : $"{(int)time.TotalMinutes} min {time.Seconds} s";
 
+    /// <summary>Stops the timer; any compile in progress goes unreported.</summary>
     public void Dispose()
     {
         lock (_gate)

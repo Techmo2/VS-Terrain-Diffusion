@@ -548,11 +548,6 @@ public sealed class DiffusionWorldSettings
     public float ReliefFactor => _shaping.ReliefFactor;
 
     /// <summary>
-    /// Fits the vertical gain so that terrain <paramref name="peakMeters"/> tall reaches
-    /// <c>targetPeakFillFraction</c> of the way from sea level to the world ceiling. Everything
-    /// derived from the mapping is recomputed, so this must run before the first tile is built.
-    /// </summary>
-    /// <summary>
     /// Sets <see cref="ShoreDetail"/> and <see cref="ShoreFade"/> and recomputes the mapping. Must run
     /// before the first tile is built, like <see cref="ApplyCalibration"/>.
     /// </summary>
@@ -563,6 +558,12 @@ public sealed class DiffusionWorldSettings
         RecomputeMapping();
     }
 
+    /// <summary>
+    /// Fits the vertical gain so that terrain <paramref name="peakMeters"/> tall reaches
+    /// <c>targetPeakFillFraction</c> of the way from sea level to the world ceiling. Everything
+    /// derived from the mapping is recomputed, so this must run before the first tile is built.
+    /// </summary>
+    /// <param name="peakMeters">The surveyed peak elevation, m; ignored unless finite and above 1.</param>
     public void ApplyCalibration(float peakMeters)
     {
         if (peakMeters <= 1f || float.IsNaN(peakMeters) || float.IsInfinity(peakMeters)) return;

@@ -16,6 +16,9 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 internal static class WorkerProcess
 {
+    /// <summary>
+    /// The worker's files, embedded in the mod assembly under these names; the first is its entry assembly.
+    /// </summary>
     private static readonly string[] Files =
     {
         "VSTerrainDiffusion.Worker.dll",
@@ -25,9 +28,15 @@ internal static class WorkerProcess
         "System.Numerics.Tensors.dll"
     };
 
+    /// <summary>
+    /// Written last into an extracted worker directory, so a half-written one is never used.
+    /// </summary>
     private const string CompleteMarker = ".complete";
 
+    /// <summary>Serialises extraction.</summary>
     private static readonly object Gate = new();
+
+    /// <summary>The extracted worker's entry assembly, once written out.</summary>
     private static string? _workerPath;
 
     /// <summary>A start description for the worker with <paramref name="arguments"/>, output redirected.</summary>

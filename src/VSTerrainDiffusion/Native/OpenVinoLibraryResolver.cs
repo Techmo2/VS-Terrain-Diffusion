@@ -15,12 +15,29 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 internal static class OpenVinoLibraryResolver
 {
+    /// <summary>Serialises configuration and loading.</summary>
     private static readonly object Gate = new();
+
+    /// <summary>Handles of the libraries the C API links against, kept so they stay loaded.</summary>
     private static readonly List<IntPtr> DependencyHandles = new();
+
+    /// <summary>The OpenVINO runtime directory, once configured; fixed for the life of the process.</summary>
     private static string? _directory;
+
+    /// <summary>Whether the import resolver is registered on this assembly.</summary>
     private static bool _installed;
+
+    /// <summary>Whether <see cref="DependencyHandles"/> has been filled.</summary>
     private static bool _dependenciesLoaded;
 
+    /// <summary>
+    /// Points the <c>openvino_c</c> imports at a runtime directory and registers the resolver the first time.
+    /// </summary>
+    /// <param name="directory">The OpenVINO runtime directory.</param>
+    /// <remarks>
+    /// A process can only use one OpenVINO runtime, so a second, different directory is refused.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">Already configured with another directory.</exception>
     internal static void Configure(string directory)
     {
         string fullPath = Path.GetFullPath(directory);
@@ -40,6 +57,14 @@ internal static class OpenVinoLibraryResolver
         }
     }
 
+    /// <summary>
+    /// The import resolver: loads the C API, after its dependencies, for <c>openvino_c</c> and defers
+    /// anything else to the default search.
+    /// </summary>
+    /// <param name="libraryName">The name in the DllImport.</param>
+    /// <param name="assembly">The importing assembly.</param>
+    /// <param name="searchPath">The import's search path, unused.</param>
+    /// <returns>The library handle, or zero to fall back.</returns>
     private static IntPtr Resolve(
         string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
     {
@@ -54,6 +79,10 @@ internal static class OpenVinoLibraryResolver
         }
     }
 
+    /// <summary>
+    /// Loads pugixml, oneTBB and OpenVINO core by absolute path, once, so the C API finds them.
+    /// </summary>
+    /// <param name="directory">The OpenVINO runtime directory.</param>
     private static void EnsureDependenciesLoaded(string directory)
     {
         if (_dependenciesLoaded) return;
@@ -67,6 +96,12 @@ internal static class OpenVinoLibraryResolver
         _dependenciesLoaded = true;
     }
 
+    /// <summary>Loads the first of several file names that exists and loads.</summary>
+    /// <param name="directory">The directory to look in.</param>
+    /// <param name="description">What the library is, for the error.</param>
+    /// <param name="candidates">File names, most specific first.</param>
+    /// <returns>The library handle.</returns>
+    /// <exception cref="DllNotFoundException">None of them loaded.</exception>
     private static IntPtr LoadFirst(string directory, string description, params string[] candidates)
     {
         Exception? failure = null;

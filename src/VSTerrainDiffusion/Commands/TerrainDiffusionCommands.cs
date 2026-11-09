@@ -18,8 +18,13 @@ namespace VSTerrainDiffusion.Commands;
 /// </summary>
 public sealed class TerrainDiffusionCommands
 {
+    /// <summary>The server API.</summary>
     private readonly ICoreServerAPI _api;
+
+    /// <summary>The mod system, for the world's current provider, settings and water.</summary>
     private readonly TerrainDiffusionModSystem _mod;
+
+    /// <summary>The climate readout subcommands.</summary>
     private readonly ClimateReadouts _readouts;
 
     /// <summary>Creates the command handlers for one server.</summary>

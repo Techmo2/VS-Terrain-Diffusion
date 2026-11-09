@@ -11,8 +11,12 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 internal static class NativeLibraryResolver
 {
+    /// <summary>The ONNX Runtime build's directory, once set.</summary>
     private static string? _directory;
 
+    /// <summary>Resolves the binding's imports from <paramref name="directory"/> from now on.</summary>
+    /// <param name="directory">The ONNX Runtime build the game prepared.</param>
+    /// <exception cref="InvalidOperationException">Already set; a process loads one build.</exception>
     internal static void UseOnnxRuntime(string directory)
     {
         if (_directory != null) throw new InvalidOperationException("ONNX Runtime is already loaded");
@@ -20,6 +24,11 @@ internal static class NativeLibraryResolver
         NativeLibrary.SetDllImportResolver(typeof(InferenceSession).Assembly, Resolve);
     }
 
+    /// <summary>The import resolver: loads ONNX Runtime libraries from the build's directory.</summary>
+    /// <param name="libraryName">The name in the DllImport.</param>
+    /// <param name="assembly">The importing assembly.</param>
+    /// <param name="searchPath">The import's search path, unused.</param>
+    /// <returns>The library handle, or zero to fall back to the default search.</returns>
     private static IntPtr Resolve(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
     {
         if (_directory == null || !libraryName.Contains("onnxruntime", StringComparison.OrdinalIgnoreCase))
@@ -33,6 +42,9 @@ internal static class NativeLibraryResolver
         return IntPtr.Zero;
     }
 
+    /// <summary>The file names an import name may have on this platform, bare name first.</summary>
+    /// <param name="libraryName">The name in the DllImport, e.g. <c>onnxruntime</c>.</param>
+    /// <returns>Candidate file names.</returns>
     private static IEnumerable<string> CandidateFileNames(string libraryName)
     {
         yield return libraryName;

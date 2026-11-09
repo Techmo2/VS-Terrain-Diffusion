@@ -130,6 +130,13 @@ internal static class RemoteTarGzExtractor
         }
     }
 
+    /// <summary>
+    /// The index of the wanted name a tar entry's file name matches, exactly or as a versioned soname
+    /// (<c>libfoo.so</c> matches <c>libfoo.so.1.2</c>), ignoring case.
+    /// </summary>
+    /// <param name="wantedFileNames">The names being looked for.</param>
+    /// <param name="fileName">An entry's file name.</param>
+    /// <returns>The matching index, or -1.</returns>
     private static int Match(IReadOnlyList<string> wantedFileNames, string fileName)
     {
         for (int i = 0; i < wantedFileNames.Count; i++)

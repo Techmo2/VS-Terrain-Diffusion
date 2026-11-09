@@ -5,10 +5,19 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 public enum InferenceProvider
 {
+    /// <summary>
+    /// ONNX Runtime's default CPU provider. Works everywhere; the fallback for every other provider.
+    /// </summary>
     Cpu,
+    /// <summary>NVIDIA GPUs through ONNX Runtime's CUDA provider.</summary>
     Cuda,
+    /// <summary>Any DirectX 12 GPU on Windows through DirectML.</summary>
     DirectMl,
+    /// <summary>Apple's Core ML on macOS (the GPU and Neural Engine).</summary>
     CoreMl,
+    /// <summary>
+    /// Intel CPUs and GPUs through OpenVINO, run in its own worker rather than ONNX Runtime.
+    /// </summary>
     OpenVino,
 
     /// <summary>

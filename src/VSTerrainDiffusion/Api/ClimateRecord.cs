@@ -44,6 +44,19 @@ public readonly struct ClimateRecord
     /// <summary>Mean diurnal temperature range, °C (BIO2): the usual day-night swing. NaN without the seasonal model.</summary>
     public readonly float DiurnalRangeC;
 
+    /// <summary>Creates a record.</summary>
+    /// <param name="temperatureC">Annual mean temperature, °C.</param>
+    /// <param name="temperatureSeasonality">SD of monthly means × 100 (BIO4).</param>
+    /// <param name="precipitationMm">Annual precipitation, mm.</param>
+    /// <param name="precipitationCv">Precipitation seasonality, coefficient of variation (BIO15).</param>
+    /// <param name="elevationMeters">Elevation above sea level, m.</param>
+    /// <param name="hasSeasonalCycle">
+    /// Whether the cycle came from the seasonal model rather than being approximated.
+    /// </param>
+    /// <param name="cycle">
+    /// The six cycle channels: temperature shape, wet season and second rainy season, cos then sin.
+    /// </param>
+    /// <param name="diurnalRangeC">Mean diurnal range, °C, or NaN.</param>
     public ClimateRecord(float temperatureC, float temperatureSeasonality, float precipitationMm, float precipitationCv,
                          float elevationMeters, bool hasSeasonalCycle, ReadOnlySpan<float> cycle, float diurnalRangeC)
     {

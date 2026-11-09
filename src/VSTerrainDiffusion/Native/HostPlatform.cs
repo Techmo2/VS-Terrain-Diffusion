@@ -11,14 +11,23 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 internal static class HostPlatform
 {
+    /// <summary>
+    /// The operating system to pretend to be, or null for the real one. Test harnesses only.
+    /// </summary>
     internal static OSPlatform? OverrideOs;
+
+    /// <summary>The architecture to pretend to be, or null for the real one. Test harnesses only.</summary>
     internal static Architecture? OverrideArchitecture;
 
+    /// <summary>Whether the (possibly overridden) platform is Windows.</summary>
     public static bool IsWindows => OverrideOs is { } os ? os == OSPlatform.Windows : OperatingSystem.IsWindows();
 
+    /// <summary>Whether the (possibly overridden) platform is Linux.</summary>
     public static bool IsLinux => OverrideOs is { } os ? os == OSPlatform.Linux : OperatingSystem.IsLinux();
 
+    /// <summary>Whether the (possibly overridden) platform is macOS.</summary>
     public static bool IsMacOS => OverrideOs is { } os ? os == OSPlatform.OSX : OperatingSystem.IsMacOS();
 
+    /// <summary>The (possibly overridden) processor architecture.</summary>
     public static Architecture Architecture => OverrideArchitecture ?? RuntimeInformation.OSArchitecture;
 }

@@ -17,18 +17,37 @@ namespace VSTerrainDiffusion.Native;
 /// </summary>
 internal static class RemoteZipExtractor
 {
+    /// <summary>Signature of the end-of-central-directory record, "PK\x05\x06".</summary>
     private const uint EndOfCentralDirectorySignature = 0x06054b50;
+
+    /// <summary>Signature of the ZIP64 end-of-central-directory locator, "PK\x06\x07".</summary>
     private const uint Zip64EndOfCentralDirectoryLocatorSignature = 0x07064b50;
+
+    /// <summary>Signature of the ZIP64 end-of-central-directory record, "PK\x06\x06".</summary>
     private const uint Zip64EndOfCentralDirectorySignature = 0x06064b50;
+
+    /// <summary>Signature of a central directory file header, "PK\x01\x02".</summary>
     private const uint CentralFileHeaderSignature = 0x02014b50;
 
+    /// <summary>One file in the archive, as its central directory describes it.</summary>
     internal sealed class Entry
     {
+        /// <summary>The entry's path inside the archive, '/'-separated.</summary>
         public string Name;
+
+        /// <summary>0 for stored, 8 for deflate; nothing else is supported.</summary>
         public ushort CompressionMethod;
+
+        /// <summary>Bytes the entry occupies in the archive, after its local header.</summary>
         public long CompressedSize;
+
+        /// <summary>The file's size once inflated.</summary>
         public long UncompressedSize;
+
+        /// <summary>Offset of the entry's local file header from the start of the archive.</summary>
         public long LocalHeaderOffset;
+
+        /// <summary>CRC-32 of the uncompressed file, checked after extraction.</summary>
         public uint Crc32;
     }
 
@@ -129,6 +148,16 @@ internal static class RemoteZipExtractor
         File.Move(tempPath, destinationPath, overwrite: true);
     }
 
+    /// <summary>
+    /// Replaces the 32-bit sizes and offset that overflowed (0xFFFFFFFF) with their 64-bit values from the
+    /// ZIP64 extra field, which lists only those, in this order.
+    /// </summary>
+    /// <param name="buffer">The central directory.</param>
+    /// <param name="offset">Start of the entry's extra fields.</param>
+    /// <param name="length">Total length of the extra fields.</param>
+    /// <param name="uncompressed">The uncompressed size.</param>
+    /// <param name="compressed">The compressed size.</param>
+    /// <param name="localOffset">The local header offset.</param>
     private static void ReadZip64Extra(byte[] buffer, int offset, int length,
                                        ref long uncompressed, ref long compressed, ref long localOffset)
     {
@@ -161,6 +190,11 @@ internal static class RemoteZipExtractor
         }
     }
 
+    /// <summary>The archive's size, from a HEAD request.</summary>
+    /// <param name="client">The HTTP client.</param>
+    /// <param name="url">The archive.</param>
+    /// <param name="cancellation">Stops the request.</param>
+    /// <returns>The size in bytes.</returns>
     private static long GetContentLength(HttpClient client, string url, CancellationToken cancellation)
     {
         using var request = new HttpRequestMessage(HttpMethod.Head, url);
@@ -172,6 +206,13 @@ internal static class RemoteZipExtractor
         return length.Value;
     }
 
+    /// <summary>Downloads an inclusive byte range into memory.</summary>
+    /// <param name="client">The HTTP client.</param>
+    /// <param name="url">The archive.</param>
+    /// <param name="from">First byte.</param>
+    /// <param name="to">Last byte, inclusive.</param>
+    /// <param name="cancellation">Stops the download.</param>
+    /// <returns>The bytes.</returns>
     private static byte[] GetRange(HttpClient client, string url, long from, long to, CancellationToken cancellation)
     {
         using Stream stream = GetRangeStream(client, url, from, to, cancellation);
@@ -180,6 +221,15 @@ internal static class RemoteZipExtractor
         return buffer.ToArray();
     }
 
+    /// <summary>
+    /// Opens an inclusive byte range as a stream; the server must answer 206 Partial Content.
+    /// </summary>
+    /// <param name="client">The HTTP client.</param>
+    /// <param name="url">The archive.</param>
+    /// <param name="from">First byte.</param>
+    /// <param name="to">Last byte, inclusive.</param>
+    /// <param name="cancellation">Stops the request.</param>
+    /// <returns>The response body, owned by the caller.</returns>
     private static Stream GetRangeStream(HttpClient client, string url, long from, long to, CancellationToken cancellation)
     {
         var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -194,6 +244,11 @@ internal static class RemoteZipExtractor
         return response.Content.ReadAsStream(cancellation);
     }
 
+    /// <summary>Copies a stream while computing its CRC-32.</summary>
+    /// <param name="source">The decoded entry.</param>
+    /// <param name="destination">The output file.</param>
+    /// <param name="cancellation">Checked between buffers.</param>
+    /// <returns>The CRC-32 of everything copied.</returns>
     private static uint CopyAndHash(Stream source, Stream destination, CancellationToken cancellation)
     {
         var buffer = new byte[1 << 20];
@@ -209,6 +264,10 @@ internal static class RemoteZipExtractor
         return crc ^ 0xFFFFFFFF;
     }
 
+    /// <summary>The last offset at which a little-endian record signature occurs.</summary>
+    /// <param name="buffer">The bytes to search.</param>
+    /// <param name="signature">The signature.</param>
+    /// <returns>The offset, or -1.</returns>
     private static int FindLast(byte[] buffer, uint signature)
     {
         Span<byte> needle = stackalloc byte[4];
@@ -224,8 +283,11 @@ internal static class RemoteZipExtractor
         return -1;
     }
 
+    /// <summary>The CRC-32 (IEEE 802.3, reflected) lookup table.</summary>
     private static readonly uint[] Crc32Table = BuildCrc32Table();
 
+    /// <summary>Builds <see cref="Crc32Table"/>.</summary>
+    /// <returns>256 entries for polynomial 0xEDB88320.</returns>
     private static uint[] BuildCrc32Table()
     {
         var table = new uint[256];

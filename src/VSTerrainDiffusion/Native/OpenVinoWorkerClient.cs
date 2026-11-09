@@ -14,6 +14,9 @@ namespace VSTerrainDiffusion.Native;
 /// <summary>Failure reported by, or while communicating with, the isolated OpenVINO worker.</summary>
 public sealed class OpenVinoWorkerException : Exception
 {
+    /// <summary>Creates the exception.</summary>
+    /// <param name="message">What failed, with the exit code and recent stderr appended.</param>
+    /// <param name="inner">The underlying failure, if any.</param>
     internal OpenVinoWorkerException(string message, Exception? inner = null)
         : base(message, inner) { }
 }
@@ -24,17 +27,47 @@ public sealed class OpenVinoWorkerException : Exception
 /// </summary>
 public sealed class OpenVinoWorkerClient : IDisposable
 {
+    /// <summary>How long the worker may take to compile the model and report ready.</summary>
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(5);
+
+    /// <summary>How long one inference exchange may take before the worker is killed.</summary>
     private static readonly TimeSpan RunTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>One exchange at a time; also guards disposal.</summary>
     private readonly object _gate = new();
+
+    /// <summary>The worker process.</summary>
     private readonly Process _process;
+
+    /// <summary>Writes requests to the worker's stdin.</summary>
     private readonly BinaryWriter _writer;
+
+    /// <summary>Reads replies from the worker's stdout.</summary>
     private readonly BinaryReader _reader;
+
+    /// <summary>Receives the worker's stderr lines, or null.</summary>
     private readonly Action<string>? _progress;
+
+    /// <summary>The model's name, for messages.</summary>
     private readonly string _modelName;
+
+    /// <summary>The last 4 KiB of the worker's stderr, appended to failures.</summary>
     private readonly StringBuilder _standardError = new();
+
+    /// <summary>Whether <see cref="Dispose"/> has run.</summary>
     private bool _disposed;
 
+    /// <summary>
+    /// Starts a worker that compiles <paramref name="modelPath"/> for the CPU, and waits until it is ready.
+    /// </summary>
+    /// <param name="modelPath">The ONNX model.</param>
+    /// <param name="modelName">The model's name, for messages.</param>
+    /// <param name="cacheDirectory">Where OpenVINO caches the compiled model.</param>
+    /// <param name="nativeDirectory">The OpenVINO runtime directory.</param>
+    /// <param name="threadCount">Inference threads; at least one.</param>
+    /// <param name="progress">Receives the worker's progress lines, or null.</param>
+    /// <param name="cancellation">Abandons the start, killing the worker.</param>
+    /// <exception cref="OpenVinoWorkerException">The worker failed to start or compile the model.</exception>
     public OpenVinoWorkerClient(string modelPath, string modelName, string cacheDirectory,
                                 string nativeDirectory, int threadCount,
                                 Action<string>? progress = null,
@@ -90,6 +123,13 @@ public sealed class OpenVinoWorkerClient : IDisposable
         }
     }
 
+    /// <summary>
+    /// Runs the model once. A worker that fails or takes longer than <see cref="RunTimeout"/> is killed, and
+    /// every later run fails.
+    /// </summary>
+    /// <param name="inputs">Float32 tensors in the model's input order.</param>
+    /// <returns>The single output, flattened.</returns>
+    /// <exception cref="OpenVinoWorkerException">The run failed or the worker has stopped.</exception>
     public float[] Run(IReadOnlyList<(float[] Data, long[] Shape)> inputs)
     {
         lock (_gate)
@@ -112,6 +152,9 @@ public sealed class OpenVinoWorkerClient : IDisposable
         }
     }
 
+    /// <summary>Writes one run request and reads its reply.</summary>
+    /// <param name="inputs">The tensors.</param>
+    /// <returns>The output.</returns>
     private float[] SendAndRead(IReadOnlyList<(float[] Data, long[] Shape)> inputs)
     {
         _writer.Write(OpenVinoWorkerProtocol.RunCommand);
@@ -127,6 +170,11 @@ public sealed class OpenVinoWorkerClient : IDisposable
         return ReadResult();
     }
 
+    /// <summary>Checks the inputs against the protocol's limits before anything is sent.</summary>
+    /// <param name="inputs">The tensors.</param>
+    /// <exception cref="ArgumentException">
+    /// A count, rank or shape is out of range or does not match its data.
+    /// </exception>
     private static void ValidateInputs(IReadOnlyList<(float[] Data, long[] Shape)> inputs)
     {
         if (inputs.Count < 1 || inputs.Count > OpenVinoWorkerProtocol.MaxInputs)
@@ -147,6 +195,9 @@ public sealed class OpenVinoWorkerClient : IDisposable
         }
     }
 
+    /// <summary>Reads a run reply.</summary>
+    /// <returns>The output.</returns>
+    /// <exception cref="InvalidOperationException">The worker reported a failure.</exception>
     private float[] ReadResult()
     {
         int status = _reader.ReadInt32();
@@ -157,6 +208,16 @@ public sealed class OpenVinoWorkerClient : IDisposable
         return OpenVinoWorkerProtocol.ReadFloats(_reader.BaseStream, _reader.ReadInt32());
     }
 
+    /// <summary>
+    /// Runs a blocking pipe operation on the thread pool and kills the worker if it does not finish in time.
+    /// </summary>
+    /// <typeparam name="T">The operation's result.</typeparam>
+    /// <param name="operation">The operation.</param>
+    /// <param name="timeout">Its deadline.</param>
+    /// <param name="description">What it does, for the message.</param>
+    /// <param name="cancellation">Abandons the wait.</param>
+    /// <returns>The result.</returns>
+    /// <exception cref="TimeoutException">The deadline passed.</exception>
     private T CompleteWithTimeout<T>(Func<T> operation, TimeSpan timeout, string description,
                                      CancellationToken cancellation = default)
     {
@@ -169,6 +230,9 @@ public sealed class OpenVinoWorkerClient : IDisposable
         throw new TimeoutException($"Timed out waiting for OpenVINO worker to {description}");
     }
 
+    /// <summary>Keeps a stderr line for error reports and forwards it as progress.</summary>
+    /// <param name="sender">The process.</param>
+    /// <param name="args">The line.</param>
     private void OnErrorData(object sender, DataReceivedEventArgs args)
     {
         if (string.IsNullOrWhiteSpace(args.Data)) return;
@@ -180,6 +244,10 @@ public sealed class OpenVinoWorkerClient : IDisposable
         _progress?.Invoke(args.Data);
     }
 
+    /// <summary>An exception with the exit code and recent stderr appended.</summary>
+    /// <param name="message">What failed.</param>
+    /// <param name="inner">The underlying failure, if any.</param>
+    /// <returns>The exception, to throw.</returns>
     private OpenVinoWorkerException WorkerFailure(string message, Exception? inner = null)
     {
         string details;
@@ -189,11 +257,14 @@ public sealed class OpenVinoWorkerClient : IDisposable
         return new OpenVinoWorkerException(message, inner);
     }
 
+    /// <summary>Refuses use after disposal.</summary>
+    /// <exception cref="ObjectDisposedException">Disposed.</exception>
     private void ThrowIfDisposed()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(OpenVinoWorkerClient));
     }
 
+    /// <summary>Kills the worker if it is still running.</summary>
     private void Terminate()
     {
         try
@@ -207,6 +278,7 @@ public sealed class OpenVinoWorkerClient : IDisposable
         catch { }
     }
 
+    /// <summary>Releases the streams and the process handle.</summary>
     private void DisposeProcessResources()
     {
         _reader.Dispose();
@@ -214,6 +286,9 @@ public sealed class OpenVinoWorkerClient : IDisposable
         _process.Dispose();
     }
 
+    /// <summary>
+    /// Asks the worker to exit, kills it if it does not within two seconds, and releases it.
+    /// </summary>
     public void Dispose()
     {
         lock (_gate)

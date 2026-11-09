@@ -23,6 +23,7 @@ public sealed class PregenerationController
     /// <summary>Furthest a pregeneration may reach, in blocks: 100 km, about 480,000 tiles of 256.</summary>
     public const int MaxRadius = 100_000;
 
+    /// <summary>The server API.</summary>
     private readonly ICoreServerAPI _api;
 
     /// <summary>The world's current lakes and rivers, which a running job holds back for.</summary>

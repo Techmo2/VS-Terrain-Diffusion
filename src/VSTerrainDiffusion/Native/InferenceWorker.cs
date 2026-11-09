@@ -17,6 +17,11 @@ namespace VSTerrainDiffusion.Native;
 /// <summary>Failure reported by, or while talking to, the inference worker.</summary>
 public sealed class InferenceWorkerException : Exception
 {
+    /// <summary>Creates the exception.</summary>
+    /// <param name="message">
+    /// What failed, with the worker's recent output appended when there was any.
+    /// </param>
+    /// <param name="inner">The underlying failure, if any.</param>
     internal InferenceWorkerException(string message, Exception? inner = null) : base(message, inner) { }
 }
 
@@ -34,19 +39,43 @@ public sealed class InferenceWorkerException : Exception
 /// </summary>
 public sealed class InferenceWorker : IDisposable
 {
+    /// <summary>How long the worker has to connect its pipes and answer the handshake.</summary>
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>How long the worker has to exit after a shutdown request before it is killed.</summary>
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>Kernel buffer size of each pipe.</summary>
     private const int PipeBufferBytes = 1 << 20;
 
+    /// <summary>The server log, which the worker's log frames are written to.</summary>
     private readonly ILogger _logger;
+
+    /// <summary>The worker process.</summary>
     private readonly Process _process;
+
+    /// <summary>Game to worker.</summary>
     private readonly NamedPipeServerStream _requestPipe;
+
+    /// <summary>Worker to game.</summary>
     private readonly NamedPipeServerStream _replyPipe;
+
+    /// <summary>Writes requests to <see cref="_requestPipe"/>, under <see cref="_writeGate"/>.</summary>
     private readonly BinaryWriter _writer;
+
+    /// <summary>Reads replies from <see cref="_replyPipe"/>, on <see cref="_readerThread"/> only.</summary>
     private readonly BinaryReader _reader;
+
+    /// <summary>Keeps each request's frame in one piece when several threads send at once.</summary>
     private readonly object _writeGate = new();
+
+    /// <summary>Requests sent and not yet answered, by request id.</summary>
     private readonly ConcurrentDictionary<int, Pending> _pending = new();
+
+    /// <summary>The last 8 KiB of the worker's stdout and stderr, appended to failures.</summary>
     private readonly StringBuilder _standardError = new();
+
+    /// <summary>Tells the player while the GPU runtime compiles a model.</summary>
     private readonly CompileNotice _compileNotice;
 
     /// <summary>Each loaded model's name, by its id in the worker.</summary>
@@ -54,15 +83,30 @@ public sealed class InferenceWorker : IDisposable
 
     /// <summary>The model whose run was sent last, which is the one a compile message is about.</summary>
     private volatile string? _runningModel;
+
+    /// <summary>Reads replies and hands each to its waiting request.</summary>
     private readonly Thread _readerThread;
+
+    /// <summary>The last request id handed out.</summary>
     private int _nextRequest;
+
+    /// <summary>The last model id handed out.</summary>
     private int _nextModel;
+
+    /// <summary>Why the worker stopped answering, once it has; every later request fails with it.</summary>
     private volatile string? _stopped;
+
+    /// <summary>1 once <see cref="Dispose"/> has begun.</summary>
     private int _disposed;
 
     /// <summary>The provider the worker was initialised for.</summary>
     internal InferenceProvider Provider { get; }
 
+    /// <summary>Starts the worker process, connects both pipes and checks its handshake.</summary>
+    /// <param name="plan">The runtime the worker is for.</param>
+    /// <param name="logger">The server log.</param>
+    /// <param name="cancellation">Abandons the start.</param>
+    /// <exception cref="InferenceWorkerException">The worker did not start or answered wrongly.</exception>
     private InferenceWorker(RuntimePlan plan, ILogger logger, CancellationToken cancellation)
     {
         _logger = logger;
@@ -176,6 +220,14 @@ public sealed class InferenceWorker : IDisposable
         }
     }
 
+    /// <summary>Sends one request and waits for its answer.</summary>
+    /// <param name="kind">The request kind, from <see cref="InferenceWorkerProtocol"/>.</param>
+    /// <param name="payload">Writes the request's payload after its kind and id.</param>
+    /// <param name="cancellation">
+    /// Abandons the wait, which kills the worker; only model loads pass one.
+    /// </param>
+    /// <returns>The answer.</returns>
+    /// <exception cref="InferenceWorkerException">The worker failed the request or stopped.</exception>
     private Pending Request(int kind, Action<BinaryWriter> payload, CancellationToken cancellation)
     {
         int id = Interlocked.Increment(ref _nextRequest);
@@ -226,6 +278,10 @@ public sealed class InferenceWorker : IDisposable
         return pending;
     }
 
+    /// <summary>
+    /// The reply reader's loop: logs log frames and completes each answered request. When the replies end,
+    /// for whatever reason, every request still waiting fails.
+    /// </summary>
     private void ReadReplies()
     {
         try
@@ -296,10 +352,22 @@ public sealed class InferenceWorker : IDisposable
         }
     }
 
+    /// <summary>The pending request a reply answers.</summary>
+    /// <param name="id">The reply's request id.</param>
+    /// <returns>The request.</returns>
+    /// <exception cref="InvalidDataException">Nothing is waiting on that id.</exception>
     private Pending Take(int id) => _pending.TryGetValue(id, out Pending? pending)
         ? pending
         : throw new InvalidDataException($"The inference worker answered request {id}, which nothing asked for");
 
+    /// <summary>
+    /// Waits for a startup step while watching for the worker exiting, the deadline and cancellation.
+    /// </summary>
+    /// <param name="task">The step.</param>
+    /// <param name="cancellation">Abandons the wait.</param>
+    /// <exception cref="InferenceWorkerException">
+    /// The worker exited, timed out or the step failed.
+    /// </exception>
     private void AwaitStartup(Task task, CancellationToken cancellation)
     {
         var deadline = Stopwatch.StartNew();
@@ -314,6 +382,11 @@ public sealed class InferenceWorker : IDisposable
         if (task.IsFaulted) throw Failure("The inference worker failed to start", task.Exception?.GetBaseException());
     }
 
+    /// <summary>
+    /// Keeps one line of the worker's console output for error reports, logs it at debug level and watches it
+    /// for compile messages.
+    /// </summary>
+    /// <param name="line">The line, or null at the end of the stream.</param>
     private void OnWorkerOutput(string? line)
     {
         if (string.IsNullOrWhiteSpace(line)) return;
@@ -326,12 +399,19 @@ public sealed class InferenceWorker : IDisposable
         _compileNotice.OnWorkerOutput(line, _runningModel);
     }
 
+    /// <summary>Refuses new requests once disposed or stopped.</summary>
+    /// <exception cref="ObjectDisposedException">Disposed.</exception>
+    /// <exception cref="InferenceWorkerException">The worker stopped.</exception>
     private void ThrowIfStopped()
     {
         if (Volatile.Read(ref _disposed) != 0) throw new ObjectDisposedException(nameof(InferenceWorker));
         if (_stopped != null) throw Failure(_stopped);
     }
 
+    /// <summary>An exception with the worker's recent console output appended.</summary>
+    /// <param name="message">What failed.</param>
+    /// <param name="inner">The underlying failure, if any.</param>
+    /// <returns>The exception, to throw.</returns>
     private InferenceWorkerException Failure(string message, Exception? inner = null)
     {
         string details;
@@ -339,6 +419,7 @@ public sealed class InferenceWorker : IDisposable
         return new InferenceWorkerException(details.Length == 0 ? message : message + ":\n" + details, inner);
     }
 
+    /// <summary>Kills the worker and anything it started, if it is still running.</summary>
     private void Kill()
     {
         try
@@ -355,6 +436,7 @@ public sealed class InferenceWorker : IDisposable
         }
     }
 
+    /// <summary>Releases the pipes, streams, process handle and compile notice.</summary>
     private void DisposeResources()
     {
         try { _writer.Dispose(); } catch { }
@@ -400,12 +482,22 @@ public sealed class InferenceWorker : IDisposable
         DisposeResources();
     }
 
+    /// <summary>One request in flight, and its answer once it arrives.</summary>
     private sealed class Pending
     {
+        /// <summary>Set once the request is answered or has failed.</summary>
         public readonly ManualResetEventSlim Done = new(false);
+
+        /// <summary>The JSON payload of the answer, if it had one.</summary>
         public string? Json;
+
+        /// <summary>The tensor payload of the answer, if it had one.</summary>
         public float[]? Tensor;
+
+        /// <summary>How long the worker spent running the model, for a tensor answer.</summary>
         public long ElapsedNanoseconds;
+
+        /// <summary>Why the request failed, or null.</summary>
         public string? Error;
     }
 }

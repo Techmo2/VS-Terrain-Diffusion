@@ -6,20 +6,28 @@ namespace VSTerrainDiffusion.Api;
 /// Köppen–Geiger classes (Beck et al. 2018 criteria) from monthly temperature and precipitation: a
 /// port of the reference's <c>koppen.koppen_classes</c>, with the same class order and colours.
 ///
-/// <see cref="Classify"/> is the hard class. <see cref="Memberships"/> softens every threshold, so
+/// <see cref="Classify(double, double, MonthlyClimate)"/> is the hard class. <see cref="Memberships(double, double, MonthlyClimate, Softness, Span{float})"/> softens every threshold, so
 /// a place near a boundary belongs partly to the classes on both sides; the weights sum to one and
 /// become the hard class as the widths go to zero.
 /// </summary>
 public static class Koppen
 {
+    /// <summary>One Köppen class: its code, English name and map colour.</summary>
     public readonly struct ClassInfo
     {
+        /// <summary>The class code, e.g. "Cfb".</summary>
         public readonly string Code;
+
+        /// <summary>The class's English name, e.g. "Oceanic".</summary>
         public readonly string Name;
 
         /// <summary>The usual Köppen map colour, 0xRRGGBB.</summary>
         public readonly int Rgb;
 
+        /// <summary>Creates a class entry.</summary>
+        /// <param name="code">The class code.</param>
+        /// <param name="name">The English name.</param>
+        /// <param name="rgb">The map colour, 0xRRGGBB.</param>
         public ClassInfo(string code, string name, int rgb)
         {
             Code = code;
@@ -28,6 +36,9 @@ public static class Koppen
         }
     }
 
+    /// <summary>
+    /// Every land class, in the reference's order; an index into this array is a class index.
+    /// </summary>
     public static readonly ClassInfo[] Classes =
     {
         new("Af", "Tropical rainforest", 0x0000FF), new("Am", "Tropical monsoon", 0x0078FF),
@@ -54,13 +65,17 @@ public static class Koppen
     /// <summary>Number of land classes; also the index callers use for water.</summary>
     public const int Count = 30;
 
+    /// <summary>The class index callers use for water; one past the last land class.</summary>
     public const int Water = Count;
 
     /// <summary>Index of a class code such as "Cfb", or -1.</summary>
     public static int IndexOf(string code) => ByCode.TryGetValue(code, out int index) ? index : -1;
 
+    /// <summary>Class index by code, built once from <see cref="Classes"/>.</summary>
     private static readonly System.Collections.Generic.Dictionary<string, int> ByCode = BuildIndex();
 
+    /// <summary>Builds <see cref="ByCode"/>.</summary>
+    /// <returns>The code-to-index map.</returns>
     private static System.Collections.Generic.Dictionary<string, int> BuildIndex()
     {
         var index = new System.Collections.Generic.Dictionary<string, int>(StringComparer.Ordinal);
@@ -71,11 +86,28 @@ public static class Koppen
     /// <summary>The figures every criterion is made of, from one place's twelve months.</summary>
     private readonly struct Facts
     {
+        /// <summary>
+        /// Annual mean, hottest and coldest month temperatures (°C); annual and driest-month precipitation
+        /// (mm).
+        /// </summary>
         public readonly double MeanC, AnnualMm, HottestC, ColdestC, DriestMm;
+
+        /// <summary>
+        /// Driest and wettest month of the summer and winter halves (mm), and summer's share of the annual
+        /// total.
+        /// </summary>
         public readonly double SummerMinMm, SummerMaxMm, WinterMinMm, WinterMaxMm, SummerFraction;
+
+        /// <summary>How many months average above 10 °C.</summary>
         public readonly int MonthsAbove10;
+
+        /// <summary>The twelve monthly mean temperatures, °C, in calendar order.</summary>
         public readonly double[] TemperatureC;
 
+        /// <summary>Works out the figures from one place's months.</summary>
+        /// <param name="meanC">Annual mean temperature, °C.</param>
+        /// <param name="annualMm">Annual precipitation, mm; negative counts as zero.</param>
+        /// <param name="months">The twelve monthly means.</param>
         public Facts(double meanC, double annualMm, MonthlyClimate months)
         {
             MeanC = meanC;
@@ -134,6 +166,13 @@ public static class Koppen
     public static int Classify(double meanC, double seasonality, double annualMm, ReadOnlySpan<double> cycle) =>
         Classify(meanC, annualMm, MonthlyClimate.Reconstruct(meanC, seasonality, annualMm, cycle));
 
+    /// <summary>
+    /// The class index into <see cref="Classes"/> for one place, from its reconstructed months.
+    /// </summary>
+    /// <param name="meanC">Annual mean temperature, °C.</param>
+    /// <param name="annualMm">Annual precipitation, mm.</param>
+    /// <param name="months">Monthly temperature and precipitation.</param>
+    /// <returns>The class index.</returns>
     public static int Classify(double meanC, double annualMm, MonthlyClimate months)
     {
         var f = new Facts(meanC, annualMm, months);
@@ -157,7 +196,7 @@ public static class Koppen
         return IndexOf(new string(new[] { group, second, third }));
     }
 
-    /// <summary>How sharply <see cref="Memberships"/> moves from one side of a threshold to the other.</summary>
+    /// <summary>How sharply <see cref="Memberships(double, double, MonthlyClimate, Softness, Span{float})"/> moves from one side of a threshold to the other.</summary>
     public readonly struct Softness
     {
         /// <summary>Width of a temperature threshold, °C: about 2.2 widths take a weight from 10% to 90%.</summary>
@@ -172,6 +211,11 @@ public static class Koppen
         /// <summary>Width of the summer-rain fraction thresholds (0.7 and 0.3).</summary>
         public readonly double SummerFraction;
 
+        /// <summary>Creates a set of threshold widths.</summary>
+        /// <param name="temperatureC">Width of temperature thresholds, °C.</param>
+        /// <param name="monthlyMm">Width of monthly precipitation thresholds, mm.</param>
+        /// <param name="aridityLog">Width of the aridity thresholds, natural log.</param>
+        /// <param name="summerFraction">Width of the summer-rain fraction thresholds.</param>
         public Softness(double temperatureC, double monthlyMm, double aridityLog, double summerFraction)
         {
             TemperatureC = temperatureC;
@@ -180,12 +224,15 @@ public static class Koppen
             SummerFraction = summerFraction;
         }
 
+        /// <summary>
+        /// Widths that blend neighbouring classes over a narrow band without blurring the map.
+        /// </summary>
         public static readonly Softness Default = new(0.5, 5.0, 0.08, 0.03);
     }
 
     /// <summary>
     /// A weight per class (length <see cref="Count"/>) that sums to one. Each criterion of
-    /// <see cref="Classify"/> becomes a logistic step of the given width, and a class's weight is
+    /// <see cref="Classify(double, double, MonthlyClimate)"/> becomes a logistic step of the given width, and a class's weight is
     /// the product of the steps along its branch of the decision tree.
     /// </summary>
     public static float[] Memberships(double meanC, double seasonality, double annualMm, ReadOnlySpan<double> cycle,
@@ -197,6 +244,15 @@ public static class Koppen
         return weights;
     }
 
+    /// <summary>
+    /// Writes a weight per class into <paramref name="weights"/>, from already reconstructed months, without
+    /// allocating.
+    /// </summary>
+    /// <param name="meanC">Annual mean temperature, °C.</param>
+    /// <param name="annualMm">Annual precipitation, mm.</param>
+    /// <param name="months">Monthly temperature and precipitation.</param>
+    /// <param name="softness">Threshold widths.</param>
+    /// <param name="weights">Receives <see cref="Count"/> weights summing to one; cleared first.</param>
     public static void Memberships(double meanC, double annualMm, MonthlyClimate months, Softness softness,
                                    Span<float> weights)
     {
@@ -257,5 +313,9 @@ public static class Koppen
         }
     }
 
+    /// <summary>Adds <paramref name="weight"/> to the class named <paramref name="code"/>.</summary>
+    /// <param name="weights">The weights being built.</param>
+    /// <param name="code">A class code.</param>
+    /// <param name="weight">The weight to add.</param>
     private static void Add(Span<float> weights, string code, double weight) => weights[IndexOf(code)] += (float)weight;
 }
