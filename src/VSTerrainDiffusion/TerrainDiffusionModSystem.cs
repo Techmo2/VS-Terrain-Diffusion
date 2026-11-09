@@ -35,6 +35,7 @@ public class TerrainDiffusionModSystem : ModSystem
     /// <summary>Where Terrain Continuity looks for a terrain mod's surface height at a block column.</summary>
     private const string ContinuityHeightSourceKey = "terraincontinuity:surfaceheight";
 
+    /// <summary>The server, from <c>StartServerSide</c>.</summary>
     private ICoreServerAPI _api;
 
     /// <summary>The world's resolved settings; null before initialisation. Read by test probes by name.</summary>
@@ -52,15 +53,31 @@ public class TerrainDiffusionModSystem : ModSystem
     /// <summary>What the model was told about rivers, kept so the debug map can show it; null without Rivers.</summary>
     private IRiverBasinSource _riverBasins;
 
+    /// <summary>The chunk column generator that writes the terrain.</summary>
     private GenDiffusionTerra _generator;
+
+    /// <summary>Lakes and rivers, or null when the world does not fill water or Watersheds does.</summary>
     private WorldWater _water;
+
+    /// <summary>The surface pass: bare rock on steep ground, permanent ice where it never thaws.</summary>
     private DiffusionSurface _surface;
+
+    /// <summary>The live debug map, when its port is configured.</summary>
     private DebugMapServer _debugMap;
+
+    /// <summary>The forest map layer that replaced vanilla's.</summary>
     private DiffusionForestMapLayer _forestLayer;
+
+    /// <summary>The shrub map layer that replaced vanilla's.</summary>
     private DiffusionForestMapLayer _shrubLayer;
 
+    /// <summary>Finds where the player starts.</summary>
     private SpawnPlacement _spawn;
+
+    /// <summary>Puts the generator in vanilla's place in the terrain pass.</summary>
     private TerrainHandlerInstaller _terrainHandler;
+
+    /// <summary>Runs <c>/tdiff pregen</c>.</summary>
     private PregenerationController _pregeneration;
 
     /// <summary>
