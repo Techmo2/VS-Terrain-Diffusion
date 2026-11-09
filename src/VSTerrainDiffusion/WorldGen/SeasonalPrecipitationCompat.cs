@@ -26,9 +26,13 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class SeasonalPrecipitationCompat
 {
+    /// <summary>Owns the patch, so <see cref="Uninstall"/> removes only it.</summary>
     private const string HarmonyId = "vsterraindiffusion.seasonalprecipitation";
 
+    /// <summary>The patcher, while installed.</summary>
     private static Harmony _harmony;
+
+    /// <summary>How many sides have armed the patch; it comes off when the last disarms.</summary>
     private static int _armed;
 
     /// <summary>
@@ -36,6 +40,8 @@ public static class SeasonalPrecipitationCompat
     /// every mod system in the game, and this runs on the render thread once a frame.
     /// </summary>
     private static DiffusionSeasons _clientSeasons;
+
+    /// <summary>See <see cref="_clientSeasons"/>.</summary>
     private static DiffusionSeasons _serverSeasons;
 
     /// <summary>True while the patch is in place.</summary>
@@ -92,6 +98,7 @@ public static class SeasonalPrecipitationCompat
             DiffusionPaths.ModId);
     }
 
+    /// <summary>A patch method of this class by name.</summary>
     private static HarmonyMethod Method(string name) =>
         new(AccessTools.Method(typeof(SeasonalPrecipitationCompat), name));
 

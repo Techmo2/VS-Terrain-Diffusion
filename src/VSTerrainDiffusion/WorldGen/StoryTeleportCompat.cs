@@ -24,12 +24,21 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class StoryTeleportCompat
 {
+    /// <summary>Owns the patch, so <see cref="Uninstall"/> removes only it.</summary>
     private const string HarmonyId = "vsterraindiffusion.storyteleport";
 
+    /// <summary>The patcher, while installed.</summary>
     private static Harmony _harmony;
+
+    /// <summary>The server, while installed.</summary>
     private static ICoreServerAPI _api;
+
+    /// <summary>The world's terrain, while installed.</summary>
     private static TerrainDiffusionProvider _provider;
 
+    /// <summary>Patches the teleport command, once, and points it at this world.</summary>
+    /// <param name="api">The server.</param>
+    /// <param name="provider">The world's terrain.</param>
     public static void Install(ICoreServerAPI api, TerrainDiffusionProvider provider)
     {
         _api = api;
@@ -46,6 +55,7 @@ public static class StoryTeleportCompat
         _harmony.Patch(target, prefix: new HarmonyMethod(typeof(StoryTeleportCompat), nameof(BeforeTpStoryLoc)));
     }
 
+    /// <summary>Removes the patch.</summary>
     public static void Uninstall()
     {
         _harmony?.UnpatchAll(HarmonyId);
@@ -54,6 +64,7 @@ public static class StoryTeleportCompat
         _provider = null;
     }
 
+    /// <summary>Puts a living entity on the topmost block of a column.</summary>
     private static void TeleportOnTop(ICoreServerAPI api, Entity entity, int x, int z)
     {
         if (entity == null || !entity.Alive) return;
@@ -61,6 +72,10 @@ public static class StoryTeleportCompat
         entity.TeleportTo(new Vec3d(x + 0.5, top + 1, z + 0.5));
     }
 
+    /// <summary>
+    /// Teleports to the structure's centre column, on top of whatever is there, once that column exists;
+    /// vanilla runs only when the structure or caller is unknown.
+    /// </summary>
     private static bool BeforeTpStoryLoc(GenStoryStructures __instance, TextCommandCallingArgs args, ref TextCommandResult __result)
     {
         ICoreServerAPI api = _api;

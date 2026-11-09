@@ -28,16 +28,29 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class TerrainSamplerCompat
 {
+    /// <summary>The sampler's mod ID.</summary>
     private const string SamplerModId = "algernonsterrainsampler";
+
+    /// <summary>Owns the patches, so <see cref="Uninstall"/> removes only these.</summary>
     private const string HarmonyId = "vsterraindiffusion.terrainsampler";
 
+    /// <summary>The patcher, while installed.</summary>
     private static Harmony _harmony;
+
+    /// <summary>The world's terrain, which answers the heights.</summary>
     private static TerrainDiffusionProvider _provider;
+
+    /// <summary>The coordinate type's X and Z properties.</summary>
     private static PropertyInfo _x, _z;
 
     /// <summary>Whether the sampler's heights are coming from the model.</summary>
     public static bool Installed => _harmony != null && _provider != null;
 
+    /// <summary>
+    /// Patches the sampler's height methods, if the sampler is installed. Failing to is logged, not fatal.
+    /// </summary>
+    /// <param name="api">The server.</param>
+    /// <param name="provider">The world's terrain.</param>
     public static void Install(ICoreServerAPI api, TerrainDiffusionProvider provider)
     {
         if (!api.ModLoader.IsModEnabled(SamplerModId)) return;
@@ -82,6 +95,7 @@ public static class TerrainSamplerCompat
         }
     }
 
+    /// <summary>Removes the patches.</summary>
     public static void Uninstall()
     {
         _harmony?.UnpatchAll(HarmonyId);
@@ -89,6 +103,9 @@ public static class TerrainSamplerCompat
         _provider = null;
     }
 
+    /// <summary>
+    /// The surface Y the model gives a <c>WorldMapCoordinate</c>, in the configured sampler mode.
+    /// </summary>
     private static int Height(object coordinate) =>
         _provider.SampleSurfaceY((int)_x.GetValue(coordinate), (int)_z.GetValue(coordinate),
             DiffusionConfig.Instance.TerrainSamplerHeight switch

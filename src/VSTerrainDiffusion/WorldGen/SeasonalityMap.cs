@@ -25,6 +25,7 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class SeasonalityMap
 {
+    /// <summary>The map region mod data key the map is saved under.</summary>
     public const string ModDataKey = "vsterraindiffusion:seasonality";
 
     /// <summary>Fixed-point steps per degree in the stored temperature sigma.</summary>
@@ -42,6 +43,9 @@ public static class SeasonalityMap
         /// <summary>Precipitation coefficient of variation across the year, percent.</summary>
         public readonly float PrecipitationCv;
 
+        /// <summary>A sample from its two values.</summary>
+        /// <param name="temperatureSigmaC">See <see cref="TemperatureSigmaC"/>.</param>
+        /// <param name="precipitationCv">See <see cref="PrecipitationCv"/>.</param>
         public Sample(float temperatureSigmaC, float precipitationCv)
         {
             TemperatureSigmaC = temperatureSigmaC;
@@ -110,6 +114,7 @@ public static class SeasonalityMap
         return new Sample(((packed >> 16) & 0xFF) / SigmaScale, (packed >> 8) & 0xFF);
     }
 
+    /// <summary>A region's map, decoded once.</summary>
     private static IntDataMap2D MapFor(IMapRegion region)
     {
         if (Decoded.TryGetValue(region, out IntDataMap2D cached)) return cached;

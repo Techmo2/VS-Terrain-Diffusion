@@ -29,22 +29,36 @@ public static class ChunkPeekScope
     /// </summary>
     private const int MarginChunks = 2;
 
+    /// <summary>Blocks per chunk edge.</summary>
     private const int ChunkSize = 32;
 
-    // A depth rather than a flag, so a nested or re-entered peek cannot disarm the outer one.
+    /// <summary>
+    /// How many peeks this thread is inside: a depth rather than a flag, so a nested or re-entered peek
+    /// cannot disarm the outer one.
+    /// </summary>
     private static readonly ThreadLocal<int> Depth = new(() => 0);
+
+    /// <summary>The outermost peek's <see cref="Footprint"/> on this thread.</summary>
     private static readonly ThreadLocal<Bounds> Window = new(() => default);
 
+    /// <summary>A block rectangle, maximum exclusive.</summary>
     private readonly struct Bounds
     {
+        /// <summary>The rectangle's edges, in blocks; the maxima exclusive.</summary>
         public readonly int MinX, MinZ, MaxX, MaxZ;
 
+        /// <summary>A rectangle from its edges.</summary>
+        /// <param name="minX">Least X.</param>
+        /// <param name="minZ">Least Z.</param>
+        /// <param name="maxX">X past the last.</param>
+        /// <param name="maxZ">Z past the last.</param>
         public Bounds(int minX, int minZ, int maxX, int maxZ)
         {
             MinX = minX; MinZ = minZ; MaxX = maxX; MaxZ = maxZ;
         }
     }
 
+    /// <summary>Whether this thread is generating for a chunk peek.</summary>
     public static bool Active => Depth.Value > 0;
 
     /// <summary>Enters a peek centred on a chunk column, which the game generates a 3x3 around.</summary>
@@ -73,6 +87,7 @@ public static class ChunkPeekScope
         maxZ = (centreChunkZ + reach + 1) * ChunkSize;
     }
 
+    /// <summary>Leaves a peek entered with <see cref="Enter"/>.</summary>
     public static void Exit()
     {
         if (Depth.Value > 0) Depth.Value--;

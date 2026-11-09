@@ -31,6 +31,7 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public class SeaLevelOverride : ModSystem
 {
+    /// <summary>The world setting naming the sea level: a block Y, or "vanilla".</summary>
     public const string WorldConfigCode = "terraindiffusionSeaLevel";
 
     /// <summary>Least room left above the sea, so a short world cannot be all ocean.</summary>
@@ -45,10 +46,16 @@ public class SeaLevelOverride : ModSystem
     /// <summary>Vanilla's world setting for cloud height, as a fraction of world height.</summary>
     private const string CloudHeightCode = "cloudypos";
 
+    /// <summary>Backing field of <see cref="Current"/>.</summary>
     private static HeightFrame? _current;
 
+    /// <summary>The server.</summary>
     private ICoreServerAPI _api;
+
+    /// <summary>The sea level the world asks for, or null for vanilla's.</summary>
     private int? _seaLevel;
+
+    /// <summary>Whether the moved sea level has been logged.</summary>
     private bool _logged;
 
     /// <summary>The world's vertical layout once sea level is settled; null before that, or client side.</summary>
@@ -57,6 +64,9 @@ public class SeaLevelOverride : ModSystem
     /// <summary>After GenTerra sets vanilla's sea level (0), before GenDeposits reads it (0.2).</summary>
     public override double ExecuteOrder() => 0.05;
 
+    /// <summary>
+    /// Applies the sea level once mods and config are ready, and lowers the clouds once the game runs.
+    /// </summary>
     public override void StartServerSide(ICoreServerAPI api)
     {
         _api = api;
@@ -69,6 +79,7 @@ public class SeaLevelOverride : ModSystem
         api.Event.ServerRunPhase(EnumServerRunPhase.RunGame, LowerClouds);
     }
 
+    /// <summary>Reads the world's sea level and applies it before world generation sets up.</summary>
     public override void AssetsFinalize(ICoreAPI api)
     {
         if (api is not ICoreServerAPI sapi) return;
@@ -77,6 +88,9 @@ public class SeaLevelOverride : ModSystem
         Apply();
     }
 
+    /// <summary>
+    /// Gives the client's climate helpers the world's sea level, which only the server otherwise sets.
+    /// </summary>
     public override void StartClientSide(ICoreClientAPI api)
     {
         // The climate helpers read a static that only the server's GenTerra ever sets, so a client
@@ -121,6 +135,7 @@ public class SeaLevelOverride : ModSystem
             DiffusionPaths.ModId, cloudY, cloudY - seaLevel);
     }
 
+    /// <summary>Sets the sea level everywhere the game keeps it, and records <see cref="Current"/>.</summary>
     private void Apply()
     {
         if (_api == null) return;

@@ -63,6 +63,11 @@ public static class StoryStructureConditioning
         new[] { 30f, 146f, 405f, 142f }
     };
 
+    /// <summary>The conditioning sites for every story structure that forces a climate or landform.</summary>
+    /// <param name="api">The server.</param>
+    /// <param name="settings">The world's settings, for the conditioning grid.</param>
+    /// <param name="logger">The server log.</param>
+    /// <returns>The sites, empty when no structure forces anything.</returns>
     public static List<CoarseConditioningSite> Read(ICoreServerAPI api, DiffusionWorldSettings settings, ILogger logger)
     {
         var sites = new List<CoarseConditioningSite>();

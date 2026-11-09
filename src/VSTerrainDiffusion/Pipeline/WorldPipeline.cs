@@ -172,6 +172,9 @@ public sealed partial class WorldPipeline
     /// <summary>The world seed.</summary>
     private ulong _seed;
 
+    /// <summary>A pipeline for one world; the models must already be loaded.</summary>
+    /// <param name="seed">The world seed.</param>
+    /// <param name="models">The loaded models.</param>
     /// <param name="landmask">
     /// Decides where the sea goes, overriding the pipeline's own noise. Null lets the model invent
     /// its own continents, which is the reference implementation's behaviour.
@@ -185,6 +188,14 @@ public sealed partial class WorldPipeline
     /// polar distance says they should. Null leaves the climate unrooted, which is the reference
     /// implementation's behaviour.
     /// </param>
+    /// <param name="riverBasins">Lowers the land where a river network runs, or null for none.</param>
+    /// <param name="riverBasinDepth">How far a fully-river cell is pulled towards sea level, 0 to 1.</param>
+    /// <param name="pooling">Coarse pooling; none by default.</param>
+    /// <param name="baseRenoiseSigma">How much of the base model's first draw its second step redraws, as a noise level.</param>
+    /// <param name="coarseHeightNoise">Noise added to the coarse elevation before the base model, signed square-root metres; 0 is off.</param>
+    /// <param name="altitudeCooling">Multiplier on cooling with altitude; 1 is the reference rate.</param>
+    /// <param name="conditioningSites">Places asking for a climate or landform of their own, or null.</param>
+    /// <param name="coastFill">Whether sea cells take their climate from nearby land; see <see cref="CoastFill"/>.</param>
     public WorldPipeline(ulong seed, PipelineModels models, ILandmaskSource landmask = null,
                          ClimateShift climate = default, ILatitudeSource latitude = null,
                          IRiverBasinSource riverBasins = null, float riverBasinDepth = 0f,

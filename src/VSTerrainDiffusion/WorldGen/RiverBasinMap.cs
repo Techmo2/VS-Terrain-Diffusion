@@ -22,10 +22,19 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public sealed class RiverBasinMap : IRiverBasinSource
 {
+    /// <summary>Blocks per coarse conditioning pixel edge.</summary>
     private readonly int _blocksPerCoarse;
+
+    /// <summary>Block X of the model origin.</summary>
     private readonly int _originBlockX;
+
+    /// <summary>Block Z of the model origin.</summary>
     private readonly int _originBlockZ;
+
+    /// <summary>The server log.</summary>
     private readonly ILogger _logger;
+
+    /// <summary>Whether a failed sample has been logged once already.</summary>
     private bool _warned;
 
     /// <summary>
@@ -39,6 +48,9 @@ public sealed class RiverBasinMap : IRiverBasinSource
     /// </summary>
     private const int SamplesPerAxis = 2;
 
+    /// <summary>A basin source on this world's conditioning grid.</summary>
+    /// <param name="settings">The world's settings: the grid and the model origin.</param>
+    /// <param name="logger">The server log.</param>
     public RiverBasinMap(DiffusionWorldSettings settings, ILogger logger)
     {
         _blocksPerCoarse = settings.BlocksPerConditioningPixel;
@@ -47,6 +59,7 @@ public sealed class RiverBasinMap : IRiverBasinSource
         _logger = logger;
     }
 
+    /// <inheritdoc/>
     public float[] BasinStrength(int x1, int y1, int x2, int y2)
     {
         if (!RiversCompat.CanSampleNetwork) return null;

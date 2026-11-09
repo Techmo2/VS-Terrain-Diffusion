@@ -24,9 +24,16 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public class DiffusionSeasons : ModSystem
 {
+    /// <summary>The game, on whichever side this runs.</summary>
     private ICoreAPI _api;
+
+    /// <summary>The config's world generation section.</summary>
     private WorldGenConfig _config;
+
+    /// <summary>Year-to-year wobble in the seasons, seeded apart from vanilla's.</summary>
     private SimplexNoise _yearlyNoise;
+
+    /// <summary>Day-to-day wobble in the temperature, seeded apart from vanilla's.</summary>
     private SimplexNoise _dailyNoise;
 
     /// <summary>
@@ -72,6 +79,7 @@ public class DiffusionSeasons : ModSystem
     /// </summary>
     public override double ExecuteOrder() => 0.9;
 
+    /// <summary>Hooks the climate event and the precipitation patch, as the config asks.</summary>
     public override void Start(ICoreAPI api)
     {
         _api = api;
@@ -91,6 +99,7 @@ public class DiffusionSeasons : ModSystem
         if (_config.SeasonalPrecipitation) SeasonalPrecipitationCompat.Install(api, this);
     }
 
+    /// <summary>Removes the precipitation patch.</summary>
     public override void Dispose()
     {
         if (_config != null && _config.SeasonalPrecipitation) SeasonalPrecipitationCompat.Uninstall(_api);

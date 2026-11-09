@@ -29,6 +29,8 @@ public static class BlockLayerAltitude
     /// Moves every band for this world, always from the original values; with nothing to move it
     /// puts back whatever the last world moved.
     /// </summary>
+    /// <param name="api">The server, whose block layer config is moved.</param>
+    /// <param name="settings">The world's settings: its height frame and vertical scale.</param>
     /// <param name="exaggerated">Also follow the terrain's vertical scale, not only its sea level.</param>
     public static void Apply(ICoreServerAPI api, DiffusionWorldSettings settings, bool exaggerated)
     {

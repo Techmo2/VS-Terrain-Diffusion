@@ -23,7 +23,10 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class SaveDatabaseBackstop
 {
+    /// <summary>Every instance field, public or not.</summary>
     private const BindingFlags Any = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+    /// <summary>The name of the server's chunk thread.</summary>
     private const string ChunkThreadName = "chunkdbthread";
 
     /// <summary>Under the 60 s the server gives its threads, so this never outlasts a stopping server.</summary>
@@ -82,9 +85,13 @@ public static class SaveDatabaseBackstop
         }
     }
 
+    /// <summary>The server's chunk thread, or null when it has none.</summary>
     private static Thread FindChunkThread(ICoreServerAPI api) =>
         (Field(api.World, "Serverthreads") as IEnumerable<Thread>)?.FirstOrDefault(t => t.Name == ChunkThreadName);
 
+    /// <summary>
+    /// Closes the save database if the chunk thread stopped without closing it, logging either way.
+    /// </summary>
     private static void CloseIfLeftOpen(ICoreServerAPI api, ILogger logger)
     {
         try
@@ -109,6 +116,9 @@ public static class SaveDatabaseBackstop
         }
     }
 
+    /// <summary>
+    /// Reads a field by name from <paramref name="instance"/>'s type or a base type; null when missing.
+    /// </summary>
     private static object Field(object instance, string name)
     {
         for (Type type = instance?.GetType(); type != null; type = type.BaseType)
@@ -119,6 +129,7 @@ public static class SaveDatabaseBackstop
         return null;
     }
 
+    /// <summary>Logs through <paramref name="logger"/>, ignoring a logger that has already closed.</summary>
     private static void Log(ILogger logger, Action<ILogger> write)
     {
         try { write(logger); }

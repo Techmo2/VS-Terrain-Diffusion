@@ -39,7 +39,10 @@ public sealed class OceanMapLandmask : ILandmaskSource
     /// <summary>Points read along each axis of a conditioning pixel by worlds created with sampling.</summary>
     public const int DefaultSamplesPerAxis = 16;
 
+    /// <summary>Produces the ocean map layer; see the constructor.</summary>
     private readonly Func<MapLayerBase> _resolveLayer;
+
+    /// <summary>The server log.</summary>
     private readonly ILogger _logger;
 
     /// <summary>Ocean-map pixels spanned by one coarse conditioning pixel, along each axis.</summary>
@@ -48,14 +51,19 @@ public sealed class OceanMapLandmask : ILandmaskSource
     /// <summary>Points read along each axis of a conditioning pixel, or 0 to read every ocean-map pixel.</summary>
     private readonly int _samplesPerAxis;
 
+    /// <summary>Ocean-map pixel X of the model origin.</summary>
     private readonly int _originOceanPixelX;
+
+    /// <summary>Ocean-map pixel Z of the model origin.</summary>
     private readonly int _originOceanPixelZ;
 
     /// <summary>Map layers keep mutable noise state, so only one thread may be inside one.</summary>
     private readonly object _gate = new();
 
+    /// <summary>The ocean map layer, once resolved.</summary>
     private MapLayerBase _layer;
 
+    /// <summary>A landmask read from the world's ocean map.</summary>
     /// <param name="resolveLayer">
     /// Produces the ocean map to read. Called late and only until it answers, so that a mod which
     /// installs its own layer after this mod initialises is still the one that gets honoured.
@@ -64,6 +72,8 @@ public sealed class OceanMapLandmask : ILandmaskSource
     /// Points to read along each axis of a conditioning pixel wider than that, or 0 for every
     /// ocean-map pixel. Fixed per world: it moves the coastline slightly.
     /// </param>
+    /// <param name="settings">The world's settings: the conditioning grid and the model origin.</param>
+    /// <param name="logger">The server log.</param>
     public OceanMapLandmask(Func<MapLayerBase> resolveLayer, DiffusionWorldSettings settings, int samplesPerAxis,
                             ILogger logger)
     {
@@ -81,6 +91,7 @@ public sealed class OceanMapLandmask : ILandmaskSource
         _samplesPerAxis = samplesPerAxis > 0 && samplesPerAxis < _oceanPixelsPerCoarse ? samplesPerAxis : 0;
     }
 
+    /// <inheritdoc/>
     public float[] SeaFraction(int x1, int y1, int x2, int y2)
     {
         MapLayerBase layer = ResolveLayer();

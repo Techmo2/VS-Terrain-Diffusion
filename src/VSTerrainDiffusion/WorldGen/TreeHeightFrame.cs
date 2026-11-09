@@ -25,14 +25,29 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class TreeHeightFrame
 {
+    /// <summary>Owns the patch, so <see cref="Uninstall"/> removes only it.</summary>
     private const string HarmonyId = "vsterraindiffusion.treeheights";
 
+    /// <summary>The patcher, while installed.</summary>
     private static Harmony _harmony;
+
+    /// <summary><c>WgenTreeSupplier.treeGenProps</c>.</summary>
     private static FieldInfo _properties;
+
+    /// <summary>This world's settings, once known.</summary>
     private static DiffusionWorldSettings _settings;
+
+    /// <summary>
+    /// Whether the world's vertical scale differs from vanilla's, so heights above sea are rescaled too.
+    /// </summary>
     private static bool _exaggerated;
 
+    /// <summary>Every tree supplier seen, so a world's settings can move bands loaded before them.</summary>
     private static readonly ConditionalWeakTable<WgenTreeSupplier, object> Suppliers = new();
+
+    /// <summary>
+    /// Each variant's vanilla height band, so moving it twice starts from vanilla both times.
+    /// </summary>
     private static readonly ConditionalWeakTable<TreeVariant, float[]> Originals = new();
 
     /// <summary>Sets this world's frame and moves the bands of every supplier already loaded.</summary>
@@ -64,6 +79,7 @@ public static class TreeHeightFrame
         _harmony.Patch(load, postfix: new HarmonyMethod(typeof(TreeHeightFrame), nameof(AfterLoadTrees)));
     }
 
+    /// <summary>Removes the patch and forgets the world.</summary>
     public static void Uninstall()
     {
         _harmony?.UnpatchAll(HarmonyId);
@@ -71,6 +87,7 @@ public static class TreeHeightFrame
         _settings = null;
     }
 
+    /// <summary>Remembers the supplier and moves its freshly loaded bands.</summary>
     private static void AfterLoadTrees(WgenTreeSupplier __instance)
     {
         Suppliers.AddOrUpdate(__instance, null);

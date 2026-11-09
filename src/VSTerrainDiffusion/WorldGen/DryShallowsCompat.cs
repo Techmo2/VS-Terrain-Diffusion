@@ -25,15 +25,26 @@ namespace VSTerrainDiffusion.WorldGen;
 /// </summary>
 public static class DryShallowsCompat
 {
+    /// <summary>Owns the patch, so <see cref="Uninstall"/> removes only it.</summary>
     private const string HarmonyId = "vsterraindiffusion.dryshallows";
+
+    /// <summary>Vanilla's raise, in blocks per unit of rain shortfall.</summary>
     private const float VanillaRaisePerRain = 40f;
 
+    /// <summary>The patcher, while installed.</summary>
     private static Harmony _harmony;
+
+    /// <summary>Returned by <see cref="RaisePerRain"/>.</summary>
     private static float _raisePerRain = VanillaRaisePerRain;
 
     /// <summary>Blocks of raise per unit of rain shortfall: vanilla's 40, or 0.</summary>
     public static float RaisePerRain() => _raisePerRain;
 
+    /// <summary>Patches vanilla's block layers, once, and sets the raise for this world.</summary>
+    /// <param name="keepVanillaFill">
+    /// True for a world made before the fix, which keeps vanilla's fill.
+    /// </param>
+    /// <param name="logger">The server log.</param>
     public static void Install(bool keepVanillaFill, ILogger logger)
     {
         _raisePerRain = keepVanillaFill ? VanillaRaisePerRain : 0f;
@@ -49,6 +60,7 @@ public static class DryShallowsCompat
         _harmony.Patch(target, transpiler: new HarmonyMethod(typeof(DryShallowsCompat), nameof(Transpile)));
     }
 
+    /// <summary>Removes the patch and restores vanilla's raise.</summary>
     public static void Uninstall()
     {
         _harmony?.UnpatchAll(HarmonyId);
