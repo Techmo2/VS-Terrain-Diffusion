@@ -10,44 +10,18 @@ namespace VSTerrainDiffusion.Pipeline;
 /// quantile-matched to real WorldClim/ETOPO distributions, matching
 /// world_pipeline.py make_synthetic_map_factory.
 /// </summary>
-public sealed class SyntheticMapFactory
+public sealed partial class SyntheticMapFactory
 {
+    /// <summary>
+    /// Conditioning channels: elevation, temperature, its seasonality, precipitation, its seasonality.
+    /// </summary>
     private const int Channels = 5;
 
     /// <summary>Conditioning channels the world's two global climate settings act on.</summary>
     private const int TemperatureChannel = 1;
 
+    /// <summary>See <see cref="TemperatureChannel"/>.</summary>
     private const int PrecipitationChannel = 3;
-
-    /// <summary>
-    /// Bounds on the rank warp the climate settings are allowed to apply. Five squeezes the world
-    /// into roughly the driest or coldest twentieth of the real distribution and a fifth into the
-    /// wettest or hottest sixth, which is as far as a warp can go before it stops being a warp:
-    /// past that it flattens the channel to one value and the model loses the variation that makes
-    /// a climate a climate.
-    /// </summary>
-    private const float MinRankExponent = 0.2f;
-
-    private const float MaxRankExponent = 5f;
-
-    /// <summary>
-    /// How hard the model leans on a climate it is conditioned towards, as an exponent: shift the
-    /// conditioning by a factor r and the world comes out shifted by about r to this power. The
-    /// model amplifies rather than follows — a fifth of the rain in the conditioning is a seventh
-    /// of the rain on the ground — so a setting handed straight to it arrives overdone, and these
-    /// are what the request is divided by on the way in.
-    ///
-    /// Measured over 48x48 coarse cells on two seeds, comparing the median of the model's own land
-    /// against the median it was conditioned towards, over the full range of both settings. With
-    /// these values every setting the game offers lands within 2 C of what it asked for, and
-    /// within 10% for rainfall in a region of ordinary wetness. Two places do worse and both do so
-    /// by running out of world rather than by arithmetic: "Hot" comes out about 5 C over because
-    /// the model has no hotter climate left to draw, and an already very wet or very dry region
-    /// moves perhaps half as far as asked, being near the end of what the model will draw there.
-    /// </summary>
-    private const float TemperatureResponse = 1.25f;
-
-    private const float PrecipitationResponse = 1.15f;
 
     /// <summary>
     /// How much of the map's own climate noise survives inside a latitude band, as a fraction of
@@ -63,32 +37,67 @@ public sealed class SyntheticMapFactory
     /// </summary>
     private const float TemperatureAnomaly = 0.5f;
 
+    /// <summary>The same for precipitation, as a power on its ratio to the median.</summary>
     private const float PrecipitationAnomaly = 0.7f;
 
+    /// <summary>
+    /// Noise frequency, per coarse pixel, before each channel's multiplier from the pipeline config.
+    /// </summary>
     private const float BaseFrequency = 0.05f;
+
+    /// <summary>Fractal octaves per channel.</summary>
     private static readonly int[] Octaves = { 4, 2, 4, 4, 4 };
+
+    /// <summary>Frequency step between octaves.</summary>
     private const float Lacunarity = 2.0f;
+
+    /// <summary>Amplitude step between octaves.</summary>
     private const float Gain = 0.5f;
 
+    /// <summary><c>pipeline_data.json</c>: the real-world distributions the noise is matched to.</summary>
     private sealed class PipelineData
     {
+        /// <summary>Entries in each quantile table.</summary>
         [JsonProperty("n_quantiles")] public int NQuantiles;
+
+        /// <summary>Real-world quantiles per channel, ascending.</summary>
         [JsonProperty("data_quantile_tables")] public float[][] DataQuantileTables;
+
+        /// <summary>Slope of the temperature-seasonality baseline in temperature.</summary>
         [JsonProperty("a_temp_std")] public float ATempStd;
+
+        /// <summary>Intercept of the temperature-seasonality baseline.</summary>
         [JsonProperty("b_temp_std")] public float BTempStd;
+
+        /// <summary>First percentile of temperature seasonality.</summary>
         [JsonProperty("temp_std_p1")] public float TempStdP1;
+
+        /// <summary>99th percentile of temperature seasonality.</summary>
         [JsonProperty("temp_std_p99")] public float TempStdP99;
     }
 
+    /// <summary><c>pipeline_data.json</c>, once read; shared by every world.</summary>
     private static PipelineData _data;
+
+    /// <summary>Serialises the first read of <see cref="_data"/>.</summary>
     private static readonly object DataGate = new();
 
+    /// <summary>Each channel's noise distribution, as a quantile table.</summary>
     private readonly float[][] _noiseQuantiles = new float[Channels][];
+
+    /// <summary><see cref="PipelineData.DataQuantileTables"/>.</summary>
     private readonly float[][] _dataQuantiles;
+
+    /// <summary>One fractal Perlin noise per channel.</summary>
     private readonly FastNoiseLite[] _noises = new FastNoiseLite[Channels];
+
+    /// <summary><see cref="PipelineData"/>'s temperature-seasonality baseline and percentiles.</summary>
     private readonly float _aTempStd, _bTempStd, _tempStdP1, _tempStdP99;
 
+    /// <summary>Where the sea goes, or null when the noise decides.</summary>
     private readonly ILandmaskSource _landmask;
+
+    /// <summary>Where rivers lower the land, or null.</summary>
     private readonly IRiverBasinSource _riverBasins;
 
     /// <summary>
@@ -102,6 +111,8 @@ public sealed class SyntheticMapFactory
     /// drowned cells, so the coastline setting is left alone.
     /// </summary>
     private readonly float _riverBasinDepth;
+
+    /// <summary>How completely the landmask overrides the noise, 0 to 1.</summary>
     private readonly float _landmaskStrength;
 
     /// <summary>
@@ -126,6 +137,7 @@ public sealed class SyntheticMapFactory
     /// <summary>Scale carrying the world's precipitation setting; 1 leaves the channel alone.</summary>
     private readonly float _precipitationScale;
 
+    /// <summary>Builds the noise for each channel and settles how the world's settings bend it.</summary>
     /// <param name="worldSeed">64-bit world seed; per-channel seeds use the low 31 bits.</param>
     /// <param name="landmask">Decides where the sea goes, or null to let the noise decide.</param>
     /// <param name="landmaskStrength">How completely the landmask overrides the noise, 0 to 1.</param>
@@ -175,6 +187,8 @@ public sealed class SyntheticMapFactory
         }
     }
 
+    /// <summary>Reads <c>pipeline_data.json</c> once.</summary>
+    /// <exception cref="InvalidOperationException">The file is missing or malformed.</exception>
     private static PipelineData LoadData()
     {
         if (_data != null) return _data;
@@ -264,19 +278,7 @@ public sealed class SyntheticMapFactory
                 $"at ({x1}, {y1}), where {plane} were needed.");
         }
 
-        // Absolute pull per pixel: the deeper of the river basin and any structure site.
-        float[] depths = null;
-        if (basins != null)
-        {
-            depths = new float[plane];
-            for (int k = 0; k < plane; k++) depths[k] = Math.Clamp(basins[k], 0f, 1f) * _riverBasinDepth;
-        }
-        float[] sites = _siteBasins?.Invoke(x1, y1, x2, y2);
-        if (sites != null)
-        {
-            depths ??= new float[plane];
-            for (int k = 0; k < plane; k++) depths[k] = Math.Max(depths[k], Math.Clamp(sites[k], 0f, 1f));
-        }
+        float[] depths = BasinDepths(basins, x1, y1, x2, y2, plane);
 
         // Rows run along Z, which is the axis latitude is measured on, so a band is one climate per
         // row. Resolved up front because the two banded channels want the same rows.
@@ -348,6 +350,48 @@ public sealed class SyntheticMapFactory
             raw[ch] = channel;
         }
 
+        return Combine(raw, plane);
+    }
+
+    /// <summary>
+    /// How far each pixel's land rank is pulled towards sea level: the deeper of the river basin
+    /// and any structure site.
+    /// </summary>
+    /// <param name="basins">River basin strength per pixel, 0 to 1, or null.</param>
+    /// <param name="x1">The window's first column.</param>
+    /// <param name="y1">The window's first row.</param>
+    /// <param name="x2">The column past the window.</param>
+    /// <param name="y2">The row past the window.</param>
+    /// <param name="plane">Pixels in the window.</param>
+    /// <returns>Depths 0 to 1 per pixel, or null when nothing lowers this window.</returns>
+    private float[] BasinDepths(float[] basins, int x1, int y1, int x2, int y2, int plane)
+    {
+        float[] depths = null;
+        if (basins != null)
+        {
+            depths = new float[plane];
+            for (int k = 0; k < plane; k++) depths[k] = Math.Clamp(basins[k], 0f, 1f) * _riverBasinDepth;
+        }
+        float[] sites = _siteBasins?.Invoke(x1, y1, x2, y2);
+        if (sites != null)
+        {
+            depths ??= new float[plane];
+            for (int k = 0; k < plane; k++) depths[k] = Math.Max(depths[k], Math.Clamp(sites[k], 0f, 1f));
+        }
+        return depths;
+    }
+
+    /// <summary>
+    /// Turns the five quantile-matched channels into the conditioning the model reads, as the
+    /// reference pipeline does: temperature lapsed to the synthetic elevation, temperature
+    /// seasonality rescaled against the baseline that temperature implies, precipitation
+    /// seasonality damped in wet places, and elevation square-root encoded.
+    /// </summary>
+    /// <param name="raw">The channels, elevation (m), temperature, its seasonality, precipitation and its seasonality.</param>
+    /// <param name="plane">Pixels per channel.</param>
+    /// <returns>Flat (5, H, W) array with channels [elevSqrt, temp, tempStd, precip, precipStd].</returns>
+    private float[] Combine(float[][] raw, int plane)
+    {
         var result = new float[Channels * plane];
         for (int idx = 0; idx < plane; idx++)
         {
@@ -379,62 +423,6 @@ public sealed class SyntheticMapFactory
             result[4 * plane + idx] = precipStd;
         }
         return result;
-    }
-
-    /// <summary>
-    /// Linear interpolation matching numpy's np.interp, clamping at the table boundaries.
-    ///
-    /// Deliberately not written as <c>SampleTable(fp, TablePosition(x, xp))</c>, which is the same
-    /// function: routing a rank back through a float would move a value by a part in a million at
-    /// the top of an interval, and this path generates the terrain of every world that is not using
-    /// a landmask, including ones that already exist.
-    /// </summary>
-    internal static float Interp(float x, float[] xp, float[] fp)
-    {
-        int n = xp.Length;
-        if (x <= xp[0]) return fp[0];
-        if (x >= xp[n - 1]) return fp[n - 1];
-
-        int lo = 0, hi = n - 1;
-        while (hi - lo > 1)
-        {
-            int mid = (lo + hi) >> 1;
-            if (xp[mid] <= x) lo = mid; else hi = mid;
-        }
-        float t = (x - xp[lo]) / (xp[hi] - xp[lo]);
-        return fp[lo] + t * (fp[hi] - fp[lo]);
-    }
-
-    /// <summary>
-    /// Where <paramref name="x"/> falls in <paramref name="xp"/>, as a fractional index. This is
-    /// the noise value's rank in its own distribution, which is what makes the two quantile tables
-    /// interchangeable: the same position read out of the data table is the matched value.
-    /// </summary>
-    internal static float TablePosition(float x, float[] xp)
-    {
-        int n = xp.Length;
-        if (x <= xp[0]) return 0f;
-        if (x >= xp[n - 1]) return n - 1f;
-
-        int lo = 0, hi = n - 1;
-        while (hi - lo > 1)
-        {
-            int mid = (lo + hi) >> 1;
-            if (xp[mid] <= x) lo = mid; else hi = mid;
-        }
-        return lo + (x - xp[lo]) / (xp[hi] - xp[lo]);
-    }
-
-    /// <summary>Reads a quantile table at a fractional index, clamping at both ends.</summary>
-    internal static float SampleTable(float[] fp, float position)
-    {
-        int n = fp.Length;
-        if (position <= 0f) return fp[0];
-        if (position >= n - 1) return fp[n - 1];
-
-        int lo = (int)position;
-        float t = position - lo;
-        return fp[lo] + t * (fp[lo + 1] - fp[lo]);
     }
 
     /// <summary>
@@ -504,232 +492,6 @@ public sealed class SyntheticMapFactory
     {
         float span = tableLength - 1f;
         return (float)Math.Pow(position / span, exponent) * span;
-    }
-
-    /// <summary>
-    /// Works out how much of a world's climate settings the model can be asked for and how much
-    /// has to be applied to what it produces.
-    ///
-    /// The model is asked for a conditioning shift of <c>m^(1/response)</c>, which is the shift
-    /// that comes back out as <c>m</c>; then the anchor is clamped to what the real climate
-    /// distribution can express, and the correction carries whatever that clamp cost. Most
-    /// settings need no correction at all. The ones that do are the hot end of the temperature
-    /// scale, where there is nothing left to ask for: the world's warmest mean annual temperature
-    /// is about 30 C, so "very hot" and "scorching hot" both draw the hottest climate on Earth and
-    /// then have the difference between that and what was asked for scaled onto the result — which
-    /// is what vanilla does too, its own climate byte having saturated at 40 C long before.
-    /// </summary>
-    /// <returns>
-    /// The division of labour, or <see cref="ClimatePlan.Unconditioned"/> if the model's data is
-    /// not on disk yet — on a fresh install the world is read once before anything is downloaded,
-    /// and a world that cannot consult the model still has to honour its settings.
-    /// </returns>
-    public static ClimatePlan PlanClimate(ClimateShift climate)
-    {
-        float strength = DiffusionConfig.Instance.WorldGen.GlobalClimateStrength;
-        if (strength <= 0f || climate.IsNeutral) return ClimatePlan.Unconditioned(climate);
-
-        PipelineData data;
-        try
-        {
-            data = LoadData();
-        }
-        catch (Exception e)
-        {
-            throw DiffusionFailure.Fatal(
-                "pipeline_data.json could not be read, so this world's climate settings cannot " +
-                "be applied.", e);
-        }
-
-        (float exponent, float temperatureDelivered) = PlanTemperature(
-            data.DataQuantileTables[TemperatureChannel], climate.Temperature, strength);
-
-        // Rainfall needs no clamping and so no correction: the conditioning is scaled outright and
-        // the model returns the scale it was given, raised to its response.
-        float scale = Asked(climate.Precipitation, strength, PrecipitationResponse);
-        float precipitationDelivered = (float)Math.Pow(scale, PrecipitationResponse);
-
-        return new ClimatePlan(
-            exponent, scale,
-            climate.Temperature / temperatureDelivered,
-            climate.Precipitation / precipitationDelivered);
-    }
-
-    /// <summary>
-    /// The conditioning shift to ask for, being the one that comes back out as the shift the world
-    /// wants — or a fraction of it, where the conditioning has been turned down.
-    /// </summary>
-    private static float Asked(float multiplier, float strength, float response)
-        => (float)Math.Pow(Math.Max(1e-4f, multiplier), strength / response);
-
-    /// <summary>
-    /// What the model actually puts on the ground when it is conditioned on a given climate,
-    /// measured rather than derived.
-    ///
-    /// Two things separate the two numbers. The land the model draws stands above sea level, and
-    /// its own lapse rate cools it; and the model amplifies, leaning about 16% further from its
-    /// neutral climate than the conditioning asked. Both are steady enough to invert: the slope
-    /// held to within 3% across three seeds, and it is the slope that decides whether a latitude
-    /// gradient survives the model at all.
-    ///
-    /// The offset is not steady, and deliberately not corrected for. It ran from -5 C to -9 C
-    /// between the three seeds, because it is mostly the relief of whichever continents that seed
-    /// drew, and a world of high plateaus really is colder than a world of coastal plains - the
-    /// same reason Siberia is colder than Ireland. These are the mean over the three, so an
-    /// ordinary world lands on its bands and a mountainous one comes out a few degrees under.
-    ///
-    /// Measured over a 64x64 coarse box (about 250 km square at the default resolution) on seeds
-    /// 1234, 777 and 424242, taking the median of every land pixel, with the whole map conditioned
-    /// on one climate at a time.
-    /// </summary>
-    private static readonly float[] ResponseConditioningC = { -7f, -2f, 2f, 6f, 10f, 14f, 18f, 22f, 26f, 30f };
-
-    private static readonly float[] ResponseLandC =
-        { -14.33f, -11.40f, -7.63f, -3.03f, 1.87f, 6.77f, 11.57f, 16.23f, 20.70f, 24.87f };
-
-    /// <summary>
-    /// The same for rainfall, which the model damps rather than amplifies: land comes out at about
-    /// two thirds of the rain the conditioning carries, near enough proportionally that the curve is
-    /// straight in the log of both.
-    /// </summary>
-    private static readonly float[] ResponseConditioningMm = { 250f, 400f, 600f, 900f, 1400f, 2200f };
-
-    private static readonly float[] ResponseLandMm = { 166f, 286f, 439f, 679f, 1073f, 1681f };
-
-    /// <summary>
-    /// How much wetter a banded world comes out than the curve above predicts.
-    ///
-    /// The curve was measured with one climate over the whole map. A banded world is not that: its
-    /// conditioning runs from a rainforest to an ice cap down one meridian, and the model returns
-    /// about a third more rain across it than the flat case does - most of it at the cold end,
-    /// where it declines to dry out a polar belt as far as the zonal means say it should. Measured
-    /// as the median of world-against-band over three full equator-to-pole transects (1.21, 1.35,
-    /// 1.47), and applied to the curve in both directions so that the ask comes down and the answer
-    /// lands on the band.
-    /// </summary>
-    private const float BandedRainfallBias = 1.34f;
-
-    /// <summary>The rainfall curve in the log of both axes, with the banded bias folded in.</summary>
-    private static readonly float[] LogResponseConditioningMm = Log(ResponseConditioningMm, 1f);
-
-    private static readonly float[] LogResponseLandMm = Log(ResponseLandMm, BandedRainfallBias);
-
-    /// <summary>The rainfall curve as measured, without the banded bias.</summary>
-    private static readonly float[] LogResponseLandMmUnbiased = Log(ResponseLandMm, 1f);
-
-    private static float[] Log(float[] values, float bias)
-    {
-        var result = new float[values.Length];
-        for (int i = 0; i < values.Length; i++) result[i] = (float)Math.Log(values[i] * bias);
-        return result;
-    }
-
-    /// <summary>
-    /// Works out how one latitude's climate is divided between the model and its output.
-    ///
-    /// Most of it the model can simply be asked for, once the ask is put through the inverse of its
-    /// measured response. What it cannot be asked for is a climate it has never seen: mean annual
-    /// temperature in the model's world tops out at 35.6 C and bottoms at -7.5 C, which after the
-    /// response is land between about -14 C and 31 C. From roughly 80 degrees poleward the band
-    /// wants an ice cap colder than that, so the conditioning is pinned to the coldest climate there
-    /// is and the last few degrees are an offset on the output. That is the same bargain the hot end
-    /// of <c>globalTemperature</c> strikes, and the same one vanilla strikes when its climate byte
-    /// saturates.
-    ///
-    /// Called once per entry of <see cref="LatitudeBands"/>' table rather than per pixel, which is
-    /// why it can afford to search the quantile tables.
-    /// </summary>
-    /// <param name="wantedC">Mean annual temperature the band wants on the ground, in Celsius.</param>
-    /// <param name="wantedMm">Annual rainfall the band wants on the ground, in millimetres.</param>
-    /// <exception cref="InvalidOperationException">The model's data is not on disk.</exception>
-    /// <param name="bandedRainfallBias">
-    /// Whether to apply <see cref="BandedRainfallBias"/>. It was measured on latitude profile 1;
-    /// world setting <c>terraindiffusionBandedRainfallBias</c>, off for new worlds.
-    /// </param>
-    public static LatitudeBandPlan PlanLatitude(float wantedC, float wantedMm, bool bandedRainfallBias = true)
-    {
-        float[] logLandMm = bandedRainfallBias ? LogResponseLandMm : LogResponseLandMmUnbiased;
-        PipelineData data = LoadData();
-        float[] temperature = data.DataQuantileTables[TemperatureChannel];
-        float[] rainfall = data.DataQuantileTables[PrecipitationChannel];
-
-        float conditioningC = Math.Clamp(
-            Interp(wantedC, ResponseLandC, ResponseConditioningC, true),
-            temperature[0], temperature[temperature.Length - 1]);
-        float conditioningMm = Math.Clamp(
-            (float)Math.Exp(Interp((float)Math.Log(Math.Max(1f, wantedMm)), logLandMm,
-                                   LogResponseConditioningMm, true)),
-            rainfall[0], rainfall[rainfall.Length - 1]);
-
-        float deliveredC = Interp(conditioningC, ResponseConditioningC, ResponseLandC, true);
-        float deliveredMm = (float)Math.Exp(
-            Interp((float)Math.Log(Math.Max(1f, conditioningMm)), LogResponseConditioningMm,
-                   logLandMm, true));
-
-        return new LatitudeBandPlan(
-            conditioningC, conditioningMm,
-            wantedC - deliveredC,
-            deliveredMm > 0f ? wantedMm / deliveredMm : 1f);
-    }
-
-    /// <summary>
-    /// <see cref="Interp(float, float[], float[])"/> with the option of continuing the end segments
-    /// past the table instead of flattening at them, which is what an inverted response needs: a
-    /// band a little hotter than anything measured should ask for a little more conditioning, not
-    /// for exactly the most that was measured.
-    /// </summary>
-    private static float Interp(float x, float[] xp, float[] fp, bool extrapolate)
-    {
-        int n = xp.Length;
-        if (!extrapolate) return Interp(x, xp, fp);
-        if (x < xp[0]) return fp[0] + (x - xp[0]) * (fp[1] - fp[0]) / (xp[1] - xp[0]);
-        if (x > xp[n - 1])
-            return fp[n - 1] + (x - xp[n - 1]) * (fp[n - 1] - fp[n - 2]) / (xp[n - 1] - xp[n - 2]);
-        return Interp(x, xp, fp);
-    }
-
-    /// <summary>The climate the model draws when nothing has told it otherwise.</summary>
-    public static (float TemperatureC, float PrecipitationMm) NeutralClimate()
-    {
-        PipelineData data = LoadData();
-        float[] temperature = data.DataQuantileTables[TemperatureChannel];
-        float[] rainfall = data.DataQuantileTables[PrecipitationChannel];
-        return (SampleTable(temperature, (temperature.Length - 1) * 0.5f),
-                SampleTable(rainfall, (rainfall.Length - 1) * 0.5f));
-    }
-
-    /// <summary>
-    /// The temperature warp, and the shift the world will actually come out with because of it.
-    ///
-    /// Temperature is warped by rank where rainfall is scaled outright, because the two
-    /// distributions are shaped nothing alike. Annual rainfall runs from nothing to six metres and
-    /// scaling it lands inside that range whatever the setting asks for. Mean annual temperature
-    /// occupies about forty degrees, from -7 C to 36 C, with no room above: scaling it by anything
-    /// over 1.1 walks straight off the end of the world's climate and takes every pixel with it,
-    /// where a rank warp merely moves the world towards its hot end and stops when it gets there.
-    /// </summary>
-    private static (float Exponent, float Delivered) PlanTemperature(
-        float[] table, float multiplier, float strength)
-    {
-        // Temperature scales from -20 C, the bottom of the scale Vintage Story multiplies on.
-        const float origin = ClimateShift.ScaleFloorC;
-
-        float span = table.Length - 1f;
-        float median = SampleTable(table, span * 0.5f);
-        float asked = Asked(multiplier, strength, TemperatureResponse);
-        float wanted = origin + (median - origin) * asked;
-        if (Math.Abs(wanted - median) < 1e-3f) return (1f, 1f);
-
-        // Clamped off both ends of the table: a rank of exactly 0 has no logarithm, and one of
-        // exactly 1 has no warp that reaches it. The exponent bounds then decide how far the warp
-        // is allowed to go before it stops being a warp and starts being a flat field.
-        float rank = Math.Clamp(TablePosition(wanted, table) / span, 1e-3f, 1f - 1e-3f);
-        float exponent = Math.Clamp(
-            (float)(Math.Log(rank) / Math.Log(0.5)), MinRankExponent, MaxRankExponent);
-
-        float reached = SampleTable(table, span * (float)Math.Pow(0.5, exponent));
-        float delivered = (float)Math.Pow((reached - origin) / (median - origin), TemperatureResponse);
-        return (exponent, delivered);
     }
 
     /// <summary>Fractional index at which the elevation table passes through sea level.</summary>
