@@ -13,7 +13,7 @@ Every code below starts with `terraindiffusion`, which the tables leave out.
 | `Enabled`              | on      | Off falls back to vanilla terrain. |
 | `Scale`                | 15 m    | Metres per block, horizontally and vertically. `1`–`6` = 30, 15, 10, 7.5, 6, 5 m. |
 | `VerticalExaggeration` | 1x      | Multiplies terrain height. |
-| `SeaLevel`             | vanilla | `128` fixes the sea at Y 128, so a taller world adds height above it. |
+| `SeaLevel`             | 128     | Fixes the sea at Y 128, so a taller world adds height above it. `vanilla` puts it at 43% of world height. |
 | `CoarsePooling`        | off     | `2` or `4` packs that many times the landscape into the same distance. |
 | `CoarsePoolMode`       | average | `extreme` keeps each cell's highest peak and deepest valley. |
 | `DetailRedraw`         | 35      | Hundredths of the detail model's first pass that is redrawn. |

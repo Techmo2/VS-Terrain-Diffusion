@@ -105,6 +105,9 @@ public class SeaLevelOverride : ModSystem
         if (!DiffusionWorldSettings.EnabledForWorld(api)) return null;
 
         ITreeAttribute config = api.WorldManager.SaveGame.WorldConfiguration;
+
+        // New worlds get worldconfig.json's default (128) written into their settings. A save without
+        // the setting predates it and keeps the vanilla sea it was generated with.
         string value = DiffusionWorldSettings.ReadWorldConfig(config, WorldConfigCode, "vanilla").Trim().ToLowerInvariant();
         if (value == "vanilla" || !int.TryParse(value, out int seaLevel)) return null;
 
